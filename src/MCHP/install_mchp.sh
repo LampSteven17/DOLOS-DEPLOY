@@ -61,7 +61,7 @@ cd "$INSTALL_DIR"
 
 log "Creating base directory structure..."
 mkdir -p "$INSTALL_DIR/deployed_sups/MCHP"
-mkdir -p "$INSTALL_DIR/deployed_sups/MCHP/LOGS"
+mkdir -p "$INSTALL_DIR/deployed_sups/MCHP/logs"
 mkdir -p "$INSTALL_DIR/deployed_sups/MCHP/Downloads"
 
 log "Updating system packages..."
@@ -153,7 +153,7 @@ create_run_script() {
 # MCHP Default Run Script
 
 MCHP_DIR="$INSTALL_DIR/deployed_sups/MCHP"
-LOG_FILE="\$MCHP_DIR/LOGS/mchp_\$(date '+%Y-%m-%d_%H-%M-%S').log"
+LOG_FILE="\$MCHP_DIR/logs/mchp_\$(date '+%Y-%m-%d_%H-%M-%S').log"
 
 cd "\$MCHP_DIR"
 source "\$MCHP_DIR/venv/bin/activate"
@@ -183,10 +183,10 @@ Type=simple
 User=$USER_NAME
 WorkingDirectory=$INSTALL_DIR/deployed_sups/MCHP
 ExecStart=/bin/bash $INSTALL_DIR/deployed_sups/MCHP/run_mchp.sh
-Restart=on-failure
+Restart=always
 RestartSec=5s
-StandardOutput=append:$INSTALL_DIR/deployed_sups/MCHP/LOGS/mchp_systemd.log
-StandardError=append:$INSTALL_DIR/deployed_sups/MCHP/LOGS/mchp_systemd_error.log
+StandardOutput=append:$INSTALL_DIR/deployed_sups/MCHP/logs/mchp_systemd.log
+StandardError=append:$INSTALL_DIR/deployed_sups/MCHP/logs/mchp_systemd_error.log
 
 [Install]
 WantedBy=multi-user.target
@@ -234,7 +234,7 @@ main() {
     echo "  Restart: sudo systemctl restart mchp"
     echo ""
     echo "Manual run: $INSTALL_DIR/deployed_sups/MCHP/run_mchp.sh"
-    echo "Logs: $INSTALL_DIR/deployed_sups/MCHP/LOGS/"
+    echo "Logs: $INSTALL_DIR/deployed_sups/MCHP/logs/"
 }
 
 main
