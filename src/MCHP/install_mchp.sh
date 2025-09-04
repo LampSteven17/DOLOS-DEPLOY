@@ -196,6 +196,16 @@ EOF
     sudo systemctl enable mchp.service
     
     log "Service mchp enabled"
+    
+    log "Starting mchp service..."
+    sudo systemctl start mchp.service
+    
+    sleep 2
+    if sudo systemctl is-active --quiet mchp.service; then
+        success "MCHP service started successfully"
+    else
+        warning "MCHP service failed to start. Check logs with: sudo systemctl status mchp"
+    fi
 }
 
 success() {
@@ -211,13 +221,20 @@ main() {
     echo ""
     echo "MCHP installed at: $INSTALL_DIR/MCHP"
     echo ""
-    echo "To run MCHP:"
-    echo "  Manual: $INSTALL_DIR/MCHP/run_mchp.sh"
-    echo "  Systemd: sudo systemctl start mchp"
+    if sudo systemctl is-active --quiet mchp.service; then
+        echo "MCHP service is currently: ${GREEN}RUNNING${NC}"
+    else
+        echo "MCHP service is currently: ${RED}STOPPED${NC}"
+    fi
+    echo ""
+    echo "Service commands:"
     echo "  Status: sudo systemctl status mchp"
     echo "  Stop: sudo systemctl stop mchp"
+    echo "  Start: sudo systemctl start mchp"
+    echo "  Restart: sudo systemctl restart mchp"
     echo ""
-    echo "Logs are stored in: $INSTALL_DIR/MCHP/LOGS/"
+    echo "Manual run: $INSTALL_DIR/MCHP/run_mchp.sh"
+    echo "Logs: $INSTALL_DIR/MCHP/LOGS/"
 }
 
 main
