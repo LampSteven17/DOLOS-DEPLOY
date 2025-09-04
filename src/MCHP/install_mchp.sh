@@ -62,7 +62,7 @@ cd "$INSTALL_DIR"
 log "Creating base directory structure..."
 mkdir -p "$INSTALL_DIR/deployed_sups/MCHP"
 mkdir -p "$INSTALL_DIR/deployed_sups/MCHP/logs"
-mkdir -p "$INSTALL_DIR/deployed_sups/MCHP/Downloads"
+mkdir -p "$HOME/Downloads"
 
 log "Updating system packages..."
 sudo apt-get update -y
