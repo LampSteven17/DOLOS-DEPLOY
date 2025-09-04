@@ -7,6 +7,8 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -124,12 +126,12 @@ setup_default() {
     
     deactivate
     
-    if [ -d "$INSTALL_DIR/DOLOS-DEPLOY/src/MCHP/DEFAULT/pyhuman" ]; then
+    if [ -d "$SCRIPT_DIR/DEFAULT/pyhuman" ]; then
         log "Copying DEFAULT pyhuman files..."
-        cp -r "$INSTALL_DIR/DOLOS-DEPLOY/src/MCHP/DEFAULT/pyhuman" "$INSTALL_DIR/MCHP/"
-    elif [ -d "$INSTALL_DIR/DOLOS-DEPLOY/src/MCHP/pyhuman" ]; then
+        cp -r "$SCRIPT_DIR/DEFAULT/pyhuman" "$INSTALL_DIR/MCHP/"
+    elif [ -d "$SCRIPT_DIR/pyhuman" ]; then
         log "Using base pyhuman files..."
-        cp -r "$INSTALL_DIR/DOLOS-DEPLOY/src/MCHP/pyhuman" "$INSTALL_DIR/MCHP/"
+        cp -r "$SCRIPT_DIR/pyhuman" "$INSTALL_DIR/MCHP/"
     else
         error "pyhuman directory not found"
         return 1
