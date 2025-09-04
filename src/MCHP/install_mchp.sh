@@ -60,9 +60,9 @@ log "MCHP will be installed at: $INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 log "Creating base directory structure..."
-mkdir -p "$INSTALL_DIR/MCHP"
-mkdir -p "$INSTALL_DIR/MCHP/LOGS"
-mkdir -p "$INSTALL_DIR/MCHP/Downloads"
+mkdir -p "$INSTALL_DIR/deployed_sups/MCHP"
+mkdir -p "$INSTALL_DIR/deployed_sups/MCHP/LOGS"
+mkdir -p "$INSTALL_DIR/deployed_sups/MCHP/Downloads"
 
 log "Updating system packages..."
 sudo apt-get update -y
@@ -84,17 +84,17 @@ ARCH=$(uname -m)
 if [[ "$ARCH" == "x86_64" ]]; then
     log "Downloading Geckodriver for Linux x64..."
     wget https://github.com/mozilla/geckodriver/releases/download/v0.34.0/geckodriver-v0.34.0-linux64.tar.gz
-    tar -xvzf geckodriver-v0.34.0-linux64.tar.gz -C "$INSTALL_DIR/MCHP/"
+    tar -xvzf geckodriver-v0.34.0-linux64.tar.gz -C "$INSTALL_DIR/deployed_sups/MCHP/"
     rm -f geckodriver-v0.34.0-linux64.tar.gz
 elif [[ "$ARCH" == "armv7l" ]]; then
     log "Downloading Geckodriver for ARMv7..."
     wget https://github.com/jamesmortensen/geckodriver-arm-binaries/releases/download/v0.34.0/geckodriver-v0.34.0-linux-armv7l.tar.gz
-    tar -xvzf geckodriver-v0.34.0-linux-armv7l.tar.gz -C "$INSTALL_DIR/MCHP/"
+    tar -xvzf geckodriver-v0.34.0-linux-armv7l.tar.gz -C "$INSTALL_DIR/deployed_sups/MCHP/"
     rm -f geckodriver-v0.34.0-linux-armv7l.tar.gz
 else
     warning "Architecture $ARCH not directly supported, attempting Linux x64 version..."
     wget https://github.com/mozilla/geckodriver/releases/download/v0.34.0/geckodriver-v0.34.0-linux64.tar.gz
-    tar -xvzf geckodriver-v0.34.0-linux64.tar.gz -C "$INSTALL_DIR/MCHP/"
+    tar -xvzf geckodriver-v0.34.0-linux64.tar.gz -C "$INSTALL_DIR/deployed_sups/MCHP/"
     rm -f geckodriver-v0.34.0-linux64.tar.gz
 fi
 
@@ -102,10 +102,10 @@ setup_default() {
     log "Setting up default MCHP deployment..."
     
     log "Creating Python virtual environment..."
-    python3 -m venv "$INSTALL_DIR/MCHP/venv"
+    python3 -m venv "$INSTALL_DIR/deployed_sups/MCHP/venv"
     
     log "Activating virtual environment and installing Python packages..."
-    source "$INSTALL_DIR/MCHP/venv/bin/activate"
+    source "$INSTALL_DIR/deployed_sups/MCHP/venv/bin/activate"
     
     python3 -m pip install --upgrade pip
     python3 -m pip install \
@@ -128,10 +128,10 @@ setup_default() {
     
     if [ -d "$SCRIPT_DIR/DEFAULT/pyhuman" ]; then
         log "Copying DEFAULT pyhuman files..."
-        cp -r "$SCRIPT_DIR/DEFAULT/pyhuman" "$INSTALL_DIR/MCHP/"
+        cp -r "$SCRIPT_DIR/DEFAULT/pyhuman" "$INSTALL_DIR/deployed_sups/MCHP/"
     elif [ -d "$SCRIPT_DIR/pyhuman" ]; then
         log "Using base pyhuman files..."
-        cp -r "$SCRIPT_DIR/pyhuman" "$INSTALL_DIR/MCHP/"
+        cp -r "$SCRIPT_DIR/pyhuman" "$INSTALL_DIR/deployed_sups/MCHP/"
     else
         error "pyhuman directory not found"
         return 1
@@ -144,7 +144,7 @@ setup_default() {
 }
 
 create_run_script() {
-    local run_script="$INSTALL_DIR/MCHP/run_mchp.sh"
+    local run_script="$INSTALL_DIR/deployed_sups/MCHP/run_mchp.sh"
     
     log "Creating run script..."
     
@@ -152,7 +152,7 @@ create_run_script() {
 #!/bin/bash
 # MCHP Default Run Script
 
-MCHP_DIR="$INSTALL_DIR/MCHP"
+MCHP_DIR="$INSTALL_DIR/deployed_sups/MCHP"
 LOG_FILE="\$MCHP_DIR/LOGS/mchp_\$(date '+%Y-%m-%d_%H-%M-%S').log"
 
 cd "\$MCHP_DIR"
@@ -181,12 +181,12 @@ After=network.target
 [Service]
 Type=simple
 User=$USER_NAME
-WorkingDirectory=$INSTALL_DIR/MCHP
-ExecStart=/bin/bash $INSTALL_DIR/MCHP/run_mchp.sh
+WorkingDirectory=$INSTALL_DIR/deployed_sups/MCHP
+ExecStart=/bin/bash $INSTALL_DIR/deployed_sups/MCHP/run_mchp.sh
 Restart=on-failure
 RestartSec=5s
-StandardOutput=append:$INSTALL_DIR/MCHP/LOGS/mchp_systemd.log
-StandardError=append:$INSTALL_DIR/MCHP/LOGS/mchp_systemd_error.log
+StandardOutput=append:$INSTALL_DIR/deployed_sups/MCHP/LOGS/mchp_systemd.log
+StandardError=append:$INSTALL_DIR/deployed_sups/MCHP/LOGS/mchp_systemd_error.log
 
 [Install]
 WantedBy=multi-user.target
@@ -219,7 +219,7 @@ main() {
     
     success "Installation complete!"
     echo ""
-    echo "MCHP installed at: $INSTALL_DIR/MCHP"
+    echo "MCHP installed at: $INSTALL_DIR/deployed_sups/MCHP"
     echo ""
     if sudo systemctl is-active --quiet mchp.service; then
         echo "MCHP service is currently: ${GREEN}RUNNING${NC}"
@@ -233,8 +233,8 @@ main() {
     echo "  Start: sudo systemctl start mchp"
     echo "  Restart: sudo systemctl restart mchp"
     echo ""
-    echo "Manual run: $INSTALL_DIR/MCHP/run_mchp.sh"
-    echo "Logs: $INSTALL_DIR/MCHP/LOGS/"
+    echo "Manual run: $INSTALL_DIR/deployed_sups/MCHP/run_mchp.sh"
+    echo "Logs: $INSTALL_DIR/deployed_sups/MCHP/LOGS/"
 }
 
 main

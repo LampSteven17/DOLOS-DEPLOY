@@ -5,7 +5,6 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEPLOY_DIR="$SCRIPT_DIR/deployments"
 
 usage() {
     echo "Usage: $0 --mchp"
@@ -20,12 +19,11 @@ fi
 case $1 in
     --mchp)
         echo "Installing MCHP..."
-        mkdir -p "$DEPLOY_DIR/mchp"
         
         if [ -f "$SCRIPT_DIR/src/MCHP/install_mchp.sh" ]; then
             cd "$SCRIPT_DIR/src/MCHP"
             chmod +x install_mchp.sh
-            ./install_mchp.sh --installpath="$DEPLOY_DIR/mchp"
+            ./install_mchp.sh --installpath="$SCRIPT_DIR"
         else
             echo "Error: install_mchp.sh not found at $SCRIPT_DIR/src/MCHP/"
             exit 1
