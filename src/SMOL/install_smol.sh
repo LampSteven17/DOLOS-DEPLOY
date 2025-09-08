@@ -130,6 +130,12 @@ setup_smol() {
     if [ -d "$SCRIPT_DIR/$config_dir" ]; then
         log "Copying $SMOL_CONFIG SMOL agent files from $config_dir..."
         cp -r "$SCRIPT_DIR/$config_dir"/* "$INSTALL_DIR/deployed_sups/SMOL/"
+        
+        # Update agent.py with the correct model from installation
+        if [ -f "$INSTALL_DIR/deployed_sups/SMOL/agent.py" ] && [ -n "$OLLAMA_MODELS" ]; then
+            log "Configuring agent.py with model: $OLLAMA_MODELS"
+            sed -i "s/os.getenv(\"LITELLM_MODEL\", \".*\")/os.getenv(\"LITELLM_MODEL\", \"ollama\/$OLLAMA_MODELS\")/g" "$INSTALL_DIR/deployed_sups/SMOL/agent.py"
+        fi
     else
         error "$config_dir directory not found"
         return 1
