@@ -112,6 +112,10 @@ setup_bu() {
     source "$INSTALL_DIR/deployed_sups/BU/venv/bin/activate"
     
     python3 -m pip install --upgrade pip
+    
+    # Install uvx for browser-use
+    python3 -m pip install uv
+    
     python3 -m pip install \
         browser-use \
         selenium \

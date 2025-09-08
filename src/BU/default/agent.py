@@ -9,31 +9,31 @@ model_name = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 llm = ChatOllama(model=model_name)
 
 # Simple task - you can modify this
-task = "Search for latest news about AI and summarize the top 3 articles"
-
-# Create browser instance with Firefox
-browser = Browser(
-    browser_type="firefox",  # Explicitly use Firefox
-    headless=True,  # Run in headless mode
-)
-
-# Create agent with Firefox browser
-agent = Agent(
-    task=task,
-    llm=llm,
-    browser=browser,
-)
+task = "Visit google.com and search for 'OpenAI news'"
 
 async def main():
     print(f"Starting BU agent with model: {model_name}")
     print(f"Task: {task}")
     
     try:
-        history = await agent.run(max_steps=10)
+        # Create browser instance with headless mode
+        browser = Browser(headless=True)
+        
+        # Create agent
+        agent = Agent(
+            task=task,
+            llm=llm,
+            browser=browser,
+        )
+        
+        # Run the agent
+        result = await agent.run(max_steps=5)
         print("Task completed successfully!")
-        return history
+        return result
     except Exception as e:
         print(f"Error running agent: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 if __name__ == "__main__":
