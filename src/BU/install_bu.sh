@@ -200,7 +200,8 @@ source "\$BU_DIR/venv/bin/activate"
 export PATH="\$HOME/.cargo/bin:\$PATH"
 
 # Set environment variables for BU agent
-export OLLAMA_MODEL="\${OLLAMA_MODEL:-llama3.1:8b}"
+# Use the model passed from INSTALL_SUP.sh or default
+export OLLAMA_MODEL="\${OLLAMA_MODEL:-${OLLAMA_MODEL_DEFAULT:-llama3:8b}}"
 
 # Tell browser-use to use firefox
 export BROWSER_USE_BROWSER_TYPE="firefox"

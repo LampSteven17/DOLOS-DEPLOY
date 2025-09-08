@@ -367,6 +367,7 @@ EOF
                 exit 1
             }
             log "Executing BU installation script..."
+            export OLLAMA_MODEL_DEFAULT="$DEFAULT_OLLAMA_MODEL"
             ./install_bu.sh --installpath="$SCRIPT_DIR" --config="$BU_CONFIG" || {
                 log_error "BU installation script failed"
                 exit 1

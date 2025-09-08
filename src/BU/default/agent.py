@@ -5,7 +5,7 @@ import asyncio
 from browser_use import Agent, ChatOllama, Browser
 
 # Get model from environment variable (configured by install script)
-model_name = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+model_name = os.getenv("OLLAMA_MODEL", "llama3:8b")
 llm = ChatOllama(model=model_name)
 
 # Simple task - you can modify this
