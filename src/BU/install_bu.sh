@@ -124,10 +124,16 @@ setup_bu() {
         pillow \
         opencv-python
     
-    # Install playwright browsers (both for compatibility)
-    log "Installing Playwright browsers..."
-    python3 -m playwright install chromium firefox
-    python3 -m playwright install-deps chromium firefox
+    # Install playwright browsers - Firefox only
+    log "Installing Playwright Firefox browser..."
+    python3 -m playwright install firefox
+    python3 -m playwright install-deps firefox
+    
+    # Create symlink for uvx if uv is installed
+    if [ -f "$HOME/.cargo/bin/uv" ]; then
+        log "Creating uvx symlink for browser-use compatibility..."
+        ln -sf "$HOME/.cargo/bin/uv" "$INSTALL_DIR/deployed_sups/BU/venv/bin/uvx" || true
+    fi
     
     deactivate
     
@@ -186,10 +192,20 @@ export DISPLAY=:99
 
 source "\$BU_DIR/venv/bin/activate"
 
+# Add uv to PATH if it exists
+export PATH="\$HOME/.cargo/bin:\$PATH"
+
 # Set environment variables for BU agent
 export OLLAMA_MODEL="\${OLLAMA_MODEL:-llama3.1:8b}"
 
+# Tell browser-use to use firefox
+export BROWSER_USE_BROWSER_TYPE="firefox"
+export PLAYWRIGHT_BROWSERS_PATH="\$BU_DIR/venv"
+
 echo "Starting BU at \$(date) with model: \$OLLAMA_MODEL on display \$DISPLAY" >> "\$LOG_FILE"
+echo "Browser type: firefox" >> "\$LOG_FILE"
+echo "PATH: \$PATH" >> "\$LOG_FILE"
+
 python3 "\$BU_DIR/agent.py" >> "\$LOG_FILE" 2>&1
 
 deactivate

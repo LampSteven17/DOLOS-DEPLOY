@@ -2,7 +2,7 @@
 
 import os
 import asyncio
-from browser_use import Agent, ChatOllama
+from browser_use import Agent, ChatOllama, Browser
 
 # Get model from environment variable (configured by install script)
 model_name = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
@@ -11,11 +11,17 @@ llm = ChatOllama(model=model_name)
 # Simple task - you can modify this
 task = "Search for latest news about AI and summarize the top 3 articles"
 
-# Create agent - browser_use will handle browser configuration
+# Create browser instance with Firefox
+browser = Browser(
+    browser_type="firefox",  # Explicitly use Firefox
+    headless=True,  # Run in headless mode
+)
+
+# Create agent with Firefox browser
 agent = Agent(
     task=task,
     llm=llm,
-    # Browser will be auto-configured based on what's installed
+    browser=browser,
 )
 
 async def main():
