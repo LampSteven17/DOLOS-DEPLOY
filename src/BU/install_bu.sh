@@ -94,7 +94,13 @@ sudo apt-get install -y \
     xfonts-100dpi \
     xfonts-75dpi \
     xfonts-scalable \
-    xfonts-cyrillic
+    xfonts-cyrillic \
+    curl
+
+# Install uv for browser-use dependency management
+log "Installing uv package manager..."
+curl -LsSf https://astral.sh/uv/install.sh | sh || true
+export PATH="$HOME/.cargo/bin:$PATH"
 
 setup_bu() {
     log "Setting up BU deployment with $BU_CONFIG configuration..."
@@ -117,6 +123,11 @@ setup_bu() {
         pandas \
         pillow \
         opencv-python
+    
+    # Install playwright browsers (Firefox works better in headless)
+    log "Installing Playwright Firefox browser..."
+    python3 -m playwright install firefox
+    python3 -m playwright install-deps firefox
     
     deactivate
     

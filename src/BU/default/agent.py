@@ -2,11 +2,17 @@
 
 import os
 import asyncio
-from browser_use import Agent, ChatOllama
+from browser_use import Agent, ChatOllama, BrowserConfig
 
 # Get model from environment variable (configured by install script)
 model_name = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 llm = ChatOllama(model=model_name)
+
+# Configure browser to use Firefox
+browser_config = BrowserConfig(
+    browser_type="firefox",  # Use Firefox instead of default Chromium
+    headless=True,  # Run in headless mode for servers
+)
 
 # Simple task - you can modify this
 task = "Search for latest news about AI and summarize the top 3 articles"
@@ -14,6 +20,7 @@ task = "Search for latest news about AI and summarize the top 3 articles"
 agent = Agent(
     task=task,
     llm=llm,
+    browser_config=browser_config,
 )
 
 async def main():
