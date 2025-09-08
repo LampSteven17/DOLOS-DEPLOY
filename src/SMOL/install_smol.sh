@@ -19,6 +19,7 @@ usage() {
     echo "Usage: $0 [options]"
     echo "Options:"
     echo "  --installpath=PATH    Base installation directory (default: \$HOME)"
+    echo "  --config=CONFIG       SMOL configuration (default|mchp|improved)"
     echo "  --help                Display this help message"
 }
 
@@ -36,11 +37,15 @@ warning() {
 
 INSTALL_DIR="$HOME"
 USER_NAME="$USER"
+SMOL_CONFIG="default"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --installpath=*)
             INSTALL_DIR="${1#*=}"
+            ;;
+        --config=*)
+            SMOL_CONFIG="${1#*=}"
             ;;
         --help)
             usage
@@ -54,6 +59,18 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+# Validate configuration
+case $SMOL_CONFIG in
+    default|mchp|improved)
+        log "Using SMOL configuration: $SMOL_CONFIG"
+        ;;
+    *)
+        error "Invalid SMOL configuration: $SMOL_CONFIG"
+        error "Valid options are: default, mchp, improved"
+        exit 1
+        ;;
+esac
 
 log "SMOL will be installed at: $INSTALL_DIR"
 
@@ -73,8 +90,8 @@ sudo apt-get install -y \
     python3-dev \
     build-essential
 
-setup_default() {
-    log "Setting up default SMOL deployment..."
+setup_smol() {
+    log "Setting up SMOL deployment with $SMOL_CONFIG configuration..."
     
     log "Creating Python virtual environment..."
     python3 -m venv "$INSTALL_DIR/deployed_sups/SMOL/venv"
@@ -95,18 +112,32 @@ setup_default() {
     
     deactivate
     
-    if [ -d "$SCRIPT_DIR/default" ]; then
-        log "Copying default SMOL agent files..."
-        cp -r "$SCRIPT_DIR/default"/* "$INSTALL_DIR/deployed_sups/SMOL/"
+    # Copy agent files based on configuration
+    local config_dir=""
+    case $SMOL_CONFIG in
+        default)
+            config_dir="default"
+            ;;
+        mchp)
+            config_dir="mchp-like"
+            ;;
+        improved)
+            config_dir="PHASE-improved"
+            ;;
+    esac
+    
+    if [ -d "$SCRIPT_DIR/$config_dir" ]; then
+        log "Copying $SMOL_CONFIG SMOL agent files from $config_dir..."
+        cp -r "$SCRIPT_DIR/$config_dir"/* "$INSTALL_DIR/deployed_sups/SMOL/"
     else
-        error "default directory not found"
+        error "$config_dir directory not found"
         return 1
     fi
     
     create_run_script
     create_systemd_service
     
-    success "Default SMOL setup complete"
+    success "$SMOL_CONFIG SMOL setup complete"
 }
 
 create_run_script() {
@@ -181,11 +212,11 @@ success() {
 main() {
     log "Starting SMOL installation..."
     
-    setup_default
+    setup_smol
     
     success "Installation complete!"
     echo ""
-    echo "SMOL installed at: $INSTALL_DIR/deployed_sups/SMOL"
+    echo "SMOL ($SMOL_CONFIG configuration) installed at: $INSTALL_DIR/deployed_sups/SMOL"
     echo ""
     if sudo systemctl is-active --quiet smol.service; then
         echo "SMOL service is currently: ${GREEN}RUNNING${NC}"
