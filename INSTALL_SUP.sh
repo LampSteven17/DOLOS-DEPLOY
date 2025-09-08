@@ -4,6 +4,10 @@
 
 set -e
 
+# Configuration: Default model for SMOL agents (can be modified by user)
+# Examples: llama2, mistral, qwen2.5:7b, codellama, phi, llama3:8b
+DEFAULT_OLLAMA_MODEL="${DEFAULT_OLLAMA_MODEL:-llama3:8b}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
@@ -69,6 +73,19 @@ case $1 in
         
         echo "Installing SMOL with $SMOL_CONFIG configuration..."
         
+        # Install Ollama for SMOL agents (local model support)
+        echo "Setting up Ollama for local model support with model: $DEFAULT_OLLAMA_MODEL"
+        if [ -f "$SCRIPT_DIR/src/install_scripts/install_ollama.sh" ]; then
+            chmod +x "$SCRIPT_DIR/src/install_scripts/install_ollama.sh"
+            # Use configured model for SMOL agents
+            export OLLAMA_MODELS="$DEFAULT_OLLAMA_MODEL"
+            "$SCRIPT_DIR/src/install_scripts/install_ollama.sh"
+        else
+            echo "Error: install_ollama.sh not found at $SCRIPT_DIR/src/install_scripts/"
+            exit 1
+        fi
+        
+        # Install SMOL agent
         if [ -f "$SCRIPT_DIR/src/SMOL/install_smol.sh" ]; then
             cd "$SCRIPT_DIR/src/SMOL"
             chmod +x install_smol.sh
