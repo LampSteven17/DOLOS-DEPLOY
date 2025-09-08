@@ -19,7 +19,7 @@ MIN_ACTION_DELAY = 1  # Minimum delay for actions (seconds)
 MAX_ACTION_DELAY = 20  # Maximum delay for actions (seconds)
 
 # Initialize with LiteLLM - can use local models or API-based models
-model_id = os.getenv("LITELLM_MODEL", "ollama/llama2")  # Default to local Ollama model
+model_id = os.getenv("LITELLM_MODEL", "ollama/llama3")  # Default to local Ollama model
 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Initializing SMOL Agent with model: {model_id}")
 
 try:

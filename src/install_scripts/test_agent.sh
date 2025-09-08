@@ -34,13 +34,14 @@ usage() {
     echo "Usage: $0 --agent=AGENT_TYPE --path=INSTALL_PATH"
     echo ""
     echo "Options:"
-    echo "  --agent=TYPE      Agent type to test (MCHP or SMOL)"
+    echo "  --agent=TYPE      Agent type to test (MCHP, SMOL, or BU)"
     echo "  --path=PATH       Base installation directory"
     echo "  --help            Display this help message"
     echo ""
     echo "Examples:"
     echo "  $0 --agent=MCHP --path=/home/user/DOLOS-DEPLOY"
     echo "  $0 --agent=SMOL --path=/home/user/DOLOS-DEPLOY"
+    echo "  $0 --agent=BU --path=/home/user/DOLOS-DEPLOY"
 }
 
 # Parse arguments
@@ -95,9 +96,15 @@ case $AGENT_TYPE in
         MAIN_SCRIPT="$AGENT_DIR/agent.py"
         SERVICE_NAME="smol"
         ;;
+    BU)
+        AGENT_DIR="$INSTALL_PATH/deployed_sups/BU"
+        RUN_SCRIPT="$AGENT_DIR/run_bu.sh"
+        MAIN_SCRIPT="$AGENT_DIR/agent.py"
+        SERVICE_NAME="bu"
+        ;;
     *)
         error "Unknown agent type: $AGENT_TYPE"
-        echo "Valid options: MCHP, SMOL"
+        echo "Valid options: MCHP, SMOL, BU"
         exit 1
         ;;
 esac
@@ -180,6 +187,26 @@ except ImportError as e:
     print(f'ERROR: Missing dependency - {e}')
     sys.exit(1)
 " 2>&1)
+elif [ "$AGENT_TYPE" = "BU" ]; then
+    # Test BU dependencies  
+    TEST_RESULT=$(cd "$AGENT_DIR" && source venv/bin/activate && python3 -c "
+import sys
+try:
+    import browser_use
+    print('✓ browser_use imported successfully')
+    import selenium
+    print('✓ selenium imported successfully')
+    import playwright
+    print('✓ playwright imported successfully')
+    import pyautogui
+    print('✓ pyautogui imported successfully')
+    import requests
+    print('✓ requests imported successfully')
+    print('SUCCESS: All BU dependencies available')
+except ImportError as e:
+    print(f'ERROR: Missing dependency - {e}')
+    sys.exit(1)
+" 2>&1)
 else
     # Test MCHP dependencies  
     TEST_RESULT=$(cd "$AGENT_DIR" && source venv/bin/activate && python3 -c "
@@ -232,8 +259,8 @@ fi
 
 success "Runtime test passed (script started without immediate errors)"
 
-# Test 7: Ollama connection for SMOL agents
-if [ "$AGENT_TYPE" = "SMOL" ]; then
+# Test 7: Ollama connection for SMOL and BU agents
+if [ "$AGENT_TYPE" = "SMOL" ] || [ "$AGENT_TYPE" = "BU" ]; then
     log "Test 7: Testing Ollama connection..."
     if command -v ollama >/dev/null 2>&1; then
         if ollama list >/dev/null 2>&1; then

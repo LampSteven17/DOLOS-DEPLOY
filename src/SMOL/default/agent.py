@@ -4,7 +4,7 @@ from smolagents import CodeAgent, LiteLLMModel, DuckDuckGoSearchTool
 import os
 
 # Initialize with LiteLLM
-model_id = os.getenv("LITELLM_MODEL", "ollama/llama2")
+model_id = os.getenv("LITELLM_MODEL", "ollama/llama3")
 model = LiteLLMModel(model_id=model_id)
 
 # Create agent
