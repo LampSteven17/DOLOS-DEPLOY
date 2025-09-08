@@ -126,9 +126,9 @@ setup_default() {
     
     deactivate
     
-    if [ -d "$SCRIPT_DIR/DEFAULT/pyhuman" ]; then
+    if [ -d "$SCRIPT_DIR/default/pyhuman" ]; then
         log "Copying DEFAULT pyhuman files..."
-        cp -r "$SCRIPT_DIR/DEFAULT/pyhuman" "$INSTALL_DIR/deployed_sups/MCHP/"
+        cp -r "$SCRIPT_DIR/default/pyhuman" "$INSTALL_DIR/deployed_sups/MCHP/"
     elif [ -d "$SCRIPT_DIR/pyhuman" ]; then
         log "Using base pyhuman files..."
         cp -r "$SCRIPT_DIR/pyhuman" "$INSTALL_DIR/deployed_sups/MCHP/"
