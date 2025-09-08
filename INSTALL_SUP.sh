@@ -403,6 +403,7 @@ After=network.target
 Type=simple
 User=$USER
 WorkingDirectory=$SCRIPT_DIR/deployed_sups/BU
+Environment="DISPLAY=:99"
 ExecStart=/bin/bash $SCRIPT_DIR/deployed_sups/BU/run_bu.sh
 Restart=always
 RestartSec=5s

@@ -88,7 +88,13 @@ sudo apt-get install -y \
     python3-pip \
     python3-venv \
     python3-dev \
-    build-essential
+    build-essential \
+    xvfb \
+    x11-utils \
+    xfonts-100dpi \
+    xfonts-75dpi \
+    xfonts-scalable \
+    xfonts-cyrillic
 
 setup_bu() {
     log "Setting up BU deployment with $BU_CONFIG configuration..."
@@ -150,18 +156,29 @@ create_run_script() {
     
     cat > "$run_script" << EOF
 #!/bin/bash
-# BU Default Run Script
+# BU Default Run Script with Xvfb support
 
 BU_DIR="$INSTALL_DIR/deployed_sups/BU"
 LOG_FILE="\$BU_DIR/logs/bu_\$(date '+%Y-%m-%d_%H-%M-%S').log"
 
 cd "\$BU_DIR"
+
+# Start Xvfb on display :99 if not already running
+if ! pgrep -x "Xvfb" > /dev/null; then
+    echo "Starting Xvfb virtual display..." >> "\$LOG_FILE"
+    Xvfb :99 -screen 0 1920x1080x24 > /dev/null 2>&1 &
+    sleep 2
+fi
+
+# Set display for headless operation
+export DISPLAY=:99
+
 source "\$BU_DIR/venv/bin/activate"
 
 # Set environment variables for BU agent
 export OLLAMA_MODEL="\${OLLAMA_MODEL:-llama3.1:8b}"
 
-echo "Starting BU at \$(date) with model: \$OLLAMA_MODEL" >> "\$LOG_FILE"
+echo "Starting BU at \$(date) with model: \$OLLAMA_MODEL on display \$DISPLAY" >> "\$LOG_FILE"
 python3 "\$BU_DIR/agent.py" >> "\$LOG_FILE" 2>&1
 
 deactivate
