@@ -215,6 +215,72 @@ case $1 in
                 log_error "test_agent.sh not found at $SCRIPT_DIR/src/install_scripts/"
                 exit 1
             fi
+            
+            # Create and start systemd service after testing passes
+            log "Creating systemd service for SMOL..."
+            cd "$SCRIPT_DIR/src/SMOL" || {
+                log_error "Failed to change to SMOL directory"
+                exit 1
+            }
+            
+            # Create service file
+            sudo tee /etc/systemd/system/smol.service > /dev/null << EOF
+[Unit]
+Description=SMOL Agents Service
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$SCRIPT_DIR/deployed_sups/SMOL
+ExecStart=/bin/bash $SCRIPT_DIR/deployed_sups/SMOL/run_smol.sh
+Restart=always
+RestartSec=5s
+StandardOutput=append:$SCRIPT_DIR/deployed_sups/SMOL/logs/smol_systemd.log
+StandardError=append:$SCRIPT_DIR/deployed_sups/SMOL/logs/smol_systemd_error.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            
+            sudo systemctl daemon-reload
+            sudo systemctl enable smol.service
+            log "SMOL service enabled"
+            
+            log "Starting SMOL service..."
+            sudo systemctl start smol.service
+            
+            sleep 2
+            if sudo systemctl is-active --quiet smol.service; then
+                log "SMOL service started successfully"
+                
+                echo ""
+                echo -e "${GREEN}================================${NC}"
+                echo -e "${GREEN}   SMOL INSTALLATION COMPLETE!${NC}"
+                echo -e "${GREEN}================================${NC}"
+                echo ""
+                echo "SMOL ($SMOL_CONFIG configuration) is now running"
+                echo ""
+                echo "Installation Details:"
+                echo "  • Agent Type: SMOL ($SMOL_CONFIG)"
+                echo "  • Installation Path: $SCRIPT_DIR/deployed_sups/SMOL"
+                echo "  • Service Status: RUNNING"
+                echo ""
+                echo "Service Management:"
+                echo "  • Status: sudo systemctl status smol"
+                echo "  • Stop: sudo systemctl stop smol"
+                echo "  • Start: sudo systemctl start smol"
+                echo "  • Restart: sudo systemctl restart smol"
+                echo "  • Logs: sudo journalctl -u smol -f"
+                echo ""
+                echo "Manual Testing:"
+                echo "  • Run directly: $SCRIPT_DIR/deployed_sups/SMOL/run_smol.sh"
+                echo "  • View logs: tail -f $SCRIPT_DIR/deployed_sups/SMOL/logs/*.log"
+                echo ""
+            else
+                log_error "SMOL service failed to start. Check logs with: sudo systemctl status smol"
+                exit 1
+            fi
         else
             log_error "install_smol.sh not found at $SCRIPT_DIR/src/SMOL/"
             exit 1

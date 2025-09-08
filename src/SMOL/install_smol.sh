@@ -142,7 +142,6 @@ setup_smol() {
     fi
     
     create_run_script
-    create_systemd_service
     
     success "$SMOL_CONFIG SMOL setup complete"
 }
@@ -225,20 +224,11 @@ main() {
     echo ""
     echo "SMOL ($SMOL_CONFIG configuration) installed at: $INSTALL_DIR/deployed_sups/SMOL"
     echo ""
-    if sudo systemctl is-active --quiet smol.service; then
-        echo "SMOL service is currently: ${GREEN}RUNNING${NC}"
-    else
-        echo "SMOL service is currently: ${RED}STOPPED${NC}"
-    fi
+    echo "Next steps:"
+    echo "  • Agent files are ready for testing and systemd service creation"
+    echo "  • Manual run: $INSTALL_DIR/deployed_sups/SMOL/run_smol.sh"
+    echo "  • Logs will be at: $INSTALL_DIR/deployed_sups/SMOL/logs/"
     echo ""
-    echo "Service commands:"
-    echo "  Status: sudo systemctl status smol"
-    echo "  Stop: sudo systemctl stop smol"
-    echo "  Start: sudo systemctl start smol"
-    echo "  Restart: sudo systemctl restart smol"
-    echo ""
-    echo "Manual run: $INSTALL_DIR/deployed_sups/SMOL/run_smol.sh"
-    echo "Logs: $INSTALL_DIR/deployed_sups/SMOL/logs/"
 }
 
 main
