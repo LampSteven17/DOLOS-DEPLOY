@@ -124,10 +124,10 @@ setup_bu() {
         pillow \
         opencv-python
     
-    # Install playwright browsers (Firefox works better in headless)
-    log "Installing Playwright Firefox browser..."
-    python3 -m playwright install firefox
-    python3 -m playwright install-deps firefox
+    # Install playwright browsers (both for compatibility)
+    log "Installing Playwright browsers..."
+    python3 -m playwright install chromium firefox
+    python3 -m playwright install-deps chromium firefox
     
     deactivate
     
