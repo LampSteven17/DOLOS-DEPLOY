@@ -108,7 +108,8 @@ setup_smol() {
         datasets \
         numpy \
         pandas \
-        requests
+        requests \
+        ddgs
     
     deactivate
     

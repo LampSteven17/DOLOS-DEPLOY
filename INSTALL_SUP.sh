@@ -104,6 +104,19 @@ case $1 in
                 exit 1
             }
             log "MCHP installation completed successfully"
+            
+            # Test MCHP installation
+            log "Testing MCHP installation..."
+            if [ -f "$SCRIPT_DIR/src/install_scripts/test_agent.sh" ]; then
+                chmod +x "$SCRIPT_DIR/src/install_scripts/test_agent.sh"
+                "$SCRIPT_DIR/src/install_scripts/test_agent.sh" --agent=MCHP --path="$SCRIPT_DIR" || {
+                    log_error "MCHP installation test failed"
+                    exit 1
+                }
+            else
+                log_error "test_agent.sh not found at $SCRIPT_DIR/src/install_scripts/"
+                exit 1
+            fi
         else
             log_error "install_mchp.sh not found at $SCRIPT_DIR/src/MCHP/"
             exit 1
@@ -189,6 +202,19 @@ case $1 in
                 exit 1
             }
             log "SMOL installation completed successfully"
+            
+            # Test SMOL installation  
+            log "Testing SMOL installation..."
+            if [ -f "$SCRIPT_DIR/src/install_scripts/test_agent.sh" ]; then
+                chmod +x "$SCRIPT_DIR/src/install_scripts/test_agent.sh"
+                "$SCRIPT_DIR/src/install_scripts/test_agent.sh" --agent=SMOL --path="$SCRIPT_DIR" || {
+                    log_error "SMOL installation test failed"
+                    exit 1
+                }
+            else
+                log_error "test_agent.sh not found at $SCRIPT_DIR/src/install_scripts/"
+                exit 1
+            fi
         else
             log_error "install_smol.sh not found at $SCRIPT_DIR/src/SMOL/"
             exit 1
