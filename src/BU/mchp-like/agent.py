@@ -185,10 +185,20 @@ async def main():
     
     browser = None
     try:
-        # Create browser instance with headless mode
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Initializing browser...")
-        browser = Browser(headless=True)
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Browser created successfully")
+        # Create browser instance with headless mode using Chromium
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Initializing Chromium browser...")
+        browser = Browser(
+            headless=True,
+            channel="chromium",  # Explicitly use Chromium
+            disable_security=False,
+            keep_alive=True,
+            wait_between_actions=0.5,  # Small delay between actions
+            minimum_wait_page_load_time=1,  # Wait for page loads
+            wait_for_network_idle_page_load_time=2,
+            chromium_sandbox=True,  # Enable sandbox for security
+            args=["--no-sandbox", "--disable-dev-shm-usage"]  # Common Chromium args for containers
+        )
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Chromium browser created successfully")
         
         while True:
             iteration += 1

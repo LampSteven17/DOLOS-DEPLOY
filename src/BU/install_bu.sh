@@ -128,10 +128,10 @@ setup_bu() {
         pillow \
         opencv-python
     
-    # Install playwright browsers - Firefox only
-    log "Installing Playwright Firefox browser..."
-    python3 -m playwright install firefox
-    python3 -m playwright install-deps firefox
+    # Install playwright browsers - Chromium only
+    log "Installing Playwright Chromium browser..."
+    python3 -m playwright install chromium
+    python3 -m playwright install-deps chromium
     
     # Create symlink for uvx if uv is installed
     if [ -f "$HOME/.cargo/bin/uv" ]; then
@@ -203,12 +203,12 @@ export PATH="\$HOME/.cargo/bin:\$PATH"
 # Use the model passed from INSTALL_SUP.sh or default
 export OLLAMA_MODEL="\${OLLAMA_MODEL:-${OLLAMA_MODEL_DEFAULT:-llama3:8b}}"
 
-# Tell browser-use to use firefox
-export BROWSER_USE_BROWSER_TYPE="firefox"
+# Tell browser-use to use chromium
+export BROWSER_USE_BROWSER_TYPE="chromium"
 export PLAYWRIGHT_BROWSERS_PATH="\$BU_DIR/venv"
 
 echo "Starting BU at \$(date) with model: \$OLLAMA_MODEL on display \$DISPLAY" >> "\$LOG_FILE"
-echo "Browser type: firefox" >> "\$LOG_FILE"
+echo "Browser type: chromium" >> "\$LOG_FILE"
 echo "PATH: \$PATH" >> "\$LOG_FILE"
 
 python3 "\$BU_DIR/agent.py" >> "\$LOG_FILE" 2>&1
