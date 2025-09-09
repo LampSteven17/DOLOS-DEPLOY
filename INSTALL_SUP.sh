@@ -123,6 +123,17 @@ case $1 in
                 log_error "test_agent.sh not found at $SCRIPT_DIR/src/install_scripts/"
                 exit 1
             fi
+            
+            # Start MCHP systemd service after tests pass
+            log "Starting MCHP systemd service..."
+            sudo systemctl start mchp.service
+            
+            sleep 2
+            if sudo systemctl is-active --quiet mchp.service; then
+                log "MCHP service started successfully"
+            else
+                log_error "MCHP service failed to start. Check logs with: sudo systemctl status mchp"
+            fi
         else
             log_error "install_mchp.sh not found at $SCRIPT_DIR/src/MCHP/"
             exit 1

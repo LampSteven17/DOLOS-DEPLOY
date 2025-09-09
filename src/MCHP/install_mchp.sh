@@ -197,15 +197,7 @@ EOF
     
     log "Service mchp enabled"
     
-    log "Starting mchp service..."
-    sudo systemctl start mchp.service
-    
-    sleep 2
-    if sudo systemctl is-active --quiet mchp.service; then
-        success "MCHP service started successfully"
-    else
-        warning "MCHP service failed to start. Check logs with: sudo systemctl status mchp"
-    fi
+    log "Service will be started after testing passes"
 }
 
 success() {

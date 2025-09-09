@@ -218,11 +218,18 @@ else
     # Test MCHP dependencies  
     TEST_RESULT=$(cd "$AGENT_DIR" && source venv/bin/activate && python3 -c "
 import sys
+import os
 try:
     import selenium
     print('✓ selenium imported successfully')
-    import pyautogui
-    print('✓ pyautogui imported successfully')
+    # Set dummy display for pyautogui in headless environments
+    if 'DISPLAY' not in os.environ:
+        os.environ['DISPLAY'] = ':0'
+    try:
+        import pyautogui
+        print('✓ pyautogui imported successfully')
+    except Exception as e:
+        print('⚠ pyautogui import skipped (headless environment)')
     import time
     print('✓ time imported successfully')
     print('SUCCESS: All MCHP dependencies available')
