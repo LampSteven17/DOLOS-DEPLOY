@@ -10,7 +10,8 @@ import time
 import random
 import sys
 from datetime import datetime
-from browser_use import Agent, ChatOllama, Browser
+from browser_use import Agent, ChatOllama
+from browser_use.browser.session import BrowserSession
 
 # Configuration (matching MCHP parameters)
 TASK_CLUSTER_COUNT = 5  # Number of tasks to perform in a cluster
@@ -102,14 +103,14 @@ def random_delay(min_delay=MIN_ACTION_DELAY, max_delay=MAX_ACTION_DELAY):
     time.sleep(delay)
     return delay
 
-async def perform_browser_task(browser, task):
+async def perform_browser_task(browser_session, task):
     """Execute a single browser task"""
     try:
         # Create agent for this task
         agent = Agent(
             task=task,
             llm=llm,
-            browser=browser,
+            browser_session=browser_session,
         )
         
         # Run the task with limited steps
@@ -125,7 +126,7 @@ async def perform_browser_task(browser, task):
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] Task failed: {e}")
         return None
 
-async def perform_task_cluster(browser):
+async def perform_task_cluster(browser_session):
     """Perform a cluster of browser tasks (MCHP-style grouping)"""
     cluster_size = min(TASK_CLUSTER_COUNT, len(browser_tasks))
     selected_tasks = random.sample(browser_tasks, cluster_size)
@@ -142,7 +143,7 @@ async def perform_task_cluster(browser):
             
             # Execute the browser task
             start_time = time.time()
-            result = await perform_browser_task(browser, task)
+            result = await perform_browser_task(browser_session, task)
             execution_time = time.time() - start_time
             
             if result:
@@ -183,22 +184,22 @@ async def main():
     
     iteration = 0
     
-    browser = None
+    browser_session = None
     try:
-        # Create browser instance with headless mode using Chromium
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Initializing Chromium browser...")
-        browser = Browser(
+        # Create browser session with proper configuration for containers
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Initializing Chromium browser session...")
+        browser_session = BrowserSession(
             headless=True,
-            channel="chromium",  # Explicitly use Chromium
-            disable_security=False,
-            keep_alive=True,
-            wait_between_actions=0.5,  # Small delay between actions
-            minimum_wait_page_load_time=1,  # Wait for page loads
-            wait_for_network_idle_page_load_time=2,
-            chromium_sandbox=True,  # Enable sandbox for security
-            args=["--no-sandbox", "--disable-dev-shm-usage"]  # Common Chromium args for containers
+            channel="chromium",  # Use Chromium
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-extensions',
+                '--disable-gpu'
+            ]
         )
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Chromium browser created successfully")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Chromium browser session created successfully")
         
         while True:
             iteration += 1
@@ -207,7 +208,7 @@ async def main():
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {'='*60}")
             
             # Perform a cluster of browser tasks
-            await perform_task_cluster(browser)
+            await perform_task_cluster(browser_session)
             
             # Wait before next cluster (MCHP grouping interval)
             # Add some randomness to avoid patterns
@@ -241,10 +242,10 @@ async def main():
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Agent terminated unexpectedly")
         sys.exit(1)
     finally:
-        if browser:
+        if browser_session:
             try:
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Closing browser...")
-                # Browser cleanup if needed
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Closing browser session...")
+                # Browser session cleanup if needed
             except:
                 pass
 

@@ -2,7 +2,8 @@
 
 import os
 import asyncio
-from browser_use import Agent, ChatOllama, Browser
+from browser_use import Agent, ChatOllama
+from browser_use.browser.session import BrowserSession
 
 # Get model from environment variable (configured by install script)
 model_name = os.getenv("OLLAMA_MODEL", "llama3:8b")
@@ -16,24 +17,24 @@ async def main():
     print(f"Task: {task}")
     
     try:
-        # Create browser instance with headless mode using Chromium
-        browser = Browser(
+        # Create browser session with proper configuration for containers
+        browser_session = BrowserSession(
             headless=True,
-            channel="chromium",  # Explicitly use Chromium
-            disable_security=False,
-            keep_alive=True,
-            wait_between_actions=0.5,  # Small delay between actions
-            minimum_wait_page_load_time=1,  # Wait for page loads
-            wait_for_network_idle_page_load_time=2,
-            chromium_sandbox=True,  # Enable sandbox for security
-            args=["--no-sandbox", "--disable-dev-shm-usage"]  # Common Chromium args for containers
+            channel="chromium",  # Use Chromium
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-extensions',
+                '--disable-gpu'
+            ]
         )
         
         # Create agent
         agent = Agent(
             task=task,
             llm=llm,
-            browser=browser,
+            browser_session=browser_session,
         )
         
         # Run the agent
