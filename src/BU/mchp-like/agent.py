@@ -115,6 +115,12 @@ async def perform_browser_task(browser, task):
         # Run the task with limited steps
         result = await agent.run(max_steps=5)
         return result
+    except asyncio.TimeoutError:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] Task timed out")
+        return None
+    except ConnectionError as e:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] Browser connection error: {e}")
+        return None
     except Exception as e:
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] Task failed: {e}")
         return None
@@ -178,39 +184,40 @@ async def main():
     iteration = 0
     
     try:
-        # Create browser instance with headless mode
+        # Create browser instance with headless mode using async context manager
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Initializing browser...")
-        browser = Browser(headless=True)
-        
-        while True:
-            iteration += 1
-            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {'='*60}")
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting iteration {iteration}")
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {'='*60}")
+        async with Browser(headless=True) as browser:
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Browser connected successfully")
             
-            # Perform a cluster of browser tasks
-            await perform_task_cluster(browser)
-            
-            # Wait before next cluster (MCHP grouping interval)
-            # Add some randomness to avoid patterns
-            wait_variance = random.uniform(0.8, 1.2)
-            wait_time = GROUPING_INTERVAL * wait_variance
-            
-            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Entering idle period")
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Delay] Waiting {wait_time:.0f}s ({wait_time/60:.1f} minutes) before next cluster")
-            
-            # Break the wait into smaller chunks for responsiveness
-            wait_chunks = int(wait_time / 30)  # 30-second chunks
-            for chunk in range(wait_chunks):
-                await asyncio.sleep(30)
-                remaining = wait_time - (chunk + 1) * 30
-                if remaining > 30 and chunk % 4 == 3:  # Every 2 minutes
-                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Status] {remaining:.0f}s remaining...")
-            
-            # Sleep remainder
-            remainder = wait_time % 30
-            if remainder > 0:
-                await asyncio.sleep(remainder)
+            while True:
+                iteration += 1
+                print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {'='*60}")
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting iteration {iteration}")
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {'='*60}")
+                
+                # Perform a cluster of browser tasks
+                await perform_task_cluster(browser)
+                
+                # Wait before next cluster (MCHP grouping interval)
+                # Add some randomness to avoid patterns
+                wait_variance = random.uniform(0.8, 1.2)
+                wait_time = GROUPING_INTERVAL * wait_variance
+                
+                print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Entering idle period")
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Delay] Waiting {wait_time:.0f}s ({wait_time/60:.1f} minutes) before next cluster")
+                
+                # Break the wait into smaller chunks for responsiveness
+                wait_chunks = int(wait_time / 30)  # 30-second chunks
+                for chunk in range(wait_chunks):
+                    await asyncio.sleep(30)
+                    remaining = wait_time - (chunk + 1) * 30
+                    if remaining > 30 and chunk % 4 == 3:  # Every 2 minutes
+                        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Status] {remaining:.0f}s remaining...")
+                
+                # Sleep remainder
+                remainder = wait_time % 30
+                if remainder > 0:
+                    await asyncio.sleep(remainder)
                 
     except KeyboardInterrupt:
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Agent stopped by user")
