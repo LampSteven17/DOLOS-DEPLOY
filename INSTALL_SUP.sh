@@ -65,20 +65,20 @@ log_error() {
 usage() {
     echo "Usage: $0 --mchp"
     echo "       $0 --smol --default [--model=MODEL]"
-    echo "       $0 --smol --mchp [--model=MODEL]"
+    echo "       $0 --smol --mchp-like [--model=MODEL]"
     echo "       $0 --smol --improved [--model=MODEL]"
     echo "       $0 --bu --default [--model=MODEL]"
-    echo "       $0 --bu --mchp [--model=MODEL]"
+    echo "       $0 --bu --mchp-like [--model=MODEL]"
     echo "       $0 --bu --improved [--model=MODEL]"
     echo "       $0 --help"
     echo ""
     echo "Options:"
     echo "  --mchp                    Install MCHP (Human simulation)"
     echo "  --smol --default          Install SMOL agent with basic configuration"
-    echo "  --smol --mchp             Install SMOL agent with MCHP-like behavior patterns"
+    echo "  --smol --mchp-like        Install SMOL agent with MCHP-like behavior patterns"
     echo "  --smol --improved         Install SMOL agent with PHASE-improved configuration"
     echo "  --bu --default            Install BU (Browser Use) agent with basic configuration"
-    echo "  --bu --mchp               Install BU (Browser Use) agent with MCHP-like behavior patterns"
+    echo "  --bu --mchp-like          Install BU (Browser Use) agent with MCHP-like behavior patterns"
     echo "  --bu --improved           Install BU (Browser Use) agent with PHASE-improved configuration"
     echo "  --model=MODEL             Override default model for SMOL and BU installations"
     echo "                            (e.g., --model=qwen2.5:7b, --model=mistral)"
@@ -136,7 +136,7 @@ case $1 in
                 --default)
                     SMOL_CONFIG="default"
                     ;;
-                --mchp)
+                --mchp-like)
                     SMOL_CONFIG="mchp"
                     ;;
                 --improved)
@@ -144,7 +144,7 @@ case $1 in
                     ;;
                 *)
                     log_error "Invalid SMOL configuration '$2'"
-                    echo "Valid options are: --default, --mchp, --improved"
+                    echo "Valid options are: --default, --mchp-like, --improved"
                     usage
                     exit 1
                     ;;
@@ -163,7 +163,7 @@ case $1 in
             fi
         else
             log_error "SMOL configuration required"
-            echo "Please specify one of: --default, --mchp, --improved"
+            echo "Please specify one of: --default, --mchp-like, --improved"
             usage
             exit 1
         fi
@@ -300,7 +300,7 @@ EOF
                 --default)
                     BU_CONFIG="default"
                     ;;
-                --mchp)
+                --mchp-like)
                     BU_CONFIG="mchp"
                     ;;
                 --improved)
@@ -308,7 +308,7 @@ EOF
                     ;;
                 *)
                     log_error "Invalid BU configuration '$2'"
-                    echo "Valid options are: --default, --mchp, --improved"
+                    echo "Valid options are: --default, --mchp-like, --improved"
                     usage
                     exit 1
                     ;;
@@ -327,7 +327,7 @@ EOF
             fi
         else
             log_error "BU configuration required"
-            echo "Please specify one of: --default, --mchp, --improved"
+            echo "Please specify one of: --default, --mchp-like, --improved"
             usage
             exit 1
         fi

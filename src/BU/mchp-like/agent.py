@@ -116,7 +116,7 @@ async def perform_browser_task(browser, task):
         result = await agent.run(max_steps=5)
         return result
     except Exception as e:
-        print(f"  [ERROR] Task failed: {e}")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] Task failed: {e}")
         return None
 
 async def perform_task_cluster(browser):
@@ -128,11 +128,11 @@ async def perform_task_cluster(browser):
     
     for i, task in enumerate(selected_tasks, 1):
         try:
-            print(f"\n[Task {i}/{cluster_size}] {task}")
+            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Task {i}/{cluster_size}] {task}")
             
             # Add random pre-task delay (simulating reading/thinking)
             pre_delay = random_delay(2, 5)
-            print(f"  [Delay] Pre-task delay: {pre_delay:.1f}s")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Delay] Pre-task delay: {pre_delay:.1f}s")
             
             # Execute the browser task
             start_time = time.time()
@@ -144,23 +144,23 @@ async def perform_task_cluster(browser):
                 result_str = str(result)
                 if len(result_str) > 200:
                     result_str = result_str[:200] + "..."
-                print(f"  [Result] Task completed")
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Result] Task completed")
             else:
-                print(f"  [Result] Task failed or timed out")
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Result] Task failed or timed out")
                 
-            print(f"  [Time] Task took {execution_time:.1f}s")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Time] Task took {execution_time:.1f}s")
             
             # Inter-task delay within cluster
             if i < cluster_size:
                 inter_delay = random.uniform(TASK_INTERVAL - 5, TASK_INTERVAL + 5)
-                print(f"  [Delay] Waiting {inter_delay:.1f}s before next task")
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Delay] Waiting {inter_delay:.1f}s before next task")
                 time.sleep(inter_delay)
                 
         except KeyboardInterrupt:
             raise
         except Exception as e:
-            print(f"  [ERROR] Unexpected error: {e}")
-            print(f"  [Recovery] Waiting 5 seconds before continuing")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] Unexpected error: {e}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Recovery] Waiting 5 seconds before continuing")
             time.sleep(5)
             continue
     
@@ -169,11 +169,11 @@ async def perform_task_cluster(browser):
 async def main():
     """Main loop with MCHP-like browser behavior"""
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] BU Agent starting with MCHP behavior patterns")
-    print(f"Configuration:")
-    print(f"  - Tasks per cluster: {TASK_CLUSTER_COUNT}")
-    print(f"  - Task interval: {TASK_INTERVAL}s")
-    print(f"  - Cluster interval: {GROUPING_INTERVAL}s")
-    print(f"  - Model: {model_name}")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Configuration:")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]   - Tasks per cluster: {TASK_CLUSTER_COUNT}")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]   - Task interval: {TASK_INTERVAL}s")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]   - Cluster interval: {GROUPING_INTERVAL}s")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]   - Model: {model_name}")
     
     iteration = 0
     
@@ -184,9 +184,9 @@ async def main():
         
         while True:
             iteration += 1
-            print(f"\n{'='*60}")
+            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {'='*60}")
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting iteration {iteration}")
-            print(f"{'='*60}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {'='*60}")
             
             # Perform a cluster of browser tasks
             await perform_task_cluster(browser)
@@ -197,7 +197,7 @@ async def main():
             wait_time = GROUPING_INTERVAL * wait_variance
             
             print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Entering idle period")
-            print(f"[Delay] Waiting {wait_time:.0f}s ({wait_time/60:.1f} minutes) before next cluster")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Delay] Waiting {wait_time:.0f}s ({wait_time/60:.1f} minutes) before next cluster")
             
             # Break the wait into smaller chunks for responsiveness
             wait_chunks = int(wait_time / 30)  # 30-second chunks
@@ -205,7 +205,7 @@ async def main():
                 await asyncio.sleep(30)
                 remaining = wait_time - (chunk + 1) * 30
                 if remaining > 30 and chunk % 4 == 3:  # Every 2 minutes
-                    print(f"  [Status] {remaining:.0f}s remaining...")
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Status] {remaining:.0f}s remaining...")
             
             # Sleep remainder
             remainder = wait_time % 30
@@ -214,13 +214,13 @@ async def main():
                 
     except KeyboardInterrupt:
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Agent stopped by user")
-        print("Graceful shutdown completed")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Graceful shutdown completed")
         sys.exit(0)
     except Exception as e:
-        print(f"\n[FATAL ERROR] {e}")
+        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [FATAL ERROR] {e}")
         import traceback
         traceback.print_exc()
-        print("Agent terminated unexpectedly")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Agent terminated unexpectedly")
         sys.exit(1)
 
 if __name__ == "__main__":
