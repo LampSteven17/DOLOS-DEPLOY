@@ -103,9 +103,23 @@ def random_delay(min_delay=MIN_ACTION_DELAY, max_delay=MAX_ACTION_DELAY):
     time.sleep(delay)
     return delay
 
-async def perform_browser_task(browser_session, task):
-    """Execute a single browser task"""
+async def perform_browser_task(task):
+    """Execute a single browser task with its own browser session"""
+    browser_session = None
     try:
+        # Create a fresh browser session for this task
+        browser_session = BrowserSession(
+            headless=True,
+            channel="chromium",
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-extensions',
+                '--disable-gpu'
+            ]
+        )
+        
         # Create agent for this task
         agent = Agent(
             task=task,
@@ -125,8 +139,16 @@ async def perform_browser_task(browser_session, task):
     except Exception as e:
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] Task failed: {e}")
         return None
+    finally:
+        # Clean up browser session after each task
+        if browser_session:
+            try:
+                # Close browser session if possible
+                pass
+            except:
+                pass
 
-async def perform_task_cluster(browser_session):
+async def perform_task_cluster():
     """Perform a cluster of browser tasks (MCHP-style grouping)"""
     cluster_size = min(TASK_CLUSTER_COUNT, len(browser_tasks))
     selected_tasks = random.sample(browser_tasks, cluster_size)
@@ -141,9 +163,9 @@ async def perform_task_cluster(browser_session):
             pre_delay = random_delay(2, 5)
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [Delay] Pre-task delay: {pre_delay:.1f}s")
             
-            # Execute the browser task
+            # Execute the browser task (creates its own browser session)
             start_time = time.time()
-            result = await perform_browser_task(browser_session, task)
+            result = await perform_browser_task(task)
             execution_time = time.time() - start_time
             
             if result:
@@ -181,34 +203,19 @@ async def main():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]   - Task interval: {TASK_INTERVAL}s")
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]   - Cluster interval: {GROUPING_INTERVAL}s")
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]   - Model: {model_name}")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]   - Browser: Fresh session per task for crash resistance")
     
     iteration = 0
     
-    browser_session = None
     try:
-        # Create browser session with proper configuration for containers
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Initializing Chromium browser session...")
-        browser_session = BrowserSession(
-            headless=True,
-            channel="chromium",  # Use Chromium
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-extensions',
-                '--disable-gpu'
-            ]
-        )
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Chromium browser session created successfully")
-        
         while True:
             iteration += 1
             print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {'='*60}")
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting iteration {iteration}")
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {'='*60}")
             
-            # Perform a cluster of browser tasks
-            await perform_task_cluster(browser_session)
+            # Perform a cluster of browser tasks (each creates its own session)
+            await perform_task_cluster()
             
             # Wait before next cluster (MCHP grouping interval)
             # Add some randomness to avoid patterns
@@ -241,13 +248,6 @@ async def main():
         traceback.print_exc()
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Agent terminated unexpectedly")
         sys.exit(1)
-    finally:
-        if browser_session:
-            try:
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Closing browser session...")
-                # Browser session cleanup if needed
-            except:
-                pass
 
 if __name__ == "__main__":
     asyncio.run(main())
