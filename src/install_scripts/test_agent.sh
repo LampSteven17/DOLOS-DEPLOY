@@ -250,7 +250,9 @@ success "Python dependencies test passed"
 
 # Test 5: Syntax check on main script
 log "Test 5: Performing syntax check on main script..."
-SYNTAX_CHECK=$(cd "$AGENT_DIR" && source venv/bin/activate && python3 -m py_compile "$(basename "$MAIN_SCRIPT")" 2>&1) || SYNTAX_EXIT_CODE=$?
+# Get relative path from agent directory
+RELATIVE_SCRIPT=$(realpath --relative-to="$AGENT_DIR" "$MAIN_SCRIPT")
+SYNTAX_CHECK=$(cd "$AGENT_DIR" && source venv/bin/activate && python3 -m py_compile "$RELATIVE_SCRIPT" 2>&1) || SYNTAX_EXIT_CODE=$?
 
 if [ "${SYNTAX_EXIT_CODE:-0}" -ne 0 ]; then
     error "Syntax check failed for $MAIN_SCRIPT:"
@@ -262,7 +264,7 @@ success "Syntax check passed"
 
 # Test 6: Quick runtime test (5 second timeout)
 log "Test 6: Performing quick runtime test (5 seconds)..."
-RUNTIME_TEST=$(cd "$AGENT_DIR" && timeout 5 bash -c "source venv/bin/activate && python3 \"$(basename "$MAIN_SCRIPT")\"" 2>&1 || true)
+RUNTIME_TEST=$(cd "$AGENT_DIR" && timeout 5 bash -c "source venv/bin/activate && python3 \"$RELATIVE_SCRIPT\"" 2>&1 || true)
 
 # Check if it's a timeout (expected) vs actual error
 if [[ $RUNTIME_TEST == *"Traceback"* ]] && [[ $RUNTIME_TEST != *"KeyboardInterrupt"* ]] && [[ $RUNTIME_TEST != *"TimeoutError"* ]]; then
