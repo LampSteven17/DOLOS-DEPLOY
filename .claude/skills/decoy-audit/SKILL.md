@@ -13,7 +13,7 @@ across every DECOY deployment with active state. Routes through
 |---|---|
 | Entry point | `./audit` (default `--decoy`) at RUSE root |
 | Code | `deployment_engine/decoy/audit.py` |
-| Inputs | `deployments/{decoy-*}/runs/{run_id}/inventory.ini`, OpenStack server list, `/mnt/AXES2U1/experiments.json`, per-VM SSH probes |
+| Inputs | `deployments/{decoy-*}/runs/{run_id}/inventory.ini`, OpenStack server list, `/data/axes-mirror/experiments.json`, per-VM SSH probes |
 | Outputs | Terminal summary table + markdown report at `deployments/logs/audit_<timestamp>.md` |
 | Exit code | 0 on no failures, 1 if any check fails |
 
@@ -30,6 +30,12 @@ in parallel.
 Single SSH round trip per VM, executes a bash blob that emits `KEY=value`
 lines for each check. Parsed locally into a probe dict. 20-worker
 ThreadPoolExecutor; 30s timeout per VM.
+
+**`ssh=FAIL` can be a transient probe timeout, not a dead VM** — the 30s
+timeout under the 20-worker fan-out occasionally expires on a healthy VM
+(observed 2026-07-22: controls M0-0 flagged `ssh=FAIL`, VM ACTIVE, up 3
+days, instant manual SSH). Cross-check with a direct `ssh <vm> uptime`
+before diagnosing; only a repeat failure across audits is real.
 
 Probe collects:
 
@@ -112,6 +118,22 @@ NOT total outbound. So `BG=0/N` and `volume=FAIL (≈8/208, ratio ≈0.04)` are
 PERMANENT and EXPECTED on every cptc deploy. The real total-outbound signal
 (`active_opens`, BU browsers 150-170/min) is healthy. Confirmed on
 `decoy-feedback-expctrlsv716-cptc{8,9}-all-rtx` (2026-06-17 fleet audit).
+Targets are preset-dependent: `ragged-ctrls-all_v10.0.5` (2026-07) ships
+cptc9 target 53 (not 185) — still >16/min so cptc9 stays red (ratio
+~0.15), while cptc8 under the same preset mostly clears 0.3 (4/5 BG OK,
+2026-07-22 fleet audit). `ragged-ctrls-all_v11.2.1` (2026-08) ships
+cptc11-zeektx target **2592**/min — the deployed cptc11 fleet
+(2026-08-12, rtx tier) will read BG/volume red PERMANENTLY (ratio
+≈0.006); same artifact, never a fault.
+
+**Fresh-deploy (<~4h) benign patterns (2026-07-22 fleet audit — all
+known self-clearing classes):** volume ratios just under the 0.3 floor
+(0.16-0.27 WARNs) while in-window medians accumulate; scripted_svc /
+persistent_session `0 firings/opens` on VMs that haven't reached their
+active window or band yet (see Svcs / Persistent-svc caveats); and
+neighborhood sidecars hitting only a subset of SUPs in the first hours
+(probe routing is stochastic per-SUP rates). Re-audit after a few
+in-window hours before treating any of these as faults.
 **CAUTION (2026-06-19) — do NOT extend this to "so cptc scores ~0 on the
 model."** That was an OVERSTATEMENT. Whether cptc's exp-model score depends on
 connection VOLUME/rate is an OPEN PHASE QUESTION, not RUSE-verifiable: PHASE's
@@ -139,10 +161,13 @@ lineage (`connection_shape.enabled`); std/controls never emit it. Validated on t
 | Signal (in `[shape]` / `[shape-floor]`) | Healthy | Real fault → action |
 |---|---|---|
 | `[shape-floor] daemon started endpoints=N max_concurrent=80` | present once when `connection_shape.enabled` | absent → floor not wired / empty `endpoint_pool` |
+| floor activity **outside `active_minute_windows`** | **zero new opens — window-gated since 2026-08-14.** The floor previously ran 24/7 (the only always-on channel with no window gate), so every off-window minute was pure idle-floor spend with no shape benefit. It now self-gates on UTC minute-of-day in its own thread (`shape_floor._in_window`, same idiom as psess's `session_opens_per_hour` envelope). Open conns are NOT force-killed at window close — they expire into a graceful FIN (`SF`) | new opens continuing well outside every window → gate not wired |
 | `shaped_share` | settles **~50–65% at T=0.55** (recalibrated 2026-06-29; was ~70–103% at the old T=0.82) in steady minutes; **bouncing 0→150% min-to-min is NORMAL** (closes÷opens offset) | stuck well <40% across MANY high-`active_opens` minutes → floor not opening |
 | `agg_dur_p50` (binding feature) | clears ~0.6× the `/target` in high-share minutes (canary 13–14s @ target 13); **=0 in lean minutes is benign** (offset) | flat ~0 across ALL minutes incl high-share → floor not holding conns |
 | `agg_bytes_p50` | ~target in shaped-heavy minutes | persistently ~128 (TINY) even at high share → sampler dead |
-| `floor_target` | tracks **~1.22×unshaped at T=0.55** (was ~4.56× at T=0.82 — verified on the 06-29 redeploy: active_opens 74→floor_target 75, 21→7); rarely hits the 120 cap now, and doing so is benign (guardrail) | always 0 despite low share + real browsing → deficit calc broken |
+| `floor_target` | tracks **~1.22×unshaped at T=0.55** (was ~4.56× at T=0.82 — verified on the 06-29 redeploy: active_opens 74→floor_target 75, 21→7); rarely hits the 120 cap now, and doing so is benign (guardrail) | always 0 despite low share + real browsing **AND `floor_cap` not binding** → deficit calc broken |
+| `floor_cap=` / `budget=` (NEW 2026-08-14) | `floor_cap` = `max(0, budget − active_opens)`, the connection-budget headroom the floor must fit in; `budget` = conn/min from PHASE `workflow_budget.target_conns_per_hour` (falls back to `target_conn_per_minute_during_active`). `floor_cap=-`/`budget=-` means no budget expressed → uncapped, prior behavior | — |
+| `floor_target=0` **with `floor_cap=0`** (NEW) | **BENIGN + INTENDED** — the SUP is already at/over its connection budget, so the discretionary floor correctly yields. Expect this constantly on budget-constrained axes deploys (`_idle_overrun: true`, e.g. fall24 budget 0.95 conn/min). **Do NOT read it as "floor broken"** — cross-check `floor_cap` before diagnosing a zero `floor_target` | `floor_cap` large but `floor_target` still 0 → real |
 | `wf_complete=c/s` | see the rule below | sag **with socket errors** → T too aggressive |
 | `[WARNING] [shape]` | 0 | present → malformed dist (counts in the Warn column) |
 
@@ -290,7 +315,7 @@ flavor, the audit won't catch it.
 | constant | value | purpose |
 |---|---|---|
 | `LOG_FRESHNESS_SECS` | 86400 (24h) | catches stuck agents past inter-cluster sleep window |
-| `EXPERIMENTS_JSON` | `/mnt/AXES2U1/experiments.json` | PHASE registration table |
+| `EXPERIMENTS_JSON` | `/data/axes-mirror/experiments.json` | PHASE registration table |
 | service NRestarts threshold | 10 | only flips Service to `crash-looping` if uptime < 600s; high NRestarts on a stable service is reported as `OK (N restarts, stable Mm)` |
 | `STABLE_UPTIME_S` | 600 | continuous-active gate that suppresses NRestarts noise from past crash-loops |
 | BG OK / WARN ratios | 0.3 / 0.15 | median D4-only conn/min vs target_conn_per_minute_during_active (deliberately loose — D4 is one stochastic contributor; workflows dominate total traffic) |

@@ -165,6 +165,14 @@ class ShapeController:
         # Shape-floor coverage (Build #5). _floor_target = synthetic shaped opens
         # the floor channel should fire this minute to reach _FLOOR_SHARE_TARGET.
         self._floor_target = 0
+        # Total connection budget for the current hour (conn/min), pushed by the
+        # emulation loop from PHASE's workflow_budget.target_conns_per_hour
+        # (2026-08-14). None = unbudgeted (prior behavior). The floor is the one
+        # discretionary always-on channel, so when the measured traffic already
+        # fills the budget the floor yields rather than pushing total spend past it.
+        self._conn_budget_per_min = None
+        # Last computed floor headroom, for the [shape] log line.
+        self._floor_budget_cap = None
         # Workflow-completion instrument — the signal that the floor is starving
         # browse-workflows of connections (over-aggressive T), per PHASE 2026-06-25.
         self._wf_started = 0
@@ -282,6 +290,19 @@ class ShapeController:
         with self._lock:
             return self._floor_target
 
+    def set_conn_budget_per_min(self, budget: Optional[float]) -> None:
+        """Set the total connection budget (conn/min) the floor must fit inside.
+
+        Pushed by the emulation loop each reload from PHASE's
+        workflow_budget.target_conns_per_hour. None clears the cap.
+        """
+        try:
+            v = float(budget) if budget is not None else None
+        except (TypeError, ValueError):
+            v = None
+        with self._lock:
+            self._conn_budget_per_min = v if (v is None or v > 0) else None
+
     def note_workflow(self, completed: bool) -> None:
         """Main loop reports each workflow's outcome. The per-minute completion
         ratio is logged next to the shape p50s — a drop is the signal the floor is
@@ -340,6 +361,22 @@ class ShapeController:
                                                 _FLOOR_MAX_OPENS))
             else:
                 self._floor_target = 0
+
+            # Budget ceiling (PHASE workflow_budget, 2026-08-14). Coverage alone
+            # is unbounded: the share target asks for ratio x unshaped however
+            # large that is, and because `unshaped` is derived from the global
+            # ActiveOpens delta — which counts the floor's own opens — an idle
+            # SUP with no workflow traffic to offset it feeds itself. Clamping to
+            # the connection budget minus what's already on the wire bounds both
+            # the runaway and the idle overrun, and degrades gracefully: with
+            # headroom the floor behaves exactly as before.
+            if self._conn_budget_per_min is not None:
+                headroom = int(max(0.0, self._conn_budget_per_min - ao))
+                self._floor_budget_cap = headroom
+                if self._floor_target > headroom:
+                    self._floor_target = headroom
+            else:
+                self._floor_budget_cap = None
 
             # Estimated aggregate (all-channel) medians for the per-target
             # acceptance check (ledger shaped values + the unshaped residual modelled
@@ -409,6 +446,8 @@ class ShapeController:
                f"agg_bytes_p50={self._fmt(self._agg_bytes_p50)}/{self._fmt(b_tgt)} "
                f"agg_dur_p50={self._fmt(self._agg_dur_p50)}/{self._fmt(d_tgt)} "
                f"shaped_share={share} floor_target={self._floor_target} "
+               f"floor_cap={self._floor_budget_cap if self._floor_budget_cap is not None else '-'} "
+               f"budget={self._fmt(self._conn_budget_per_min)} "
                f"wf_complete={wf} "
                f"failed_conn_rate={self._failed_conn_rate:.2f} "
                f"active_opens={active_opens if active_opens is not None else '-'} "

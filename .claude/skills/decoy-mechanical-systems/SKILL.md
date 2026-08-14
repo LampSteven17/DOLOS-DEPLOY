@@ -253,6 +253,28 @@ brain/workflow runs:
   (duration is the binding feature). Built in `_reload_behavioral_config` when
   `connection_shape.enabled`; reuses the `persistent_sessions` endpoint_pool; opens
   net out of D4. Ships dormant until PHASE emits the block; controls never get it.
+  **Two bounds added 2026-08-14 (idle-floor throttle):** (1) **window gate** — the
+  daemon self-gates on UTC minute-of-day from `timing.active_minute_windows`
+  (`_in_window`, config key `active_minute_windows` passed in `floor_cfg`). It
+  previously ran 24/7, the only always-on channel with neither a window gate nor a
+  rate ceiling, so every off-window minute was pure idle-floor spend with no shape
+  benefit. Open conns are never force-killed at window close — they expire into a
+  graceful FIN (`SF`); the gate stops NEW opens only. Empty windows → ungated
+  (prior behavior). (2) **budget cap** — `ShapeController.set_conn_budget_per_min()`
+  clamps `_floor_target` to `max(0, budget − active_opens)`. Coverage alone is
+  unbounded AND self-inflating (the `unshaped` term derives from the global
+  ActiveOpens delta, which counts the floor's own opens; at idle there's no workflow
+  traffic to offset it). `[shape]` log gained `floor_cap=` + `budget=`.
+- **Exec-rate governor** `common/exec_governor.py` (PHASE task-value engine,
+  2026-08-14): `ExecGovernor` — wall-clock token buckets pacing workflow EXECUTIONS
+  to `content.schedule[*].workflow_budget.target_execs_per_hour` plus a global
+  `cadence_cap_per_hour` bucket. Not a traffic channel itself; it throttles the
+  largest traffic SOURCE (workflow fan-out). Wired in `_reload_behavioral_config`
+  (budget parsed by `_build_budget_by_hour`, non-fatal/additive) and gated in the
+  cluster loop via `_exec_budget_blocked()`; ineligible workflows are masked to
+  weight 0 in `_current_workflow_weights` — the single choke point both selection
+  paths read. Credits accrue on wall time, not loop ticks, so slow-BU and fast-MCHP
+  converge to the same execs/hour. Absent budget → inactive → selection unchanged.
 - **D3 scripted probes** `common/network/scripted_services.py`:
   `ScriptedServiceScheduler` (`:193`), `maybe_run` (`:231`) — smb/ldap/imap/doh/
   mdns/failed_conn on a cron-style schedule, in-window catch-up

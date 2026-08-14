@@ -108,6 +108,13 @@ class ShapeFloorDaemon:
         self._send_interval = _SEND_INTERVAL_CEILING_S
         self._endpoints: list = []         # list of (host, url)
         self._max_concurrent = _DEFAULT_MAX_CONCURRENT
+        # Active-window gate (2026-08-14). Half-open [start, end) UTC
+        # minute-of-day spans from timing.active_minute_windows. Empty list =
+        # ungated (prior 24/7 behavior). Self-gated on the daemon's own 1s
+        # thread rather than pushed by the main loop, which sleeps up to 30min
+        # between window checks — same idiom as PersistentSessionDaemon's
+        # session_opens_per_hour envelope.
+        self._windows: list = []
 
         self._conns: list = []
         self._controller = None            # injected by the loop; owns sampling
@@ -141,6 +148,16 @@ class ShapeFloorDaemon:
         self._send_interval = max(_SEND_INTERVAL_FLOOR_S,
                                   min(ka, _SEND_INTERVAL_CEILING_S))
         self._max_concurrent = int(config.get("max_concurrent", _DEFAULT_MAX_CONCURRENT))
+
+        windows = []
+        for w in (config.get("active_minute_windows") or []):
+            try:
+                s, e = int(w[0]), int(w[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if e > s:
+                windows.append((s, e))
+        self._windows = windows
 
         pool = config.get("endpoint_pool") or []
         endpoints = []
@@ -226,7 +243,7 @@ class ShapeFloorDaemon:
         self._opens_this_minute = 0
         # Schedule this minute's coverage-driven opens at random sub-minute offsets.
         n = 0
-        if self._controller is not None and self._endpoints:
+        if self._controller is not None and self._endpoints and self._in_window(now_utc):
             try:
                 n = int(self._controller.floor_opens_target_per_min())
             except Exception:
@@ -236,6 +253,19 @@ class ShapeFloorDaemon:
         self._pending_opens = sorted(
             base + self._rng.uniform(0.0, 58.0) for _ in range(n))
         self._pending_minute = key
+
+    def _in_window(self, now_utc: datetime) -> bool:
+        """True when the current UTC minute-of-day falls in an active window.
+
+        No windows configured → True (ungated, prior behavior). Open conns are
+        never force-killed on a window close; _reap_and_keepalive_locked lets
+        them expire into a graceful FIN (Zeek conn_state=SF), so the gate only
+        stops NEW opens.
+        """
+        if not self._windows:
+            return True
+        minute_of_day = now_utc.hour * 60 + now_utc.minute
+        return any(s <= minute_of_day < e for s, e in self._windows)
 
     def _reap_and_keepalive_locked(self, now_mono: float) -> None:
         survivors = []

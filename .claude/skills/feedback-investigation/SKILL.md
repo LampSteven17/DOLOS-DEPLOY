@@ -170,6 +170,48 @@ per-connection byte/pkt/duration distribution, and conn_state is invisible to
    drain, single-request lifetimes, `Range:` tighter) — to pull packets onto target without
    sacrificing the byte/duration coverage T buys. Required before the floor's packet shape
    is clean; T can only fix bytes.
+8. **Rate/budget throttle (task-value engine)** — ✅ DONE (2026-08-14, response to
+   PHASE's `RUSE_HANDOFF_taskvalue_2026-08-14.md`). PHASE's v11.2.1 batch flipped the
+   problem on AXES: the fleets ran **8× OVER** budget (fall24 target 6.3 conn/min vs 53
+   achieved), with `multiplier` pinned at the **0.15 clamp floor** and
+   `target_execs_per_hour` ≈ **0** — i.e. "stop nearly all workflow execution AND cut the
+   idle floor." Root cause was structural, not tuning: nothing paced workflow EXECUTIONS
+   to a connection budget (weights chose the mix, nothing chose the rate), and the
+   shape-floor had neither a rate ceiling nor a window gate while self-inflating off the
+   global ActiveOpens delta. Built: `common/exec_governor.py::ExecGovernor` (wall-clock
+   token buckets on `target_execs_per_hour` + `cadence_cap_per_hour`) and a two-part
+   idle-floor cap (budget clamp via `ShapeController.set_conn_budget_per_min`, plus a
+   `active_minute_windows` gate on `ShapeFloorDaemon`). Verified in-repo against all 56
+   v11.2.1 configs: axes drops ~1200 → ~3 execs/day, cptc11 paces to its 35/hr cadence
+   cap, absent-budget path byte-identical. **Awaiting canary + PHASE re-infer** — RUSE
+   owns the mechanism, PHASE owns whether the score moves.
+
+### cptc11 — the handoff §4 scan primitive does NOT match the emitted targets
+
+Read this before anyone builds `NetworkProbe`. The handoff prose describes a red-team
+SYN-sweep (64% SF / 22% S0, sub-ms, ~74 B resp, ~0 orig pkts, 364 conn/min). The
+**emitted** `cptc11-zeektx` behavior.json (stamped `_source: "human active-minute
+distribution, cptc11-zeektx"`, so these ARE the human targets) says something else
+entirely, identical across all 7 sup_configs:
+
+| Feature | Handoff §4 prose | Emitted cptc11 |
+|---|---|---|
+| conn_state | 64% SF / 22% S0 | **56% OTH**, 39% SF, 5% failed_conn |
+| duration p50 | sub-ms | **4.8 s** |
+| resp_bytes p50 | ~74 B | **13.8 KB** |
+| resp_pkts p50 | ~0 | **19** |
+| service mix | — | **dns 85% / ssl 11% / http 4%** |
+| rate | 364/min | **2592/min** (achieved 38 → 68× gap, `multiplier` at the 1.0 ceiling) |
+
+A raw-TCP scanner emits precisely the WRONG shape here (sub-ms, empty-service, S0).
+The reachable levers for cptc11 are, in order: **service mix** (dns 85% — a dedicated
+high-rate short-conn DNS channel, since D4's ~16/min `burst_n≤8` ceiling is the binding
+constraint, not sockets), then **orig_bytes/duration** (actuatable today), then
+**resp_bytes 13.8 KB** (blocked on build #2). Rate 2592/min ⇒ 43 conn/s ⇒ ~207
+concurrent conns ⇒ ~78 GB/day across a 5-VM cohort — a stretch, and the
+`achieved_conn_per_active_min`/`multiplier` clamp loop is exactly the mechanism for
+discovering the reachable ceiling. **PHASE confirmed the mismatch 2026-08-14 and owns
+the §4 correction; it does not block the axes work.**
 
 ## 5. How to verify shape ON THE WIRE (canary methodology)
 

@@ -77,6 +77,16 @@ class BaseEmulationLoop(ABC):
         # when connection_shape is enabled; reuses the persistent_sessions
         # endpoint_pool. None for controls / when not shaping.
         self._floor_svc = None
+        # Per-workflow execution-rate governor (PHASE workflow_budget, 2026-08-14).
+        # Paces workflow executions to content.schedule[*].workflow_budget.
+        # target_execs_per_hour so total connection spend lands on the emitted
+        # connection budget — weights say the MIX, execs/hour say HOW OFTEN.
+        # Inactive (no-op) until PHASE ships a workflow_budget block.
+        from common.exec_governor import ExecGovernor
+        self._exec_governor = ExecGovernor(logger)
+        # 24-elem per-hour workflow_budget blocks, parsed from content.schedule
+        # alongside _schedule_by_hour. None when PHASE hasn't shipped budgets.
+        self._budget_by_hour = None
         self._recent_workflows = []
         self._cluster_distinct = set()
         self._cluster_remaining = 0
@@ -205,9 +215,21 @@ class BaseEmulationLoop(ABC):
                 self.logger.info(
                     f"[behavior] Loaded content.schedule for {self._config_key}",
                     details={"n_blocks": len(fc.schedule)})
+            # PHASE task-value engine (2026-08-14) — per-block workflow_budget.
+            # Additive: absent budget leaves the governor inactive and selection
+            # behaves exactly as it did before.
+            self._budget_by_hour = self._build_budget_by_hour(fc.schedule)
+            if self._budget_by_hour and self.logger:
+                self.logger.info(
+                    f"[behavior] Loaded content.schedule workflow_budget for "
+                    f"{self._config_key}",
+                    details={"hours_governed":
+                             sum(1 for b in self._budget_by_hour if b)})
         else:
             self._workflow_weights = None
             self._schedule_by_hour = None
+            self._budget_by_hour = None
+        self._exec_governor.update_budget(self._current_workflow_budget())
         self._apply_brain_specific_config(fc)
 
         # CalibratedTiming setup. Both modes carry burst_percentiles +
@@ -292,6 +314,15 @@ class BaseEmulationLoop(ABC):
                     self._persistent_svc.set_controller(self._shape_controller)
                 if self._scripted_svc is not None:
                     self._scripted_svc.set_controller(self._shape_controller)
+                # Idle-floor budget ceiling (PHASE _idle_overrun, 2026-08-14).
+                # The shape-floor is the one discretionary always-on channel with
+                # no rate ceiling of its own — it opens conns purely to move the
+                # aggregate shape median, so on a budget-constrained deploy it is
+                # what must yield. PHASE measured the behavior idle floor at
+                # ~370 conn/hr against a 57 conn/hr budget with _idle_overrun set;
+                # scaling session_opens_per_hour alone cannot close that.
+                self._shape_controller.set_conn_budget_per_min(
+                    self._budget_conns_per_min())
 
             # Universal shape-floor channel (Build #5, 2026-06-25). Own-thread
             # twin of the persistent daemon — opens coverage-driven shaped fillers
@@ -307,6 +338,12 @@ class BaseEmulationLoop(ABC):
                     "endpoint_pool": (ps_config or {}).get("endpoint_pool", []),
                     "keepalive_interval_seconds":
                         (ps_config or {}).get("keepalive_interval_seconds"),
+                    # Active-window gate (2026-08-14). The floor previously ran
+                    # 24/7 — the only always-on channel with neither a window
+                    # gate nor a rate ceiling, so every off-window minute was
+                    # pure idle-floor spend with no shape benefit (PHASE only
+                    # scores active minutes). The daemon self-gates on these.
+                    "active_minute_windows": fc.active_minute_windows or [],
                 }
                 if self._floor_svc is None:
                     from common.network.shape_floor import ShapeFloorDaemon
@@ -436,6 +473,67 @@ class BaseEmulationLoop(ABC):
             raise RuntimeError(msg)
         return by_hour
 
+    def _budget_conns_per_min(self):
+        """Total connection budget for the current hour, in conn/min, or None.
+
+        Prefers the per-block workflow_budget.target_conns_per_hour (PHASE's
+        solved budget) and falls back to timing.target_conn_per_minute_during_
+        active. None means "no budget expressed" — channels keep their prior
+        uncapped behavior.
+        """
+        budget = self._current_workflow_budget()
+        if budget:
+            per_hour = budget.get("target_conns_per_hour")
+            try:
+                if per_hour is not None and float(per_hour) > 0:
+                    return float(per_hour) / 60.0
+            except (TypeError, ValueError):
+                pass
+        try:
+            if self._volume_target is not None and float(self._volume_target) > 0:
+                return float(self._volume_target)
+        except (TypeError, ValueError):
+            pass
+        return None
+
+    def _build_budget_by_hour(self, schedule):
+        """Parse content.schedule[*].workflow_budget into a 24-element per-hour
+        list (PHASE task-value engine, 2026-08-14).
+
+        Unlike _build_schedule_by_hour this is ADDITIVE and NON-FATAL: PHASE
+        emits workflow_budget only on ACTIVE blocks and only on lineages that
+        carry it, so an absent budget (or an uncovered hour) simply leaves that
+        hour ungoverned rather than failing the deploy. Malformed hour_range is
+        already fail-loud in _build_schedule_by_hour, which runs first.
+
+        Returns None when no block carries a budget.
+        """
+        if not schedule:
+            return None
+        by_hour = [None] * 24
+        found = False
+        for block in schedule:
+            if not isinstance(block, dict):
+                continue
+            budget = block.get("workflow_budget")
+            if not isinstance(budget, dict) or not budget:
+                continue
+            try:
+                lo_i, hi_i = (int(v) for v in block["hour_range"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            for h in range(lo_i, hi_i):
+                if 0 <= h < 24:
+                    by_hour[h] = budget
+                    found = True
+        return by_hour if found else None
+
+    def _current_workflow_budget(self):
+        """workflow_budget block for the current UTC hour, or None."""
+        if not self._budget_by_hour:
+            return None
+        return self._budget_by_hour[datetime.now(timezone.utc).hour]
+
     def _current_workflow_weights(self):
         """Return the weights list to use right now (parallel to self.workflows).
 
@@ -444,10 +542,51 @@ class BaseEmulationLoop(ABC):
         an empty workflow_weights block for this hour (PHASE OFF semantic).
         Otherwise falls back to the flat self._workflow_weights. None when
         neither is configured (caller picks uniform).
+
+        When the exec governor is active (PHASE shipped target_execs_per_hour),
+        workflows that have spent their budget are masked to weight 0 here —
+        the single choke point both _select_workflow and
+        _select_workflow_with_rotation already read, so rotation penalties
+        continue to apply to whatever remains eligible. An all-zero result is
+        the "budget exhausted" case, which _exec_budget_blocked() catches
+        before selection is ever attempted.
         """
         if self._schedule_by_hour:
-            return self._schedule_by_hour[datetime.now(timezone.utc).hour]
-        return self._workflow_weights
+            weights = self._schedule_by_hour[datetime.now(timezone.utc).hour]
+        else:
+            weights = self._workflow_weights
+        if self._exec_governor.active and weights != []:
+            # weights == [] is the schedule OFF sentinel — leave it alone.
+            # Synthesize uniform weights when none are configured so the mask
+            # still applies (otherwise selection would fall back to uniform
+            # over ALL workflows and bypass the budget entirely).
+            if not weights:
+                weights = [1.0] * len(self.workflows)
+            eligible = self._exec_governor.eligible(
+                getattr(w, 'name', '') for w in self.workflows)
+            weights = [
+                wt if getattr(w, 'name', '') in eligible else 0.0
+                for w, wt in zip(self.workflows, weights)
+            ]
+        return weights
+
+    def _exec_budget_blocked(self) -> bool:
+        """True when the exec governor is active and no workflow currently holds
+        budget — the rate-limit analogue of _schedule_off_for_now().
+
+        The loop skips workflow execution for this tick (background channels
+        still fire on their own budgets) and comes back after the inter-task
+        sleep, by which time credits have accrued. This is what turns PHASE's
+        target_execs_per_hour into an actual pace: a 0.001/hr workflow simply
+        never wins a tick, instead of firing every time weights pick it.
+        """
+        if not self._exec_governor.active:
+            return False
+        if self._schedule_off_for_now():
+            return False  # already handled by the schedule OFF gate
+        eligible = self._exec_governor.eligible(
+            getattr(w, 'name', '') for w in self.workflows)
+        return not eligible
 
     def _schedule_off_for_now(self):
         """True iff content.schedule is configured AND the current UTC hour's
@@ -696,8 +835,25 @@ class BaseEmulationLoop(ABC):
                             f"(empty workflow_weights) — skipping workflow")
                     continue
 
+                # PHASE workflow_budget rate gate (2026-08-14). Refresh the
+                # governor for the current hour's block (schedule blocks change
+                # under a long-running cluster) then skip the tick when every
+                # workflow has spent its budget. Background channels already
+                # fired above on their own budgets, so passive traffic
+                # continues — this throttles workflow spend only.
+                self._exec_governor.update_budget(self._current_workflow_budget())
+                if self._exec_budget_blocked():
+                    if self.logger:
+                        self.logger.info(
+                            "[exec-budget] all workflows over their "
+                            "target_execs_per_hour — skipping workflow",
+                            details=self._exec_governor.status())
+                    continue
+
                 # Select workflow
                 workflow = self._select_workflow()
+                if workflow is not None:
+                    self._exec_governor.consume(getattr(workflow, 'name', ''))
                 # The `workflow` log field is the canonical workflow name
                 # (matches content.workflow_weights keys — see
                 # behavioral_config.build_workflow_weights, which keys on

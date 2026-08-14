@@ -1,6 +1,6 @@
 ---
 name: decoy-deploy
-description: DECOY SUP deployment — running ./deploy --decoy [scope flags], 5-phase spinup, behavior.json plumbing, audit semantics, hot-patch path. Four tiers via --gpu {v100,rtx,rtx-a,cpu} (V100 → gemma4:26b, RTX 2080 Ti non-A pool → gemma4:e4b on B2R/S2R, RTX 2080 Ti A-pool → same model, separate physical cards, cpu → card-free M2+B2C+S2C on gemma4:e2b). Inputs deployments/decoy-controls/config.yaml + /mnt/AXES2U1/feedback/decoy-controls/{controls (un-namespaced), {preset}_v{version}/{dataset} (feedback, needs --preset)}/. Outputs deployments/decoy-{controls,feedback-...}/runs/{run_id}/. Does NOT cover RAMPART AD enterprise (see /rampart-deploy) or GHOSTS NPC clients (see /ghosts-deploy). Cross-type CLI shape, fail-loud contract, and SSH key matrix live in CLAUDE.md.
+description: DECOY SUP deployment — running ./deploy --decoy [scope flags], 5-phase spinup, behavior.json plumbing, audit semantics, hot-patch path. Four tiers via --gpu {v100,rtx,rtx-a,cpu} (V100 → gemma4:26b, RTX 2080 Ti non-A pool → gemma4:e4b on B2R/S2R, RTX 2080 Ti A-pool → same model, separate physical cards, cpu → card-free M2+B2C+S2C on gemma4:e2b). Inputs deployments/decoy-controls/config.yaml + /data/axes-mirror/feedback/decoy-controls/{controls (un-namespaced), {preset}_v{version}/{dataset} (feedback, needs --preset)}/. Outputs deployments/decoy-{controls,feedback-...}/runs/{run_id}/. Does NOT cover RAMPART AD enterprise (see /rampart-deploy) or GHOSTS NPC clients (see /ghosts-deploy). Cross-type CLI shape, fail-loud contract, and SSH key matrix live in CLAUDE.md.
 type: skill
 ---
 
@@ -13,7 +13,7 @@ is in CLAUDE.md.
 
 | | |
 |---|---|
-| Inputs | `deployments/decoy-controls/config.yaml`, `/mnt/AXES2U1/feedback/decoy-controls/controls/{behavior}/{sup}/behavior.json` (baseline, **un-namespaced**), `/mnt/AXES2U1/feedback/decoy-controls/{preset}_v{version}/{dataset}/{behavior}/{sup}/behavior.json` (feedback, namespaced 2026-06 — needs `--preset`), `INSTALL_SUP.sh` + `decoys/` cloned from github at install time |
+| Inputs | `deployments/decoy-controls/config.yaml`, `/data/axes-mirror/feedback/decoy-controls/controls/{behavior}/{sup}/behavior.json` (baseline, **un-namespaced**), `/data/axes-mirror/feedback/decoy-controls/{preset}_v{version}/{dataset}/{behavior}/{sup}/behavior.json` (feedback, namespaced 2026-06 — needs `--preset`), `INSTALL_SUP.sh` + `decoys/` cloned from github at install time |
 | Outputs | `deployments/decoy-{controls,feedback-{preset}-{dataset}-{scope}}/runs/{run_id}/` (inventory.ini, ssh_config_snippet.txt, deployment_type), per-VM `/opt/ruse/deployed_sups/{key}/`. `{preset}` = sanitized full-ns token incl. version (`stdctrlsv712`), so different lineages/versions don't collide |
 | Manifest | `manifest.json` in PHASE source; loaded via `core/feedback.py::load_manifest`, validated against deploy type via `validate_manifest_target` |
 | Upstream | PHASE feedback engine (`feedback_engine.baseline` writes `controls/`; `feedback_engine.decoy_generator` writes `{dataset}/`) |
@@ -111,7 +111,25 @@ Plus `d-{dep_id}-neighborhood-0` sidecar (feedback only, when any
 ./deploy --decoy --exp1 --preset exp-ctrls_v7.1.6                 # static tier plan (see below)
 ```
 
-## Static tier plans (`--exp1`, 2026-06-10)
+## Cluster capacity (2026-08-12 shrink — CURRENT operator knowledge)
+
+The cluster shrank in Aug 2026. Verified totals (from the 2026-08-12
+deploy round — nova `No valid host` probes, NOT queryable from OpenStack):
+
+| Pool | Total cards | Holders (2026-08-12) | Free |
+|---|---|---|---|
+| v100 | **7** | controls B0/S0 (2) + fall24 (2) + sum24 (2) | 1 |
+| RTX (both aliases) | **12** (3 machines × 4) | controls B0R/S0R on rtx-a (2) + spr25 (2) + cptc11 (2) on rtx | 6 |
+
+Each feedback deploy = 2 GPU cards. A no-tier 4-dataset v100 batch needs
+8 cards → 3 of 4 fail S2 provisioning (observed 2026-08-12: B2s grab
+cards first, S2s ERROR). Both RTX PCI aliases exist on the new machines
+(non-A `rtx2080ti:1` ≥ 4 cards, A `2080ti-rtx-a:1` ≥ 2); exact per-alias
+split unconfirmed — fan across `--gpu rtx`/`rtx-a` on `No valid host`.
+**The `exp1` TIER_PLANS is sized for the OLD 19-v100 cluster — do not
+run `--exp1` as-is on this cluster.**
+
+## Static tier plans (`--exp1`, 2026-06-10 — STALE for post-2026-08 cluster, see above)
 
 Named operator-curated dataset→tier assignments in
 `core/feedback.py::TIER_PLANS`, sized to the physical GPU pools (totals
@@ -146,7 +164,8 @@ tier's CPU brains read the same `B.gemma/B0C.gemma` + `S.gemma/S0C.gemma` +
 carries its own `gpu_tier`, shown as `[tier]` in the task label and
 `tier=` in the plan confirm). Resolution is fail-loud per dataset; the
 whole plan aborts if any target is missing from the namespace. Tasks run
-sequentially like any batch. To change the split, edit `TIER_PLANS`
+4-wide parallel like any batch (2026-07-21; `--parallel 1` for the old
+sequential behavior). To change the split, edit `TIER_PLANS`
 (one dict) — new plans get their own flag wired in `__main__.py`.
 
 ## Feedback namespace `{preset}_v{version}` (`--preset`, 2026-06)
@@ -156,8 +175,8 @@ level deeper, under a lineage namespace inserted between `{type}-controls` and
 `{dataset}`:
 
 ```
-OLD:  /mnt/AXES2U1/feedback/{type}-controls/{dataset}/...
-NEW:  /mnt/AXES2U1/feedback/{type}-controls/{preset}_v{version}/{dataset}/...
+OLD:  /data/axes-mirror/feedback/{type}-controls/{dataset}/...
+NEW:  /data/axes-mirror/feedback/{type}-controls/{preset}_v{version}/{dataset}/...
 ```
 
 - **`--preset NS` REQUIRED** for any feedback deploy (`--feedback`, `--target`, or
@@ -205,18 +224,58 @@ Granular per-config-file flags (`--timing`, `--workflow`, `--modifiers`,
 `behavior.json` per SUP. There's no longer a per-file filter to apply.
 
 Batch is the default when `--feedback` is given without a single-target
-selector. CLI scans `/mnt/AXES2U1/feedback/decoy-controls/`, prompts
-confirmation, then deploys each task sequentially within one invocation
-(the in-CLI `--parallel` batch flag was removed 2026-05-11). Running
-SEPARATE `./deploy` invocations concurrently (e.g. backgrounded) is fine
-and expected — the old "no cross-deploy parallel fan-out" operator
-preference was RETRACTED 2026-06-23.
+selector. CLI scans `/data/axes-mirror/feedback/decoy-controls/`, prompts
+confirmation, then **fans multi-task plans out as parallel child
+subprocesses, 4 at a time by default** (`--parallel N`; `--parallel 1` =
+the old sequential loop; reinstated 2026-07-21 — an earlier in-CLI
+parallel flag was removed 2026-05-11). Parallelism is across
+deployments ONLY: each child is a full single-task `./deploy` invocation
+(feedback re-expressed as `--feedback --source {path}` + per-task
+`--gpu`, controls as `--controls`, "y" fed on stdin for its confirm)
+that keeps the strict phase order provision → ssh → install stage1 →
+reboot → stage2 → distribute → start. The parent terminal is a live
+phase board: it tails each child's log and surfaces ONLY phase banners
+(`--- X ---` decoy / `[N/M]` rampart+ghosts), WARNING/ERROR lines, and
+completions — ansible task chatter and retry spam stay in the child's
+`logs/deploy-parallel-*.log`. **Validated in production 2026-07-22**: the
+full 13-dataset exp1 fleet deployed 4-wide in one invocation, all VMs
+healthy on first audit. Cosmetic quirk: children launched in the same
+second share the same `MMDDYYHHMMSS` run_id across DIFFERENT config dirs
+(e.g. 2025/axall/axyear/fall24 all `072126144158`) — not a collision,
+run state + VM prefixes still key on config_name. The 4-cap
+guards the control plane (13+ concurrent children drove nova to 500s on
+2026-07-20 — deletes then, but the lesson generalizes). Code:
+`core/plan.py::_execute_plan_parallel`. Running SEPARATE `./deploy`
+invocations concurrently (e.g. backgrounded) is also fine and expected —
+the old "no cross-deploy parallel fan-out" operator preference was
+RETRACTED 2026-06-23.
 
 Dataset target aliases (`core/feedback.py::DATASET_TARGETS`): `sum24` →
 `summer24`, `spr25` → `spring25`, `vt1g` → `vt-fall22-1gb`, `vt50g` →
 `vt-fall22-50gb`, `cptc8` → `cptc8-23`, `axall` → `axes-all`, `2025` →
 `axes-2025`. Resolution is substring against
-`/mnt/AXES2U1/feedback/decoy-controls/`.
+`/data/axes-mirror/feedback/decoy-controls/`.
+
+**Pool-math footgun (2026-07-20):** a no-tier batch (`--feedback` with no
+`--gpu`/`--exp1`) plans EVERY dataset on the default v100 tier — 14
+datasets × 2 v100 GPU VMs = 28 cards against a 19-card pool. Tasks run
+alphabetically, so the 8 axes datasets succeed and every later dataset
+fails provisioning with nova `No valid host was found`, leaving partial
+cohorts (2 ERROR GPU VMs + ACTIVE CPU VMs, run stamped `failed` →
+`./teardown --decoy --failed`). Full-fleet deploys must be tiered
+(`--exp1`, or per-tier `--gpu` + `--target` invocations).
+
+**`ragged-ctrls-all_v10.0.5` namespace (2026-07, 14 datasets):** cptc
+dirs renamed with a `-zeektx` suffix (`cptc8-23-zeektx`,
+`cptc9-24-zeektx`) — existing aliases still resolve via substring — plus
+a NEW `cptc11-zeektx` dataset that is NOT in `TIER_PLANS['exp1']`, so
+`--exp1` silently skips it (deliberate, operator decision 2026-07-21:
+"not running cptc11 for now"; no free GPU cards for it anyway — deploy
+ad-hoc via `--gpu cpu --target cptc11` if that changes). This preset
+ships much lower cptc `target_conn_per_minute` than the 185-208 of older
+lineages (cptc9: 53, verified 2026-07-22 audit) — still above the D4
+~16/min floor ceiling, so cptc9's red BG column persists, though cptc8
+now mostly clears the 0.3 ratio (4/5 BG OK; see `/decoy-audit`).
 
 ## Deploy plan / confirm (`core/plan.py::show_plan_and_confirm`)
 
@@ -275,6 +334,13 @@ clean return (`install_result.rc == 0`). Any phase abort / exception / kill
 leaves it `failed` → `./teardown --decoy --failed` targets it. Runs from
 before 2026-06-05 are unstamped (`unknown`) → not matched; use positional
 teardown or retro-stamp them. See `core/run_status.py` + the `/teardown` skill.
+Any teardown that would touch `decoy-controls` (filter sweep incl. `--failed`,
+or positional) requires an extra typed `TEARDOWN CONTROLS` confirmation
+(2026-07-02); declining in filter mode drops controls and proceeds — see
+`/teardown` "Controls gate". DECOY teardown hardening 2026-07-21: after
+`teardown.yaml`, `decoy/teardown.py` sweeps VMs nova stranded in ERROR
+(500-on-delete) through a re-request + stall-retrying poll — see
+`/teardown` "VM delete robustness".
 
 ## Service naming
 
@@ -473,14 +539,14 @@ emit time); this is RUSE-side defense-in-depth.
 5. Assert file on disk after copy
 
 Runs for ALL non-C0/M0 SUPs — controls' `decoy-controls/config.yaml`
-points `behavior_source` at `/mnt/AXES2U1/feedback/decoy-controls/controls`
+points `behavior_source` at `/data/axes-mirror/feedback/decoy-controls/controls`
 so baselines flow through the same path as feedback.
 
 The `controls/` slot is excluded from feedback dataset auto-discovery via
 `core/feedback.py::BASELINE_DATASET_SLOTS = {"controls"}` in three call sites:
 `find_all_feedback_sources`, `auto_detect_feedback_source`,
 `find_feedback_by_target`. To force PHASE re-roll the baseline:
-`rm -rf /mnt/AXES2U1/feedback/decoy-controls/controls/`.
+`rm -rf /data/axes-mirror/feedback/decoy-controls/controls/`.
 
 ## LLM models
 
@@ -568,6 +634,8 @@ Loader (`load_behavioral_config`) → consumers:
 | `timing.activity_probability_per_hour` | `activity_pattern` | `should_skip_hour()` |
 | `timing.long_idle_probability` + `long_idle_duration_minutes` | `activity_pattern` | `should_take_long_idle()` |
 | `content.workflow_weights` | `workflow_weights` | `build_workflow_weights()` for `random.choices()` |
+| `content.schedule[*].workflow_budget` | (raw, rides `schedule`) | **ExecGovernor rate pacing (PHASE task-value engine, 2026-08-14, `common/exec_governor.py`).** Weights say the MIX; `target_execs_per_hour` says HOW OFTEN. PHASE solves per-workflow exec rates from measured per-execution connection cost so total conn spend lands on `target_conns_per_hour` — pacing on weights alone is what produced the measured axes overshoot (6.3 conn/min target vs 53 achieved). `emulation_loop._build_budget_by_hour` parses it into a 24-elem per-hour list (**non-fatal / additive** — unlike `_build_schedule_by_hour`, an absent budget or uncovered hour just leaves that hour ungoverned); `ExecGovernor` runs one wall-clock token bucket per workflow + a global `cadence_cap_per_hour` bucket. Ineligible workflows are masked to weight 0 in `_current_workflow_weights` (the single choke point both `_select_workflow` and `_select_workflow_with_rotation` read, so rotation penalties still apply to the remainder); `_exec_budget_blocked()` skips the tick when nothing holds budget — background channels still fire. Credits accrue on WALL TIME not loop ticks, so slow BU and fast MCHP converge to the same execs/hour; banking capped at `_BURST_HOURS=0.25`. Entering a new block seeds 1 credit per non-zero-rate workflow. `target_conns_per_hour` also feeds the idle-floor cap (below). Logs `[exec-budget] governor ON …` + per-skip `[exec-budget] all workflows over their target_execs_per_hour`. **Additive: absent block → governor inactive → selection byte-identical to pre-2026-08-14.** |
+| `content.schedule[*].workflow_budget.{target_conns_per_hour,_idle_overrun,idle_floor_conns_per_hour}` | (raw) | **Idle-floor budget cap (2026-08-14).** `ShapeController.set_conn_budget_per_min()` (fed from `target_conns_per_hour/60`, falling back to `timing.target_conn_per_minute_during_active`) clamps `_floor_target` to `max(0, budget − active_opens)`. The shape-floor was the ONLY always-on channel with neither a rate ceiling nor a window gate, and it self-inflates (its `unshaped` term derives from the global ActiveOpens delta, which counts the floor's own opens — at idle there's no workflow traffic to offset it). PHASE measured the behavior idle floor at ~370 conn/hr against a 57 conn/hr budget with `_idle_overrun: true`; scaling `session_opens_per_hour` alone cannot close that. `[shape]` log gained `floor_cap=` + `budget=`. None/absent → uncapped (prior behavior). `idle_floor_conns_per_hour.system` (~4.6/hr) is OS noise, NOT RUSE's to cut. |
 | `content.site_categories` | `site_config` | SmolAgents `BrowseWebWorkflow` task pool filter |
 | `content.download_url_pool` | `download_url_pool` | Smol/BU `DownloadFiles` LLM picker (falls back to `FALLBACK_URLS`) |
 | `content.whois_domain_pool` | `whois_domain_pool` | Smol/BU/MCHP `WhoisLookup` (falls back to `FALLBACK_DOMAINS`) |
@@ -602,7 +670,7 @@ None values omitted.
 `workflow_{start,end}`, `step_{start,success,error}`,
 `llm_{request,response,error}`, `decision`, `timing_delay`, `warning`, `info`,
 `network_sample`. PHASE-side consumers and the DuckDB collection
-(`/mnt/AXES2U1/SUP_LOGS/sup-logs-<exp>.duckdb`) read these directly.
+(`/data/axes-mirror/SUP_LOGS/sup-logs-<exp>.duckdb`) read these directly.
 (A transient 18th type, `background_service`, existed only during the
 abandoned service_mix_targets v1 window, 2026-06-09 — reverted same day.)
 
@@ -718,7 +786,7 @@ the fleet are normal (2026-05-27 redeploy audit: 35 on-window logging,
 ### DuckDB collection
 
 Periodic SSH-collection from `/opt/ruse/deployed_sups/.../logs/*.jsonl`
-into `/mnt/AXES2U1/SUP_LOGS/sup-logs-<experiment>.duckdb` `events` table.
+into `/data/axes-mirror/SUP_LOGS/sup-logs-<experiment>.duckdb` `events` table.
 First-class extracted columns (queryable without JSON path): `timestamp,
 session_id, agent_type, event_type, workflow, duration_ms, success,
 error_message, model, action, category, step_name, status,
@@ -796,7 +864,7 @@ grep -E "FAILED|fatal|UNREACHABLE" deployments/logs/ansible-*.log | tail -30
 ./audit | grep Fdbk
 
 # All behavior.json files PHASE wrote for a dataset
-ls /mnt/AXES2U1/feedback/decoy-controls/sum24/*/*/behavior.json
+ls /data/axes-mirror/feedback/decoy-controls/sum24/*/*/behavior.json
 ```
 
 ## Constraints
