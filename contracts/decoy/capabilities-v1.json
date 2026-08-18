@@ -1,0 +1,54 @@
+{
+  "manifest_version": "ruse.decoy.capabilities/v1",
+  "behavior_contract_versions": ["ruse.decoy.behavior/v1"],
+  "consumer": "RUSE DECOY",
+  "reload": {
+    "unit": "complete behavior.json document",
+    "identity": "sha256 of file bytes",
+    "semantics": "replace",
+    "removal": "restore native workflow defaults and stop removed background daemons"
+  },
+  "brains": {
+    "mchp": ["BrowseWeb", "BrowseYouTube", "GoogleSearch", "DownloadFiles", "WhoisLookup"],
+    "browseruse": ["BrowseWeb", "BrowseYouTube", "WebSearch", "DownloadFiles", "WhoisLookup"],
+    "smolagents": ["BrowseWeb", "BrowseYouTube", "WebSearch", "DownloadFiles", "WhoisLookup"]
+  },
+  "actuators": [
+    {"path": "timing.active_minute_windows", "consumer": "all brains", "effect": "UTC half-open execution windows"},
+    {"path": "timing.target_conn_per_minute_during_active", "consumer": "background services", "effect": "active-window connection floor"},
+    {"path": "timing.burst_percentiles", "consumer": "CalibratedTiming", "effect": "cluster, idle-gap, and burst duration sampling"},
+    {"path": "timing.variance", "consumer": "CalibratedTiming", "effect": "timing variance"},
+    {"path": "content.schedule[*].workflow_weights", "consumer": "all brains", "effect": "relative workflow selection mix; does not set execution rate"},
+    {"path": "content.schedule[*].workflow_budget.target_execs_per_hour", "consumer": "ExecGovernor", "effect": "per-workflow execution-rate ceiling"},
+    {"path": "content.*_pool", "consumer": "matching workflows", "effect": "replace target/query/domain/video inputs"},
+    {"path": "content.site_categories", "consumer": "smolagents BrowseWeb", "effect": "site-category weights"},
+    {"path": "behavior.max_steps", "consumer": "browseruse and smolagents", "effect": "agent step ceiling"},
+    {"path": "behavior.page_dwell", "consumer": "all brains", "effect": "per-page dwell range"},
+    {"path": "behavior.navigation_clicks", "consumer": "mchp BrowseWeb", "effect": "navigation click ceiling"},
+    {"path": "behavior.keep_alive_probability", "consumer": "mchp BrowseWeb", "effect": "tab/connection reuse probability"},
+    {"path": "behavior.download", "consumer": "download workflows", "effect": "download size and outcome mixes"},
+    {"path": "prompt_content", "consumer": "browseruse and smolagents", "effect": "replaceable guidance overlay on native prompts"},
+    {"path": "diversity.workflow_rotation", "consumer": "all brains", "effect": "cluster diversity constraints"},
+    {"path": "diversity.background_services", "consumer": "background and scripted services", "effect": "DNS/NTP/HTTP rates and protocol probe toggles"},
+    {"path": "diversity.persistent_sessions", "consumer": "PersistentSessionDaemon", "effect": "long-lived TLS sessions"},
+    {"path": "diversity.connection_shape.orig_bytes", "consumer": "ShapeController", "effect": "per-connection original-byte distribution"},
+    {"path": "diversity.connection_shape.duration", "consumer": "ShapeController", "effect": "per-connection duration distribution"},
+    {"path": "diversity.conn_state_mix.failed_conn", "consumer": "scripted services", "effect": "failed-connection probe fraction"},
+    {"path": "diversity.topology_mimicry", "consumer": "deployment neighborhood sidecar", "effect": "inbound protocol rates toward SUP VMs"}
+  ],
+  "accepted_but_not_actuated": [
+    "diversity.connection_shape.orig_pkts",
+    "diversity.connection_shape.resp_bytes",
+    "diversity.connection_shape.resp_pkts",
+    "diversity.conn_state_mix.SF",
+    "diversity.conn_state_mix.OTH",
+    "diversity.conn_state_mix.RSTR"
+  ],
+  "invariants": [
+    "PHASE owns desired values; RUSE validates and executes them without optimization.",
+    "All hours 0 through 23 must be covered exactly once when content.schedule is present.",
+    "Active windows are UTC minute-of-day ranges [start, end) within 0..1440.",
+    "Omitting an optional actuator disables its previous overlay on reload.",
+    "A deployment installs one full 40-character RUSE Git commit SHA on every VM."
+  ]
+}

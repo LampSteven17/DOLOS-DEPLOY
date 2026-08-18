@@ -11,6 +11,8 @@ Subclasses implement brain-specific behavior:
   _agent_type_label()            — "mchp", "browseruse_loop", "smolagents_loop"
 """
 
+import copy
+import hashlib
 import random
 import signal
 import sys
@@ -46,6 +48,15 @@ class BaseEmulationLoop(ABC):
         self._tasks_completed = 0
         self._behavior_config_dir = behavior_config_dir
         self._config_key = config_key
+        # SHA-256 of the last behavior.json that was successfully applied.
+        # Cluster boundaries can occur frequently; identical bytes are a no-op
+        # so reloads do not repeatedly mutate workflows or restart agents.
+        self._behavior_config_digest = None
+        # Immutable, post-load workflow defaults. Every hot-reload is rendered
+        # from these values so removing a PHASE override restores the original
+        # behavior instead of leaving stale state behind.
+        self._config_attr_baselines = {}
+        self._prompt_baselines = {}
         self._workflow_weights = None
         # Phase 2 — PHASE-emitted content.schedule parsed into 24-element
         # array of per-hour workflow_weights lists (parallel to self.workflows).
@@ -126,6 +137,51 @@ class BaseEmulationLoop(ABC):
         """Apply brain-specific parts of behavioral config (e.g., page_dwell, task_weights)."""
         ...
 
+    def _baseline_attr(self, workflow, attr: str):
+        """Return a workflow attribute's immutable pre-feedback value."""
+        key = (id(workflow), attr)
+        if key not in self._config_attr_baselines:
+            self._config_attr_baselines[key] = copy.deepcopy(getattr(workflow, attr))
+        return copy.deepcopy(self._config_attr_baselines[key])
+
+    def _apply_prompt_overlay(
+        self, prompt_type, default_task: str, augmentation: str, *, reset_agent: bool
+    ) -> tuple[int, int]:
+        """Replace PHASE guidance without accumulating it across reloads.
+
+        Returns ``(workflows_with_prompts, workflows_changed)``. An omitted
+        augmentation restores each workflow's original task/content pair.
+        """
+        applied = 0
+        changed = 0
+        for workflow in self.workflows:
+            if not hasattr(workflow, "prompts"):
+                continue
+            key = id(workflow)
+            current = workflow.prompts
+            if key not in self._prompt_baselines:
+                self._prompt_baselines[key] = (
+                    getattr(current, "task", default_task) if current else default_task,
+                    (getattr(current, "content", "") or "") if current else "",
+                )
+            base_task, base_content = self._prompt_baselines[key]
+            content = base_content
+            if augmentation:
+                overlay = f"[PHASE Behavioral Guidance]\n{augmentation}"
+                content = f"{base_content}\n\n{overlay}" if base_content else overlay
+            current_pair = (
+                getattr(current, "task", None) if current else None,
+                getattr(current, "content", None) if current else None,
+            )
+            desired_pair = (base_task, content)
+            if current_pair != desired_pair:
+                workflow.prompts = prompt_type(task=base_task, content=content)
+                if reset_agent and hasattr(workflow, "_agent"):
+                    workflow._agent = None
+                changed += 1
+            applied += 1
+        return applied, changed
+
     @abstractmethod
     def _agent_type_label(self) -> str:
         """Return agent type string for logging (e.g., 'mchp', 'browseruse_loop')."""
@@ -174,6 +230,15 @@ class BaseEmulationLoop(ABC):
             build_calibrated_timing_config,
         )
 
+        config_path = Path(self._behavior_config_dir) / "behavior.json"
+        try:
+            digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+        except OSError:
+            # Preserve load_behavioral_config's detailed fail-loud diagnostic.
+            digest = None
+        if digest is not None and digest == self._behavior_config_digest:
+            return False
+
         # load_behavioral_config raises RuntimeError if behavior.json is
         # missing — service crash-loops, audit surfaces it. No legacy
         # baseline path: every SUP must have a config.
@@ -192,6 +257,7 @@ class BaseEmulationLoop(ABC):
                 details={
                     "config_key": self._config_key,
                     "mode": fc.mode,
+                    "contract_version": fc.contract_version or "legacy-unversioned",
                     "n_windows": n_windows,
                     "on_minutes": on_minutes,
                     "target_conn_per_min": fc.target_conn_per_minute_during_active,
@@ -210,7 +276,8 @@ class BaseEmulationLoop(ABC):
             # Phase 2 — content.schedule replaces flat workflow_weights when
             # present. Parsed into a 24-elem per-hour weights list; fail-loud
             # if any hour 0..23 is not covered.
-            self._schedule_by_hour = self._build_schedule_by_hour(fc.schedule)
+            self._schedule_by_hour = self._build_schedule_by_hour(
+                fc.schedule, strict=bool(fc.contract_version))
             if self._schedule_by_hour and self.logger:
                 self.logger.info(
                     f"[behavior] Loaded content.schedule for {self._config_key}",
@@ -262,98 +329,82 @@ class BaseEmulationLoop(ABC):
         elif self._phase_timing and fc.variance_injection:
             self._phase_timing.update_variance_config(fc.variance_injection)
 
-        # Diversity injection — feedback only (controls has no diversity block)
-        if fc.diversity_injection:
-            self._diversity_config = fc.diversity_injection
-            bg_config = fc.diversity_injection.get("background_services", {})
+        # Diversity is replacement-based. Empty or removed blocks explicitly
+        # disable previously active channels instead of leaving daemon state
+        # from an older behavior.json running indefinitely.
+        self._diversity_config = fc.diversity_injection or {}
+        bg_config = self._diversity_config.get("background_services", {})
+        if bg_config or self._background_svc is not None:
             if self._background_svc is None:
                 from common.background_services import BackgroundServiceGenerator
                 self._background_svc = BackgroundServiceGenerator(bg_config, self.logger)
             else:
                 self._background_svc.update_config(bg_config)
-            # Phase 3 — same bg_config dict carries the *_enabled toggles
-            # for scripted services. Both consumers ignore keys they
-            # don't recognize, so coexistence is clean.
+        # Phase 3 — same bg_config dict carries the *_enabled toggles.
+        if bg_config or self._scripted_svc is not None:
             if self._scripted_svc is None:
                 from common.network.scripted_services import ScriptedServiceScheduler
                 self._scripted_svc = ScriptedServiceScheduler(bg_config, self.logger)
             else:
                 self._scripted_svc.update_config(bg_config)
-            # PersistentSession daemon — its own thread (see __init__). Started
-            # once when PHASE ships an enabled persistent_sessions block; config
-            # hot-reloads on subsequent boundaries (endpoint_pool diffed so the
-            # resolve-once IP cache survives — see PersistentSessionDaemon).
-            ps_config = fc.diversity_injection.get("persistent_sessions")
-            if ps_config and ps_config.get("enabled"):
-                if self._persistent_svc is None:
-                    from common.network.persistent_session import PersistentSessionDaemon
-                    self._persistent_svc = PersistentSessionDaemon(
-                        ps_config, self.logger, seed=self.seed)
-                    self._persistent_svc.start()
-                else:
-                    self._persistent_svc.update_config(ps_config, seed=self.seed)
 
-            # Closed-loop shape controller (Phase 1, 2026-06-16). Built when
-            # PHASE ships connection_shape (enabled) or conn_state_mix; once
-            # built it stays attached and hot-reloads (a later reload that drops
-            # the blocks just disables its features — failed_conn_frac→0,
-            # scalar fallback). It owns per-conn orig_bytes/duration sampling on
-            # the persistent-session channel and the failed_conn rate for
-            # scripted_services, both injected via set_controller.
-            shape_cfg = fc.connection_shape
-            csm_cfg = fc.conn_state_mix
-            shape_on = bool(shape_cfg and shape_cfg.get("enabled")) or bool(csm_cfg)
-            if shape_on or self._shape_controller is not None:
-                if self._shape_controller is None:
-                    from common.network.shape_controller import ShapeController
-                    self._shape_controller = ShapeController(
-                        shape_cfg, csm_cfg, self.logger, seed=self.seed)
-                else:
-                    self._shape_controller.update_config(shape_cfg, csm_cfg)
-                if self._persistent_svc is not None:
-                    self._persistent_svc.set_controller(self._shape_controller)
-                if self._scripted_svc is not None:
-                    self._scripted_svc.set_controller(self._shape_controller)
-                # Idle-floor budget ceiling (PHASE _idle_overrun, 2026-08-14).
-                # The shape-floor is the one discretionary always-on channel with
-                # no rate ceiling of its own — it opens conns purely to move the
-                # aggregate shape median, so on a budget-constrained deploy it is
-                # what must yield. PHASE measured the behavior idle floor at
-                # ~370 conn/hr against a 57 conn/hr budget with _idle_overrun set;
-                # scaling session_opens_per_hour alone cannot close that.
-                self._shape_controller.set_conn_budget_per_min(
-                    self._budget_conns_per_min())
+        # PersistentSession daemon — stop on omission/disable and restart if a
+        # later contract re-enables it.
+        ps_config = self._diversity_config.get("persistent_sessions") or {}
+        ps_enabled = bool(ps_config.get("enabled"))
+        if ps_enabled:
+            if self._persistent_svc is None:
+                from common.network.persistent_session import PersistentSessionDaemon
+                self._persistent_svc = PersistentSessionDaemon(
+                    ps_config, self.logger, seed=self.seed)
+            else:
+                self._persistent_svc.update_config(ps_config, seed=self.seed)
+            self._persistent_svc.start()
+        elif self._persistent_svc is not None:
+            self._persistent_svc.update_config({}, seed=self.seed)
+            self._persistent_svc.stop()
 
-            # Universal shape-floor channel (Build #5, 2026-06-25). Own-thread
-            # twin of the persistent daemon — opens coverage-driven shaped fillers
-            # (count from the controller) so shaped conns become a super-majority
-            # of the per-conn mass and drag the aggregate orig_bytes/duration
-            # median to the human target. Gated on connection_shape.enabled (so it
-            # ships dormant until PHASE emits the block, never on controls);
-            # reuses the persistent_sessions endpoint_pool — no new PHASE field.
-            shape_enabled = bool(shape_cfg and shape_cfg.get("enabled"))
-            if shape_enabled and self._shape_controller is not None:
-                floor_cfg = {
-                    "enabled": True,
-                    "endpoint_pool": (ps_config or {}).get("endpoint_pool", []),
-                    "keepalive_interval_seconds":
-                        (ps_config or {}).get("keepalive_interval_seconds"),
-                    # Active-window gate (2026-08-14). The floor previously ran
-                    # 24/7 — the only always-on channel with neither a window
-                    # gate nor a rate ceiling, so every off-window minute was
-                    # pure idle-floor spend with no shape benefit (PHASE only
-                    # scores active minutes). The daemon self-gates on these.
-                    "active_minute_windows": fc.active_minute_windows or [],
-                }
-                if self._floor_svc is None:
-                    from common.network.shape_floor import ShapeFloorDaemon
-                    self._floor_svc = ShapeFloorDaemon(
-                        floor_cfg, self.logger, seed=self.seed)
-                    self._floor_svc.set_controller(self._shape_controller)
-                    self._floor_svc.start()
-                else:
-                    self._floor_svc.update_config(floor_cfg, seed=self.seed)
-                    self._floor_svc.set_controller(self._shape_controller)
+        # Keep a disabled controller object across reloads so channel references
+        # remain stable, but reset all targets when its contract disappears.
+        shape_cfg = fc.connection_shape
+        csm_cfg = fc.conn_state_mix
+        shape_on = bool(shape_cfg and shape_cfg.get("enabled")) or bool(csm_cfg)
+        if shape_on or self._shape_controller is not None:
+            if self._shape_controller is None:
+                from common.network.shape_controller import ShapeController
+                self._shape_controller = ShapeController(
+                    shape_cfg, csm_cfg, self.logger, seed=self.seed)
+            else:
+                self._shape_controller.update_config(shape_cfg, csm_cfg)
+            self._shape_controller.set_conn_budget_per_min(
+                self._budget_conns_per_min())
+        if self._persistent_svc is not None:
+            self._persistent_svc.set_controller(self._shape_controller)
+        if self._scripted_svc is not None:
+            self._scripted_svc.set_controller(self._shape_controller)
+
+        # Shape floor follows connection_shape.enabled exactly.
+        shape_enabled = bool(shape_cfg and shape_cfg.get("enabled"))
+        if shape_enabled and self._shape_controller is not None:
+            floor_cfg = {
+                "enabled": True,
+                "endpoint_pool": ps_config.get("endpoint_pool", []),
+                "keepalive_interval_seconds": ps_config.get(
+                    "keepalive_interval_seconds"),
+                "active_minute_windows": fc.active_minute_windows or [],
+            }
+            if self._floor_svc is None:
+                from common.network.shape_floor import ShapeFloorDaemon
+                self._floor_svc = ShapeFloorDaemon(
+                    floor_cfg, self.logger, seed=self.seed)
+            else:
+                self._floor_svc.update_config(floor_cfg, seed=self.seed)
+            self._floor_svc.set_controller(self._shape_controller)
+            self._floor_svc.start()
+        elif self._floor_svc is not None:
+            self._floor_svc.update_config({}, seed=self.seed)
+            self._floor_svc.set_controller(None)
+            self._floor_svc.stop()
 
         # Push window contract — both modes consume it identically.
         if self._phase_timing is not None:
@@ -368,7 +419,7 @@ class BaseEmulationLoop(ABC):
         rotation = (self._diversity_config or {}).get("workflow_rotation", {})
         min_distinct = rotation.get("min_distinct_per_cluster", 0)
         max_consec = rotation.get("max_consecutive_same", 0)
-        has_bg_svc = self._background_svc is not None
+        has_bg_svc = bool(bg_config)
         has_prompt_aug = bool(fc.prompt_augmentation and fc.prompt_augmentation.get("prompt_content"))
 
         # Section-absent status lines. Under the two-shapes contract (2026-05-08,
@@ -418,9 +469,15 @@ class BaseEmulationLoop(ABC):
         # site_config; if wired later, the [INFO] guard belongs in their
         # respective _apply_brain_specific_config paths, not here.
 
+        # Commit only after every consumer accepted the new contract. A failed
+        # apply is retried on the next boundary instead of being mistaken for a
+        # successfully consumed version.
+        self._behavior_config_digest = digest
+        return True
+
     # ── Workflow selection ────────────────────────────────────────────
 
-    def _build_schedule_by_hour(self, schedule):
+    def _build_schedule_by_hour(self, schedule, *, strict: bool = False):
         """Parse content.schedule into 24-element per-hour weights list.
 
         schedule is a list of {"hour_range": [a, b], "workflow_weights": {...}}.
@@ -447,6 +504,26 @@ class BaseEmulationLoop(ABC):
                 )
                 print(msg, flush=True)
                 raise RuntimeError(msg)
+            if not 0 <= lo_i < hi_i <= 24:
+                msg = (
+                    f"[FATAL] content.schedule hour_range must satisfy "
+                    f"0 <= start < end <= 24, got {[lo_i, hi_i]}"
+                )
+                print(msg, flush=True)
+                raise RuntimeError(msg)
+            if strict:
+                known = {
+                    getattr(w, 'name', '') or w.__class__.__name__
+                    for w in self.workflows
+                }
+                unknown = sorted(set(ww) - known)
+                if unknown:
+                    msg = (
+                        f"[FATAL] content.schedule uses unsupported workflow "
+                        f"name(s): {unknown}; supported by this SUP: {sorted(known)}"
+                    )
+                    print(msg, flush=True)
+                    raise RuntimeError(msg)
             block_weights = [
                 float(ww.get(getattr(w, 'name', '') or w.__class__.__name__, 0.0))
                 for w in self.workflows
@@ -461,8 +538,14 @@ class BaseEmulationLoop(ABC):
             if sum(block_weights) <= 0:
                 block_weights = []  # OFF sentinel
             for h in range(lo_i, hi_i):
-                if 0 <= h < 24:
-                    by_hour[h] = block_weights
+                if by_hour[h] is not None:
+                    msg = (
+                        f"[FATAL] content.schedule assigns UTC hour {h} more "
+                        f"than once; ranges must not overlap"
+                    )
+                    print(msg, flush=True)
+                    raise RuntimeError(msg)
+                by_hour[h] = block_weights
         missing = [h for h, w in enumerate(by_hour) if w is None]
         if missing:
             msg = (
@@ -719,6 +802,12 @@ class BaseEmulationLoop(ABC):
         """Main emulation loop — runs workflows in clusters."""
         while self._running:
             self._reload_behavioral_config()
+            # Budget selection is hour-dependent even when behavior.json bytes
+            # are unchanged, so keep this small runtime update outside the
+            # digest-gated reload path.
+            if self._shape_controller is not None:
+                self._shape_controller.set_conn_budget_per_min(
+                    self._budget_conns_per_min())
 
             # Window-mode gate (PHASE 2026-05-08). Identical behavior for
             # both feedback and controls modes — the windows themselves

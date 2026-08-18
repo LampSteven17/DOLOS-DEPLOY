@@ -35,6 +35,8 @@ from typing import Optional, List
 # fields each shape populates.
 MODE_FEEDBACK = "feedback"   # full PHASE-tuned schema (workflow_weights, site_categories, ...)
 MODE_CONTROLS = "controls"   # hardcoded floor (google_search_pool + browse_url_pool, fixed page_fetch, no LLM)
+BEHAVIOR_CONTRACT_V1 = "ruse.decoy.behavior/v1"
+SUPPORTED_BEHAVIOR_CONTRACTS = frozenset({BEHAVIOR_CONTRACT_V1})
 
 
 @dataclass
@@ -43,6 +45,9 @@ class BehavioralConfig:
     # PHASE-emitted mode discriminator. Always "feedback" or "controls" post
     # 2026-05-08; load_behavioral_config raises FATAL on any other value.
     mode: str = MODE_FEEDBACK
+    # Optional during the PHASE migration. Once present it is strict: RUSE
+    # refuses versions it does not implement rather than guessing semantics.
+    contract_version: Optional[str] = None
 
     # Per-target seed (PHASE-emitted _metadata.seed). When present, overrides
     # the CLI --seed default so each (config, dataset) pair has a stable but
@@ -372,6 +377,15 @@ def load_behavioral_config(config_dir: Path, config_key: str) -> BehavioralConfi
     behavior = data.get("behavior") or {}
     metadata = data.get("_metadata") or {}
     mode = metadata.get("mode")
+    contract_version = metadata.get("contract_version")
+
+    if (contract_version is not None
+            and contract_version not in SUPPORTED_BEHAVIOR_CONTRACTS):
+        supported = ", ".join(sorted(SUPPORTED_BEHAVIOR_CONTRACTS))
+        raise RuntimeError(
+            f"behavior.json contract unsupported for {config_key} at {path}: "
+            f"{contract_version!r} (supported: {supported})"
+        )
 
     # Mode dispatch (PHASE 2026-05-08). PHASE consolidated to two shapes —
     # "feedback" (full schema) and "controls" (hardcoded floor). Every
@@ -427,6 +441,7 @@ def load_behavioral_config(config_dir: Path, config_key: str) -> BehavioralConfi
 
     fc = BehavioralConfig(
         mode=mode,
+        contract_version=contract_version,
         seed=parsed_seed,
         active_minute_windows=active_minute_windows,
         target_conn_per_minute_during_active=target_rate,
@@ -502,6 +517,17 @@ def build_workflow_weights(workflows, behavioral_config: BehavioralConfig) -> Op
         return None
 
     weights = behavioral_config.workflow_weights
+    if behavioral_config.contract_version:
+        known = {
+            getattr(w, 'name', None) or w.__class__.__name__
+            for w in workflows
+        }
+        unknown = sorted(set(weights) - known)
+        if unknown:
+            raise RuntimeError(
+                f"content.workflow_weights contains unsupported workflow "
+                f"name(s): {unknown}; supported by this SUP: {sorted(known)}"
+            )
     result = []
     for w in workflows:
         # Try workflow name first, then class name

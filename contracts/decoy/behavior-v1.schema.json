@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ruse.local/contracts/decoy/behavior-v1.schema.json",
+  "title": "RUSE DECOY behavior contract v1",
+  "type": "object",
+  "required": ["_metadata", "timing"],
+  "additionalProperties": false,
+  "properties": {
+    "_metadata": {
+      "type": "object",
+      "required": ["contract_version", "mode", "sup_config", "seed"],
+      "properties": {
+        "contract_version": {"const": "ruse.decoy.behavior/v1"},
+        "mode": {"enum": ["feedback", "controls"]},
+        "sup_config": {"type": "string", "minLength": 1},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      },
+      "additionalProperties": true
+    },
+    "timing": {"$ref": "#/$defs/timing"},
+    "content": {"$ref": "#/$defs/content"},
+    "behavior": {"$ref": "#/$defs/behavior"},
+    "diversity": {"$ref": "#/$defs/diversity"},
+    "prompt_content": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"_metadata": {"properties": {"mode": {"const": "feedback"}}}}},
+      "then": {"properties": {"timing": {"required": ["burst_percentiles"]}}}
+    }
+  ],
+  "$defs": {
+    "nonnegativeNumber": {"type": "number", "minimum": 0},
+    "hourlyCounts": {
+      "type": "array",
+      "minItems": 24,
+      "maxItems": 24,
+      "items": {"type": "number", "minimum": 0}
+    },
+    "window": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "integer", "minimum": 0, "maximum": 1439},
+        {"type": "integer", "minimum": 1, "maximum": 1440}
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "percentiles": {
+      "type": "object",
+      "required": ["5", "25", "50", "75", "95"],
+      "properties": {
+        "5": {"$ref": "#/$defs/nonnegativeNumber"},
+        "25": {"$ref": "#/$defs/nonnegativeNumber"},
+        "50": {"$ref": "#/$defs/nonnegativeNumber"},
+        "75": {"$ref": "#/$defs/nonnegativeNumber"},
+        "95": {"$ref": "#/$defs/nonnegativeNumber"},
+        "max": {"$ref": "#/$defs/nonnegativeNumber"}
+      },
+      "additionalProperties": false
+    },
+    "shapePercentiles": {
+      "type": "object",
+      "required": ["p25", "p50", "p75", "p90", "max"],
+      "properties": {
+        "p25": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p50": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p75": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p90": {"$ref": "#/$defs/nonnegativeNumber"},
+        "max": {"$ref": "#/$defs/nonnegativeNumber"}
+      },
+      "additionalProperties": false
+    },
+    "timing": {
+      "type": "object",
+      "required": [
+        "active_minute_windows",
+        "target_conn_per_minute_during_active",
+        "min_window_minutes",
+        "hard_fence_seconds"
+      ],
+      "properties": {
+        "_controllability": {},
+        "active_minute_windows": {"type": "array", "items": {"$ref": "#/$defs/window"}},
+        "active_minute_window_source": {"type": "object"},
+        "target_conn_per_minute_during_active": {"$ref": "#/$defs/nonnegativeNumber"},
+        "min_window_minutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+        "hard_fence_seconds": {"type": "integer", "minimum": 0},
+        "hourly_distribution": {"type": "array", "minItems": 24, "maxItems": 24, "items": {"type": "number", "minimum": 0, "maximum": 1}},
+        "burst_percentiles": {
+          "type": "object",
+          "required": ["connections_per_burst", "idle_gap_minutes", "burst_duration_minutes"],
+          "properties": {
+            "connections_per_burst": {"$ref": "#/$defs/percentiles"},
+            "idle_gap_minutes": {"$ref": "#/$defs/percentiles"},
+            "burst_duration_minutes": {"$ref": "#/$defs/percentiles"}
+          },
+          "additionalProperties": false
+        },
+        "variance": {"type": "object"}
+      },
+      "patternProperties": {"^_": {}},
+      "additionalProperties": false
+    },
+    "scheduleBlock": {
+      "type": "object",
+      "required": ["hour_range", "workflow_weights"],
+      "properties": {
+        "hour_range": {
+          "type": "array",
+          "prefixItems": [
+            {"type": "integer", "minimum": 0, "maximum": 23},
+            {"type": "integer", "minimum": 1, "maximum": 24}
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "workflow_weights": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}},
+        "workflow_budget": {
+          "type": "object",
+          "properties": {
+            "target_conns_per_hour": {"$ref": "#/$defs/nonnegativeNumber"},
+            "target_execs_per_hour": {"type": "object", "additionalProperties": {"$ref": "#/$defs/nonnegativeNumber"}},
+            "idle_floor_conns_per_hour": {"type": "object"},
+            "workflow_costs": {"type": "object"},
+            "cadence_cap_per_hour": {"$ref": "#/$defs/nonnegativeNumber"},
+            "rate_calibration": {"type": "object"}
+          },
+          "patternProperties": {"^_": {}},
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "content": {
+      "type": "object",
+      "properties": {
+        "_controllability": {},
+        "_service_mix_match": {},
+        "schedule": {"type": "array", "items": {"$ref": "#/$defs/scheduleBlock"}},
+        "workflow_weights": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}},
+        "site_categories": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}},
+        "browse_url_pool": {"type": "array", "items": {"type": "string"}},
+        "youtube_video_pool": {"type": "array", "items": {"type": "string"}},
+        "google_search_pool": {"type": "array", "items": {"type": "string"}},
+        "whois_domain_pool": {"type": "array", "items": {"type": "string"}},
+        "download_url_pool": {
+          "oneOf": [
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}}
+          ]
+        },
+        "page_fetch_interval_seconds": {"$ref": "#/$defs/nonnegativeNumber"},
+        "llm_calls_enabled": {"type": "boolean"}
+      },
+      "patternProperties": {"^_": {}},
+      "additionalProperties": false
+    },
+    "behavior": {
+      "type": "object",
+      "properties": {
+        "_controllability": {},
+        "max_steps": {"type": "integer", "minimum": 1},
+        "per_workflow": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
+        "page_dwell": {
+          "oneOf": [
+            {"$ref": "#/$defs/nonnegativeNumber"},
+            {"type": "object", "properties": {"min_seconds": {"$ref": "#/$defs/nonnegativeNumber"}, "max_seconds": {"$ref": "#/$defs/nonnegativeNumber"}}, "additionalProperties": false}
+          ]
+        },
+        "navigation_clicks": {
+          "oneOf": [
+            {"type": "integer", "minimum": 0},
+            {"type": "object", "properties": {"min": {"type": "integer", "minimum": 0}, "max": {"type": "integer", "minimum": 0}}, "additionalProperties": false}
+          ]
+        },
+        "keep_alive_probability": {"type": "number", "minimum": 0, "maximum": 1},
+        "download": {"type": "object"},
+        "tool_pool": {"type": "array", "items": {"type": "string"}},
+        "enable_download": {"type": "boolean"},
+        "enable_whois": {"type": "boolean"}
+      },
+      "patternProperties": {"^_": {}},
+      "additionalProperties": false
+    },
+    "backgroundServices": {
+      "type": "object",
+      "properties": {
+        "dns_per_hour": {"$ref": "#/$defs/hourlyCounts"},
+        "http_head_per_hour": {"$ref": "#/$defs/hourlyCounts"},
+        "ntp_checks_per_day": {"$ref": "#/$defs/nonnegativeNumber"},
+        "smb_enabled": {"type": "boolean"},
+        "ldap_enabled": {"type": "boolean"},
+        "imap_enabled": {"type": "boolean"},
+        "doh_enabled": {"type": "boolean"},
+        "mdns_enabled": {"type": "boolean"},
+        "failed_conn_enabled": {"type": "boolean"},
+        "websocket_enabled": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "diversity": {
+      "type": "object",
+      "properties": {
+        "_controllability": {},
+        "workflow_rotation": {"type": "object", "properties": {"min_distinct_per_cluster": {"type": "integer", "minimum": 0}, "max_consecutive_same": {"type": "integer", "minimum": 0}}, "additionalProperties": false},
+        "background_services": {"$ref": "#/$defs/backgroundServices"},
+        "persistent_sessions": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "endpoint_pool": {"type": "array", "items": {"type": "string"}},
+            "session_opens_per_hour": {"$ref": "#/$defs/hourlyCounts"},
+            "keepalive_interval_seconds": {"$ref": "#/$defs/nonnegativeNumber"},
+            "session_duration_seconds": {"$ref": "#/$defs/nonnegativeNumber"},
+            "orig_bytes_per_session": {"$ref": "#/$defs/nonnegativeNumber"}
+          },
+          "additionalProperties": false
+        },
+        "connection_shape": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "orig_bytes": {"$ref": "#/$defs/shapePercentiles"},
+            "duration": {"$ref": "#/$defs/shapePercentiles"},
+            "orig_pkts": {"$ref": "#/$defs/shapePercentiles"},
+            "resp_bytes": {"$ref": "#/$defs/shapePercentiles"},
+            "resp_pkts": {"$ref": "#/$defs/shapePercentiles"}
+          },
+          "patternProperties": {"^_": {}},
+          "additionalProperties": false
+        },
+        "conn_state_mix": {
+          "type": "object",
+          "properties": {
+            "SF": {"type": "number", "minimum": 0, "maximum": 1},
+            "failed_conn": {"type": "number", "minimum": 0, "maximum": 1},
+            "OTH": {"type": "number", "minimum": 0, "maximum": 1},
+            "RSTR": {"type": "number", "minimum": 0, "maximum": 1}
+          },
+          "patternProperties": {"^_": {}},
+          "additionalProperties": false
+        },
+        "topology_mimicry": {"type": "object", "additionalProperties": {"$ref": "#/$defs/nonnegativeNumber"}}
+      },
+      "patternProperties": {"^_": {}},
+      "additionalProperties": false
+    }
+  }
+}

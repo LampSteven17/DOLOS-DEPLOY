@@ -145,50 +145,45 @@ class SmolAgentLoop(BaseEmulationLoop):
         # Only BrowseWebWorkflow consumes site_weights; WebSearch + YouTube
         # ignore the field by design (search-result diversity comes from the
         # search engine, not category steering; YouTube is uniformly heavy).
+        applied = 0
+        for w in self.workflows:
+            if getattr(w, "name", "") == "BrowseWeb" and hasattr(w, "site_weights"):
+                base_weights = self._baseline_attr(w, "site_weights")
+                w.site_weights = (dict(fc.site_config)
+                                  if fc.site_config is not None else base_weights)
+                applied += 1
         if fc.site_config:
-            applied = 0
-            for w in self.workflows:
-                if getattr(w, "name", "") == "BrowseWeb" and hasattr(w, "site_weights"):
-                    w.site_weights = dict(fc.site_config)
-                    applied += 1
             if self.logger:
                 self.logger.info("[behavior] Applied site_config",
                                  details={"weights": fc.site_config, "workflows": applied})
 
-        # Behavior modifiers — max_steps per workflow (force agent re-creation on change)
-        if fc.behavior_modifiers:
-            max_steps_global = fc.behavior_modifiers.get("max_steps")
-            per_workflow = fc.behavior_modifiers.get("per_workflow", {})
-            for w in self.workflows:
-                wname = getattr(w, 'name', '') or w.__class__.__name__
+        # Behavior modifiers replace earlier values; omission restores defaults.
+        modifiers = fc.behavior_modifiers or {}
+        max_steps_global = modifiers.get("max_steps")
+        per_workflow = modifiers.get("per_workflow", {})
+        for w in self.workflows:
+            wname = getattr(w, 'name', '') or w.__class__.__name__
+            if hasattr(w, 'max_steps'):
+                base_max = self._baseline_attr(w, "max_steps")
                 new_max = per_workflow.get(wname, max_steps_global)
-                if new_max is not None and hasattr(w, 'max_steps'):
-                    old_max = w.max_steps
-                    w.max_steps = int(new_max)
-                    if old_max != w.max_steps:
-                        w._agent = None  # Force re-creation with new max_steps
+                desired = int(new_max) if new_max is not None else base_max
+                if w.max_steps != desired:
+                    w.max_steps = desired
+                    if hasattr(w, "_agent"):
+                        w._agent = None
+        if modifiers:
             if self.logger:
                 self.logger.info("[behavior] Applied behavior_modifiers",
-                                 details=fc.behavior_modifiers)
+                                 details=modifiers)
 
-        # G1: Inject PHASE behavioral guidance into SmolAgents prompts
+        # G1: replacement overlay; rebuild the agent only when prompt bytes change.
         augmentation = (fc.prompt_augmentation or {}).get("prompt_content", "")
-        if augmentation:
-            from brains.smolagents.prompts import SMOLPrompts
-            applied = 0
-            for w in self.workflows:
-                if hasattr(w, 'prompts') and w.prompts:
-                    existing = w.prompts.content or ""
-                    w.prompts = SMOLPrompts(
-                        task=w.prompts.task,
-                        content=f"{existing}\n\n[PHASE Behavioral Guidance]\n{augmentation}" if existing else augmentation,
-                    )
-                    w._agent = None  # Force re-creation with new prompts
-                    applied += 1
-                elif hasattr(w, 'prompts'):
-                    w.prompts = SMOLPrompts(task="Research and answer the question.", content=augmentation)
-                    w._agent = None
-                    applied += 1
-            if self.logger:
-                self.logger.info("[behavior] Applied prompt_augmentation",
-                                 details={"length": len(augmentation), "workflows": applied})
+        from brains.smolagents.prompts import SMOLPrompts
+        applied, changed = self._apply_prompt_overlay(
+            SMOLPrompts, "Research and answer the question.", augmentation,
+            reset_agent=True,
+        )
+        if augmentation and self.logger:
+            self.logger.info("[behavior] Applied prompt_augmentation",
+                             details={"length": len(augmentation),
+                                      "workflows": applied, "changed": changed})

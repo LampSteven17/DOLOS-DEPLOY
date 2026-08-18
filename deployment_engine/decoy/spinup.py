@@ -15,6 +15,7 @@ from ..core.config import DeploymentConfig
 from ..core.openstack import OpenStack
 from ..core.ssh_config import install_ssh_config
 from ..core.feedback import generate_feedback_config
+from ..core.revision import RevisionError, resolve_ruse_revision
 from ..core.vm_naming import make_vm_prefix
 from ..core import run_status
 from ..core.deploy_steps import (
@@ -57,6 +58,17 @@ def run_decoy_spinup(
         output.error(f"ERROR: No hosts.ini found for: {config_name}")
         return 1
 
+    # A VM install must be reproducible from one immutable Git object. Resolve
+    # this before provisioning so a dirty runtime tree or malformed override
+    # cannot leave paid-for VMs waiting on an install that can never match the
+    # orchestrator. RUSE_GIT_REF is the explicit escape hatch for deploying a
+    # previously published commit while local development is in progress.
+    try:
+        ruse_revision = resolve_ruse_revision(deploy_dir.parent)
+    except RevisionError as exc:
+        output.error(f"ERROR: Cannot select immutable RUSE revision: {exc}")
+        return 1
+
     # Generate run ID and paths
     run_id = time.strftime("%m%d%y%H%M%S")
     run_dir = config_dir / "runs" / run_id
@@ -81,7 +93,7 @@ def run_decoy_spinup(
         output.error("Every DECOY SUP must have a behavior.json. Either fix the")
         output.error("behavior_source in config.yaml, regenerate the missing")
         output.error("PHASE feedback files, or write the controls defaults at")
-        output.error("/mnt/AXES2U1/feedback/decoy-controls/controls/.")
+        output.error("/data/axes-mirror/feedback/decoy-controls/controls/.")
         return 1
 
     # Display header
@@ -89,6 +101,7 @@ def run_decoy_spinup(
     output.info(f"  VMs:       {config.brain_summary()}")
     output.info(f"  Run ID:    {run_id}")
     output.info(f"  VM prefix: {vm_prefix}*")
+    output.info(f"  RUSE ref:  {ruse_revision}")
     if behavior_source:
         output.info(f"  Feedback:  {behavior_source}")
     output.info("")
@@ -96,6 +109,7 @@ def run_decoy_spinup(
     # Create run directory
     run_dir.mkdir(parents=True, exist_ok=True)
     _copy_file(config_file, run_dir / "config.yaml")
+    (run_dir / "ruse-revision.txt").write_text(f"{ruse_revision}\n")
 
     # Stamp FAILED up front; flipped to OK only at the final clean return below.
     # Any early return (provision/install/distribute/register abort), exception,
@@ -181,6 +195,7 @@ def run_decoy_spinup(
         "deployment_dir": str(config_dir),
         "deployment_id": dep_id,
         "run_dir": str(run_dir),
+        "ruse_revision": ruse_revision,
     }
 
     # Override behavior_source if provided via CLI
@@ -410,7 +425,7 @@ def _validate_behavior_source(
     errors: list[str] = []
     if not effective_source:
         errors.append("No behavior_source configured. DECOY controls must point at")
-        errors.append("/mnt/AXES2U1/feedback/decoy-controls/controls (set in config.yaml).")
+        errors.append("/data/axes-mirror/feedback/decoy-controls/controls (set in config.yaml).")
         return errors
 
     src = Path(effective_source)
@@ -508,7 +523,7 @@ def _teardown_matching_prior_runs(
     if not prior_run_dirs:
         return
 
-    from ..core.teardown_steps import safe_rmtree, wait_until_zero
+    from ..core.teardown_steps import request_server_deletes, safe_rmtree, wait_until_zero
 
     to_teardown: list[tuple[Path, str]] = []  # (prior_run_dir, vm_prefix)
     for prior in prior_run_dirs:
@@ -542,9 +557,7 @@ def _teardown_matching_prior_runs(
         servers = os_client.server_list_with_ids(prefix=prior_prefix)
         if servers:
             output.info(f"  Deleting {len(servers)} VM(s) under {prior_prefix}*")
-            os_client.server_delete_many(
-                [s["id"] for s in servers], wait=True,
-            )
+            request_server_deletes(os_client, servers)
             remaining = wait_until_zero(os_client, prior_prefix)
             if remaining:
                 output.error(

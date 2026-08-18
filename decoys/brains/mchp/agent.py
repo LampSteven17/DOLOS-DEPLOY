@@ -160,68 +160,80 @@ class MCHPAgent(BaseEmulationLoop):
                 w.domain_pool = fc.whois_domain_pool
             # Phase 1: PHASE pools replace MCHP's file-loaded lists when shipped.
             # MCHP consumes URLs/queries directly (no LLM task wrapping).
-            elif wname == "BrowseWeb" and fc.browse_url_pool and hasattr(w, "website_list"):
-                w.website_list = list(fc.browse_url_pool)
-            elif wname == "GoogleSearch" and fc.google_search_pool and hasattr(w, "search_list"):
-                w.search_list = list(fc.google_search_pool)
-            elif wname == "BrowseYouTube" and fc.youtube_video_pool and hasattr(w, "video_pool"):
+            elif wname == "BrowseWeb" and hasattr(w, "website_list"):
+                baseline = self._baseline_attr(w, "website_list")
+                w.website_list = (list(fc.browse_url_pool)
+                                  if fc.browse_url_pool is not None else baseline)
+            elif wname == "GoogleSearch" and hasattr(w, "search_list"):
+                baseline = self._baseline_attr(w, "search_list")
+                w.search_list = (list(fc.google_search_pool)
+                                 if fc.google_search_pool is not None else baseline)
+            elif wname == "BrowseYouTube" and hasattr(w, "video_pool"):
                 # MCHP YouTube switches from search→click to direct
                 # /watch?v={id} navigation when the pool is set; watch +
                 # suggested-video clicks still run downstream.
-                w.video_pool = list(fc.youtube_video_pool)
+                baseline = self._baseline_attr(w, "video_pool")
+                w.video_pool = (list(fc.youtube_video_pool)
+                                if fc.youtube_video_pool is not None else baseline)
 
         # Ablation-gated omissions get INFO-level logs; real gaps stay WARNING
         gated = fc.is_ablation_gated() if fc and hasattr(fc, "is_ablation_gated") else False
         tag = "[INFO]" if gated else "[WARNING]"
         suffix = " (ablation-gated)" if gated else ""
-        if not fc.behavior_modifiers:
+        modifiers = fc.behavior_modifiers or {}
+        if not modifiers:
             # Whole section missing — one message instead of three below
             print(f"{tag} behavior_modifiers DISABLED — "
                   f"no behavior section in behavior.json, "
                   f"using MCHP defaults for page_dwell, navigation_clicks, keep_alive_probability"
                   f"{suffix}")
-            return
 
         for w in self.workflows:
             if getattr(w, 'name', '') != 'BrowseWeb':
                 continue
+            base_min_sleep = self._baseline_attr(w, "min_sleep_time")
+            base_max_sleep = self._baseline_attr(w, "max_sleep_time")
+            base_nav_clicks = self._baseline_attr(w, "max_navigation_clicks")
+            base_keep_alive = self._baseline_attr(w, "keep_alive_probability")
             # PHASE baseline emits page_dwell / navigation_clicks as
             # integers (degenerate single-value mode); only the calibrated
             # PHASE feedback shape uses {min, max} dicts. Coerce non-dict
             # values to {} so the downstream `in` checks don't crash.
-            page_dwell = fc.behavior_modifiers.get("page_dwell", {})
+            page_dwell = modifiers.get("page_dwell", {})
             if not isinstance(page_dwell, dict):
                 page_dwell = {}
-            if "max_seconds" in page_dwell:
-                w.max_sleep_time = int(page_dwell["max_seconds"])
-            if "min_seconds" in page_dwell:
-                w.min_sleep_time = int(page_dwell["min_seconds"])
+            w.max_sleep_time = (int(page_dwell["max_seconds"])
+                                if "max_seconds" in page_dwell else base_max_sleep)
+            w.min_sleep_time = (int(page_dwell["min_seconds"])
+                                if "min_seconds" in page_dwell else base_min_sleep)
             if "max_seconds" not in page_dwell and "min_seconds" not in page_dwell:
                 print(f"{tag} B1 page_dwell DISABLED — "
                       f"no behavior.page_dwell.{{min,max}}_seconds, "
                       f"using defaults min={w.min_sleep_time} max={w.max_sleep_time}"
                       f"{suffix}")
-            nav_clicks = fc.behavior_modifiers.get("navigation_clicks", {})
+            nav_clicks = modifiers.get("navigation_clicks", {})
             if not isinstance(nav_clicks, dict):
                 nav_clicks = {}
             if "max" in nav_clicks:
                 w.max_navigation_clicks = int(nav_clicks["max"])
             else:
+                w.max_navigation_clicks = base_nav_clicks
                 print(f"{tag} B2 navigation_clicks DISABLED — "
                       f"no behavior.navigation_clicks.max, "
                       f"using default {w.max_navigation_clicks}"
                       f"{suffix}")
             # G2: Connection reuse probability for tab management
-            if "keep_alive_probability" in fc.behavior_modifiers:
-                w.keep_alive_probability = float(fc.behavior_modifiers["keep_alive_probability"])
+            if "keep_alive_probability" in modifiers:
+                w.keep_alive_probability = float(modifiers["keep_alive_probability"])
             else:
+                w.keep_alive_probability = base_keep_alive
                 print(f"{tag} G2 keep_alive_probability DISABLED — "
                       f"no behavior.keep_alive_probability, "
                       f"using default {w.keep_alive_probability}"
                       f"{suffix}")
             if self.logger:
                 self.logger.info("[behavior] Applied behavior_modifiers to BrowseWeb",
-                                 details=fc.behavior_modifiers)
+                                 details=modifiers)
             break
 
 

@@ -156,55 +156,48 @@ class BrowserUseLoop(BaseEmulationLoop):
             elif wname == "WebSearch" and hasattr(w, "query_pool"):
                 w.query_pool = fc.google_search_pool
 
-        # Behavior modifiers — max_steps per workflow + page_dwell
-        if fc.behavior_modifiers:
-            max_steps_global = fc.behavior_modifiers.get("max_steps")
-            per_workflow = fc.behavior_modifiers.get("per_workflow", {})
-            for w in self.workflows:
-                wname = getattr(w, 'name', '') or w.__class__.__name__
+        # Behavior modifiers replace the previous overlay. Missing keys restore
+        # the workflow's post-load defaults.
+        modifiers = fc.behavior_modifiers or {}
+        max_steps_global = modifiers.get("max_steps")
+        per_workflow = modifiers.get("per_workflow", {})
+        for w in self.workflows:
+            wname = getattr(w, 'name', '') or w.__class__.__name__
+            if hasattr(w, 'max_steps'):
+                base_max = self._baseline_attr(w, "max_steps")
                 new_max = per_workflow.get(wname, max_steps_global)
-                if new_max is not None and hasattr(w, 'max_steps'):
-                    w.max_steps = int(new_max)
+                w.max_steps = int(new_max) if new_max is not None else base_max
 
-            # page_dwell: previously MCHP-only. Now BU honors it via a per-step
-            # callback registered on Agent. min/max sampled fresh per step so
-            # each action gets a new uniform draw in [min, max] seconds.
-            # PHASE baseline emits page_dwell as int (degenerate); skip then.
-            pd = fc.behavior_modifiers.get("page_dwell")
-            pd_tuple = None
-            if isinstance(pd, dict):
-                try:
-                    pd_tuple = (
-                        float(pd.get("min_seconds", 0.0)),
-                        float(pd.get("max_seconds", 0.0)),
-                    )
-                except (TypeError, ValueError):
-                    pd_tuple = None
-            if pd_tuple and pd_tuple[1] > 0:
-                for w in self.workflows:
-                    if hasattr(w, "page_dwell"):
-                        w.page_dwell = pd_tuple
+        # page_dwell: min/max sampled fresh per step. A removed or malformed
+        # override restores the native workflow value.
+        pd = modifiers.get("page_dwell")
+        pd_tuple = None
+        if isinstance(pd, dict):
+            try:
+                pd_tuple = (
+                    float(pd.get("min_seconds", 0.0)),
+                    float(pd.get("max_seconds", 0.0)),
+                )
+            except (TypeError, ValueError):
+                pd_tuple = None
+        for w in self.workflows:
+            if hasattr(w, "page_dwell"):
+                base_dwell = self._baseline_attr(w, "page_dwell")
+                w.page_dwell = (pd_tuple if pd_tuple and pd_tuple[1] > 0
+                                else base_dwell)
 
+        if modifiers:
             if self.logger:
                 self.logger.info("[behavior] Applied behavior_modifiers",
-                                 details=fc.behavior_modifiers)
+                                 details=modifiers)
 
-        # G1: Inject PHASE behavioral guidance into BrowserUse prompts
+        # G1: replacement overlay; omission removes the prior PHASE guidance.
         augmentation = (fc.prompt_augmentation or {}).get("prompt_content", "")
-        if augmentation:
-            from brains.browseruse.prompts import BUPrompts
-            applied = 0
-            for w in self.workflows:
-                if hasattr(w, 'prompts') and w.prompts:
-                    existing = w.prompts.content or ""
-                    w.prompts = BUPrompts(
-                        task=w.prompts.task,
-                        content=f"{existing}\n\n[PHASE Behavioral Guidance]\n{augmentation}" if existing else augmentation,
-                    )
-                    applied += 1
-                elif hasattr(w, 'prompts'):
-                    w.prompts = BUPrompts(task="Complete the browsing task.", content=augmentation)
-                    applied += 1
-            if self.logger:
-                self.logger.info("[behavior] Applied prompt_augmentation",
-                                 details={"length": len(augmentation), "workflows": applied})
+        applied, changed = self._apply_prompt_overlay(
+            BUPrompts, "Complete the browsing task.", augmentation,
+            reset_agent=False,
+        )
+        if augmentation and self.logger:
+            self.logger.info("[behavior] Applied prompt_augmentation",
+                             details={"length": len(augmentation),
+                                      "workflows": applied, "changed": changed})

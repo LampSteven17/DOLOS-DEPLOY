@@ -21,7 +21,7 @@
     deployment_dir: "{{ playbook_dir }}"
     config_file: "{{ deployment_dir }}/config.yaml"
     ruse_repo: "https://github.com/LampSteven17/RUSE.git"
-    ruse_branch: "main"
+    ruse_revision: ""
     ruse_path: "/opt/ruse"
 
   pre_tasks:
@@ -36,6 +36,15 @@
       include_vars:
         file: "{{ config_file }}"
       delegate_to: localhost
+      run_once: true
+
+    - name: Require immutable RUSE revision
+      assert:
+        that:
+          - ruse_revision is match('^[0-9a-f]{40}$')
+        fail_msg: >-
+          ruse_revision must be a full 40-character Git commit SHA. The DECOY
+          orchestrator must resolve and pass it before provisioning.
       run_once: true
 
   tasks:
@@ -82,12 +91,31 @@
       git:
         repo: "{{ ruse_repo }}"
         dest: "{{ ruse_path }}"
-        version: "{{ ruse_branch }}"
+        version: "{{ ruse_revision }}"
         force: yes
       register: clone_ruse
       until: clone_ruse is succeeded
       retries: 3
       delay: 15
+
+    - name: Read installed RUSE revision
+      command: git -C {{ ruse_path }} rev-parse HEAD
+      register: installed_ruse_revision
+      changed_when: false
+
+    - name: Verify installed RUSE revision
+      assert:
+        that:
+          - installed_ruse_revision.stdout | trim == ruse_revision
+        fail_msg: >-
+          RUSE revision mismatch on {{ inventory_hostname }}: requested
+          {{ ruse_revision }}, installed {{ installed_ruse_revision.stdout | trim }}.
+
+    - name: Record installed RUSE revision
+      copy:
+        content: "{{ ruse_revision }}\n"
+        dest: "{{ ruse_path }}/DEPLOYED_RUSE_REVISION"
+        mode: '0644'
 
     - name: Make INSTALL_SUP.sh executable
       file:
