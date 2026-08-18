@@ -36,6 +36,7 @@ class SmolAgentLoop(BaseEmulationLoop):
         seed: int = 42,
         behavior_config_dir: Optional[str] = None,
         config_key: Optional[str] = None,
+        initial_behavior_snapshot=None,
     ):
         self.model = model
         self.prompts = prompts
@@ -49,6 +50,7 @@ class SmolAgentLoop(BaseEmulationLoop):
             seed=seed,
             behavior_config_dir=behavior_config_dir,
             config_key=config_key,
+            initial_behavior_snapshot=initial_behavior_snapshot,
         )
 
     # ── Brain-specific implementations ───────────────────────────────
@@ -67,9 +69,18 @@ class SmolAgentLoop(BaseEmulationLoop):
         """
         from pathlib import Path
         from brains.smolagents.workflows.loader import load_workflows
-        from common.behavioral_config import load_workflow_gates
+        from common.behavioral_config import (
+            load_workflow_gates,
+            load_workflow_registration,
+        )
 
-        gates = (load_workflow_gates(Path(self._behavior_config_dir))
+        config_dir = Path(self._behavior_config_dir) if self._behavior_config_dir else None
+        enabled_workflows = (
+            load_workflow_registration(config_dir, self._config_key)
+            if config_dir and self._config_key
+            else None
+        )
+        gates = (load_workflow_gates(config_dir)
                  if self._behavior_config_dir
                  else {"enable_whois": True, "enable_download": True})
         print(f"Loading workflows (gates={gates})...")
@@ -80,6 +91,7 @@ class SmolAgentLoop(BaseEmulationLoop):
             prompts=self.prompts,
             enable_whois=gates["enable_whois"],
             enable_download=gates["enable_download"],
+            enabled_workflows=enabled_workflows,
         )
         print(f"Loaded {len(workflows)} workflows")
 

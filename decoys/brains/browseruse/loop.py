@@ -41,6 +41,7 @@ class BrowserUseLoop(BaseEmulationLoop):
         seed: int = 42,
         behavior_config_dir: Optional[str] = None,
         config_key: Optional[str] = None,
+        initial_behavior_snapshot=None,
     ):
         self.model = model
         self.prompts = prompts
@@ -56,6 +57,7 @@ class BrowserUseLoop(BaseEmulationLoop):
             seed=seed,
             behavior_config_dir=behavior_config_dir,
             config_key=config_key,
+            initial_behavior_snapshot=initial_behavior_snapshot,
         )
 
     # ── Brain-specific implementations ───────────────────────────────
@@ -74,9 +76,18 @@ class BrowserUseLoop(BaseEmulationLoop):
         """
         from pathlib import Path
         from brains.browseruse.workflows.loader import load_workflows
-        from common.behavioral_config import load_workflow_gates
+        from common.behavioral_config import (
+            load_workflow_gates,
+            load_workflow_registration,
+        )
 
-        gates = (load_workflow_gates(Path(self._behavior_config_dir))
+        config_dir = Path(self._behavior_config_dir) if self._behavior_config_dir else None
+        enabled_workflows = (
+            load_workflow_registration(config_dir, self._config_key)
+            if config_dir and self._config_key
+            else None
+        )
+        gates = (load_workflow_gates(config_dir)
                  if self._behavior_config_dir
                  else {"enable_whois": True, "enable_download": True})
         print(f"Loading workflows (gates={gates})...")
@@ -89,6 +100,7 @@ class BrowserUseLoop(BaseEmulationLoop):
             max_steps=self.max_steps,
             enable_whois=gates["enable_whois"],
             enable_download=gates["enable_download"],
+            enabled_workflows=enabled_workflows,
         )
         print(f"Loaded {len(workflows)} workflows")
 
@@ -151,7 +163,7 @@ class BrowserUseLoop(BaseEmulationLoop):
                     w.outcome_mix = fc.download_outcome_mix
             elif wname == "BrowseWeb" and hasattr(w, "url_pool"):
                 w.url_pool = fc.browse_url_pool
-            elif wname == "BrowseYoutube" and hasattr(w, "video_pool"):
+            elif wname == "BrowseYouTube" and hasattr(w, "video_pool"):
                 w.video_pool = fc.youtube_video_pool
             elif wname == "WebSearch" and hasattr(w, "query_pool"):
                 w.query_pool = fc.google_search_pool

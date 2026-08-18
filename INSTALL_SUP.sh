@@ -732,6 +732,8 @@ install_python_deps() {
     log "Installing Python dependencies..."
     source "$venv_path/bin/activate"
     pip install --upgrade pip
+    # Strict DECOY behavior V2 contract validation (Draft 2020-12).
+    pip install 'jsonschema>=4.10,<5'
 
     # Base deps for brain type
     case "$BRAIN" in
@@ -772,6 +774,8 @@ copy_source_code() {
     cp -r "$SCRIPT_DIR/decoys/augmentations" "$dest_dir/decoys/"
     cp -r "$SCRIPT_DIR/decoys/common" "$dest_dir/decoys/"
     cp -r "$SCRIPT_DIR/decoys/sup" "$dest_dir/decoys/"
+    mkdir -p "$dest_dir/contracts"
+    cp -r "$SCRIPT_DIR/contracts/decoy" "$dest_dir/contracts/"
     touch "$dest_dir/decoys/__init__.py"
 }
 

@@ -1,0 +1,80 @@
+{
+  "report_version": "phase.decoy.feedback-report/v2",
+  "behavior_contract_version": "ruse.decoy.behavior/v2",
+  "feedback_run_id": "contract-fixture-browseruse-v2",
+  "generated_at": "2026-08-18T20:00:01Z",
+  "sup_config": "B0R.gemma",
+  "target_dataset": "cptc11-zeektx",
+  "model": {
+    "namespace": "colfix_contract_fixture",
+    "version": "v2-proposal",
+    "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "runtime_config": {
+    "path": "B.gemma/B0R.gemma/behavior.json",
+    "file_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "semantic_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "capability_snapshot": {
+    "contract_version": "ruse.decoy.capabilities/v2",
+    "ruse_git_sha": "142733a6b7bf7c4465d475951c15ded07a08b8bd",
+    "registry_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "model_evidence": [
+    {
+      "observable": "orig_bytes",
+      "method": "distribution_gap",
+      "estimate": 0.42,
+      "confidence_interval": [0.31, 0.53],
+      "direction": "match_distribution",
+      "source_artifact_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
+  ],
+  "desired_observables": [
+    {
+      "observable": "orig_bytes",
+      "current": {"p50": 120},
+      "desired": {"p50": 512},
+      "distance_metric": "wasserstein_1"
+    },
+    {
+      "observable": "resp_bytes",
+      "current": {"p50": 80},
+      "desired": {"p50": 1200},
+      "distance_metric": "wasserstein_1"
+    }
+  ],
+  "translation": [
+    {
+      "observable": "orig_bytes",
+      "actuator_path": "shape.orig_bytes",
+      "disposition": "emitted",
+      "requested": {"p50": 512},
+      "emitted": {"p50": 512},
+      "bounds": {"status": "unmeasured"},
+      "reason": "The controller shapes cumulative application-request bytes, but achievable cumulative bounds remain unmeasured."
+    },
+    {
+      "observable": "resp_bytes",
+      "actuator_path": null,
+      "disposition": "unreachable",
+      "requested": {"p50": 1200},
+      "emitted": null,
+      "bounds": {"status": "unmeasured"},
+      "reason": "Initial V2 has no response-byte actuator."
+    }
+  ],
+  "unreachable": [
+    {
+      "observable": "resp_bytes",
+      "wanted": {"p50": 1200},
+      "reason": "RUSE currently minimizes response bytes and exposes no compatible actuator.",
+      "unblocks": "A measured response-byte actuator and a contract revision after R4."
+    }
+  ],
+  "achieved": {
+    "status": "not_measured",
+    "logical_ledger": {"source": null, "summary_sha256": null},
+    "wire": {"source": null, "sup_outbound": null, "sidecar_inbound": null, "unattributed_outbound": null}
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "_metadata": {
+    "contract_version": "ruse.decoy.behavior/v2",
+    "feedback_run_id": "contract-fixture-smolagents-v2",
+    "sup_config": "S0C.gemma",
+    "seed": 1332322640,
+    "generated_at": "2026-08-18T20:00:00Z",
+    "producer": "phase.feedback_engine",
+    "model_namespace": "colfix_contract_fixture",
+    "model_version": "v2-proposal",
+    "target_dataset": "cptc11-zeektx",
+    "iteration": 0
+  },
+  "execution": {
+    "driver": "brain",
+    "brain": "smolagents",
+    "hardware_class": "cpu",
+    "enabled_workflows": ["BrowseWeb", "BrowseYouTube", "WebSearch", "DownloadFiles", "WhoisLookup"]
+  },
+  "activity": {
+    "windows_utc": [[480, 1080]],
+    "start_fence_seconds": 60
+  },
+  "channels": {
+    "workflows": {
+      "starts_per_utc_hour": {
+        "BrowseWeb": [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+        "BrowseYouTube": [0, 0, 0, 0, 0, 0, 0, 0, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0, 0, 0, 0, 0, 0],
+        "WebSearch": [0, 0, 0, 0, 0, 0, 0, 0, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0, 0, 0, 0, 0, 0],
+        "DownloadFiles": [0, 0, 0, 0, 0, 0, 0, 0, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0, 0, 0, 0, 0, 0],
+        "WhoisLookup": [0, 0, 0, 0, 0, 0, 0, 0, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0.11, 0, 0, 0, 0, 0, 0]
+      },
+      "cluster": {
+        "workflows_per_cluster": {"p05": 1, "p25": 1, "p50": 1, "p75": 2, "p95": 3, "max": 4},
+        "inter_workflow_seconds": {"p05": 10, "p25": 20, "p50": 30, "p75": 45, "p95": 75, "max": 120},
+        "inter_cluster_seconds": {"p05": 120, "p25": 300, "p50": 600, "p75": 900, "p95": 1500, "max": 2400}
+      }
+    },
+    "background": {
+      "enabled": true,
+      "actions_per_utc_hour": {
+        "dns_query": [0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 0, 0, 0, 0, 0, 0],
+        "ntp_check": [0, 0, 0, 0, 0, 0, 0, 0, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    "scripted": {"enabled": false, "actions_per_utc_hour": {}},
+    "persistent_sessions": {
+      "enabled": false,
+      "opens_per_utc_hour": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      "keepalives_per_utc_hour": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      "endpoint_pool": []
+    },
+    "shape_floor": {
+      "enabled": false,
+      "opens_per_utc_hour": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      "endpoint_pool": []
+    }
+  },
+  "shape": {"enabled": false},
+  "brain": {
+    "max_steps": {"default": 6, "per_workflow": {"BrowseWeb": 7, "WebSearch": 5}},
+    "download_outcome_weights": {"success": 0.9, "http_404": 0.04, "timeout": 0.03, "reset": 0.03},
+    "content_pools": {
+      "browse_urls": ["https://example.org/", "https://www.iana.org/domains/reserved"],
+      "youtube_video_ids": ["dQw4w9WgXcQ"],
+      "web_search_queries": ["python network programming", "linux system administration"],
+      "download_urls": ["https://example.org/", "https://www.iana.org/domains/reserved", "https://www.rfc-editor.org/rfc/rfc9110.txt"],
+      "whois_domains": ["example.org"]
+    }
+  },
+  "sidecar": {"topology_inbound": {"enabled": false, "probes_per_hour": {}}}
+}

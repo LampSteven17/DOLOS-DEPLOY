@@ -1,0 +1,105 @@
+{
+  "manifest_version": "ruse.decoy.capabilities/v2",
+  "behavior_contract_versions": [
+    "ruse.decoy.behavior/v2"
+  ],
+  "consumer": "RUSE DECOY",
+  "runtime_baseline": "142733a6b7bf7c4465d475951c15ded07a08b8bd",
+  "schema": {
+    "path": "contracts/decoy/behavior-v2.schema.json",
+    "sha256": "d7bb0afddcd2fafa67306fa7ae295e735559ed02a873257b097d9c5250a9a1be"
+  },
+  "reload": {
+    "unit": "complete immutable behavior.json snapshot",
+    "identity": "sha256 of exact file bytes",
+    "semantics": "validate then atomically replace",
+    "invalid_replacement": "retain prior snapshot"
+  },
+  "hardware_classes": ["cpu", "gpu", "rtx"],
+  "sup_capabilities": [
+    {
+      "brain": "mchp",
+      "hardware_class": "cpu",
+      "config_keys": ["M1", "M2", "M3", "M4"]
+    },
+    {
+      "brain": "browseruse",
+      "hardware_class": "gpu",
+      "config_keys": [
+        "B0.llama", "B0.gemma", "B2.llama", "B2.gemma",
+        "B3.llama", "B3.gemma", "B4.llama", "B4.gemma"
+      ]
+    },
+    {
+      "brain": "smolagents",
+      "hardware_class": "gpu",
+      "config_keys": [
+        "S0.llama", "S0.gemma", "S2.llama", "S2.gemma",
+        "S3.llama", "S3.gemma", "S4.llama", "S4.gemma"
+      ]
+    },
+    {
+      "brain": "browseruse",
+      "hardware_class": "cpu",
+      "config_keys": ["B0C.llama", "B0C.gemma", "B2C.llama", "B2C.gemma"]
+    },
+    {
+      "brain": "smolagents",
+      "hardware_class": "cpu",
+      "config_keys": ["S0C.llama", "S0C.gemma", "S2C.llama", "S2C.gemma"]
+    },
+    {
+      "brain": "browseruse",
+      "hardware_class": "rtx",
+      "config_keys": ["B0R.llama", "B0R.gemma", "B2R.llama", "B2R.gemma"]
+    },
+    {
+      "brain": "smolagents",
+      "hardware_class": "rtx",
+      "config_keys": ["S0R.llama", "S0R.gemma"]
+    }
+  ],
+  "brains": {
+    "browseruse": [
+      "BrowseWeb",
+      "BrowseYouTube",
+      "WebSearch",
+      "DownloadFiles",
+      "WhoisLookup"
+    ],
+    "smolagents": [
+      "BrowseWeb",
+      "BrowseYouTube",
+      "WebSearch",
+      "DownloadFiles",
+      "WhoisLookup"
+    ],
+    "mchp": [
+      "BrowseWeb",
+      "BrowseYouTube",
+      "WebSearch",
+      "DownloadFiles",
+      "WhoisLookup",
+      "DocumentEditor",
+      "SpreadsheetEditor",
+      "ExecuteCommand",
+      "ListFiles"
+    ]
+  },
+  "startup_static": [
+    "_metadata.contract_version",
+    "_metadata.sup_config",
+    "_metadata.seed",
+    "_metadata.producer",
+    "_metadata.target_dataset",
+    "execution.driver",
+    "execution.brain",
+    "execution.hardware_class",
+    "execution.enabled_workflows",
+    "sidecar"
+  ],
+  "deferred": {
+    "R2": "logical action ledgers and snapshot-tagged telemetry",
+    "R3": "replacement schedulers, native-unit budgets, and unified activity gating"
+  }
+}

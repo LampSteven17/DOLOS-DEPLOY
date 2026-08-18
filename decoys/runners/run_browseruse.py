@@ -22,12 +22,21 @@ def run_browseruse(config: SUPConfig, task: str = None, behavior_config_dir: str
     # Resolve behavioral config directory
     from common.behavioral_config import (
         resolve_behavioral_config_dir, load_behavioral_config, apply_phase_seed,
+        resolve_runtime_dispatch,
     )
     resolved_behavior_config_dir = resolve_behavioral_config_dir(config.config_key, override_dir=behavior_config_dir)
+    fc = load_behavioral_config(resolved_behavior_config_dir, config.config_key)
 
     # PHASE _metadata.seed override before AgentLogger creation — see
     # apply_phase_seed docstring for why this lives in the runner.
-    apply_phase_seed(config, resolved_behavior_config_dir)
+    apply_phase_seed(config, resolved_behavior_config_dir, fc)
+
+    from common.behavior_v2 import BehaviorV2Snapshot
+    if isinstance(fc, BehaviorV2Snapshot):
+        resolve_runtime_dispatch(fc, config.brain, config.config_key)
+        raise RuntimeError(
+            "V2 single-task actuation is disabled until separately authorized R2/R3 work"
+        )
 
     logger = AgentLogger(agent_type=config.config_key)
     logger.session_start(config={
@@ -45,10 +54,10 @@ def run_browseruse(config: SUPConfig, task: str = None, behavior_config_dir: str
     prompts = PHASE_PROMPTS if config.phase else DEFAULT_PROMPTS
 
     # Apply prompt augmentation from behavioral config
-    fc = load_behavioral_config(resolved_behavior_config_dir, config.config_key)
-    if fc.prompt_augmentation and fc.prompt_augmentation.get("prompt_content"):
+    prompt_augmentation = getattr(fc, "prompt_augmentation", None)
+    if prompt_augmentation and prompt_augmentation.get("prompt_content"):
         from brains.browseruse.prompts import BUPrompts
-        prompts = BUPrompts(task=prompts.task, content=fc.prompt_augmentation["prompt_content"])
+        prompts = BUPrompts(task=prompts.task, content=prompt_augmentation["prompt_content"])
         log(f"[behavior] Applied prompt augmentation for {config.config_key}")
     if task is None:
         task = get_random_task()
@@ -83,20 +92,22 @@ def run_browseruse_loop(config: SUPConfig, behavior_config_dir: str = None):
     # Resolve behavioral config directory
     from common.behavioral_config import (
         resolve_behavioral_config_dir, load_behavioral_config,
-        apply_phase_seed, MODE_CONTROLS,
+        apply_phase_seed, resolve_runtime_dispatch,
     )
     resolved_behavior_config_dir = resolve_behavioral_config_dir(config.config_key, override_dir=behavior_config_dir)
+    fc = load_behavioral_config(resolved_behavior_config_dir, config.config_key)
 
     # PHASE _metadata.seed override before AgentLogger creation.
-    apply_phase_seed(config, resolved_behavior_config_dir)
+    apply_phase_seed(config, resolved_behavior_config_dir, fc)
 
     logger = AgentLogger(agent_type=config.config_key)
 
     # Mode dispatch (PHASE 2026-05-08). When PHASE marks this SUP as
     # controls, bypass BrowserUse entirely and run the brain-agnostic
     # controls floor.
-    fc = load_behavioral_config(resolved_behavior_config_dir, config.config_key)
-    if fc.mode == MODE_CONTROLS:
+    if resolve_runtime_dispatch(
+        fc, config.brain, config.config_key
+    ) == "scripted_baseline":
         from brains.controls import run_controls
         logger.session_start(config={
             "brain": "controls",
@@ -132,9 +143,10 @@ def run_browseruse_loop(config: SUPConfig, behavior_config_dir: str = None):
     prompts = PHASE_PROMPTS if config.phase else DEFAULT_PROMPTS
 
     # Apply prompt augmentation from behavioral config (already loaded above)
-    if fc.prompt_augmentation and fc.prompt_augmentation.get("prompt_content"):
+    prompt_augmentation = getattr(fc, "prompt_augmentation", None)
+    if prompt_augmentation and prompt_augmentation.get("prompt_content"):
         from brains.browseruse.prompts import BUPrompts
-        prompts = BUPrompts(task=prompts.task, content=fc.prompt_augmentation["prompt_content"])
+        prompts = BUPrompts(task=prompts.task, content=prompt_augmentation["prompt_content"])
         log(f"[behavior] Applied prompt augmentation for {config.config_key}")
 
     log(f"Running BrowserUse loop (config: {config.config_key})")
@@ -145,6 +157,7 @@ def run_browseruse_loop(config: SUPConfig, behavior_config_dir: str = None):
     })
 
     try:
+        from common.behavior_v2 import BehaviorV2Snapshot
         agent = BrowserUseLoop(
             model=config.model,
             prompts=prompts,
@@ -153,6 +166,9 @@ def run_browseruse_loop(config: SUPConfig, behavior_config_dir: str = None):
             seed=config.seed,
             behavior_config_dir=str(resolved_behavior_config_dir),
             config_key=config.config_key,
+            initial_behavior_snapshot=(
+                fc if isinstance(fc, BehaviorV2Snapshot) else None
+            ),
         )
         agent.run()
         logger.session_success(message="BrowserUse loop completed successfully")

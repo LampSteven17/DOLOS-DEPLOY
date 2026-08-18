@@ -1,0 +1,516 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ruse.local/contracts/decoy/behavior-v2.schema.json",
+  "title": "RUSE DECOY behavior contract v2 proposal",
+  "description": "Actionable PHASE-to-RUSE runtime configuration. Research evidence and unreachable requests are intentionally excluded.",
+  "type": "object",
+  "required": ["_metadata", "execution", "activity", "channels", "shape", "brain", "sidecar"],
+  "additionalProperties": false,
+  "properties": {
+    "_metadata": {"$ref": "#/$defs/metadata"},
+    "execution": {"$ref": "#/$defs/execution"},
+    "activity": {"$ref": "#/$defs/activity"},
+    "channels": {"$ref": "#/$defs/channels"},
+    "shape": {"$ref": "#/$defs/shape"},
+    "brain": {"type": "object"},
+    "sidecar": {"$ref": "#/$defs/sidecar"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"execution": {"properties": {"brain": {"const": "browseruse"}}, "required": ["brain"]}}},
+      "then": {
+        "properties": {
+          "execution": {"properties": {"enabled_workflows": {"items": {"enum": ["BrowseWeb", "BrowseYouTube", "WebSearch", "DownloadFiles", "WhoisLookup"]}}}},
+          "brain": {"$ref": "#/$defs/browseruseBrain"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"execution": {"properties": {"enabled_workflows": {"contains": {"enum": ["BrowseWeb", "BrowseYouTube", "WebSearch"]}}}}}},
+            "then": {"properties": {"brain": {"required": ["max_steps", "page_dwell_seconds"]}}},
+            "else": {"properties": {"brain": {"not": {"anyOf": [{"required": ["max_steps"]}, {"required": ["page_dwell_seconds"]}]}}}}
+          },
+          {
+            "if": {"properties": {"execution": {"properties": {"enabled_workflows": {"contains": {"const": "DownloadFiles"}}}}}},
+            "then": {"properties": {"brain": {"required": ["download_outcome_weights"]}}},
+            "else": {"properties": {"brain": {"not": {"required": ["download_outcome_weights"]}}}}
+          }
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"execution": {"properties": {"brain": {"const": "smolagents"}}, "required": ["brain"]}}},
+      "then": {
+        "properties": {
+          "execution": {"properties": {"enabled_workflows": {"items": {"enum": ["BrowseWeb", "BrowseYouTube", "WebSearch", "DownloadFiles", "WhoisLookup"]}}}},
+          "brain": {"$ref": "#/$defs/smolagentsBrain"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"execution": {"properties": {"enabled_workflows": {"contains": {"enum": ["BrowseWeb", "BrowseYouTube", "WebSearch"]}}}}}},
+            "then": {"properties": {"brain": {"required": ["max_steps"]}}},
+            "else": {"properties": {"brain": {"not": {"required": ["max_steps"]}}}}
+          },
+          {
+            "if": {"properties": {"execution": {"properties": {"enabled_workflows": {"contains": {"const": "DownloadFiles"}}}}}},
+            "then": {"properties": {"brain": {"required": ["download_outcome_weights"]}}},
+            "else": {"properties": {"brain": {"not": {"required": ["download_outcome_weights"]}}}}
+          }
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"execution": {"properties": {"brain": {"const": "mchp"}}, "required": ["brain"]}}},
+      "then": {
+        "properties": {
+          "execution": {"properties": {"enabled_workflows": {"items": {"$ref": "#/$defs/mchpWorkflow"}}}},
+          "brain": {"$ref": "#/$defs/mchpBrain"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"execution": {"properties": {"enabled_workflows": {"contains": {"const": "BrowseWeb"}}}}}},
+            "then": {"properties": {"brain": {"required": ["page_dwell_seconds", "navigation_clicks_max", "keep_alive_probability"]}}},
+            "else": {"properties": {"brain": {"not": {"anyOf": [{"required": ["page_dwell_seconds"]}, {"required": ["navigation_clicks_max"]}, {"required": ["keep_alive_probability"]}]}}}}
+          }
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"execution": {"properties": {"enabled_workflows": {"contains": {"const": "BrowseWeb"}}}}}},
+      "then": {"properties": {"brain": {"properties": {"content_pools": {"required": ["browse_urls"], "properties": {"browse_urls": {"minItems": 1}}}}}}},
+      "else": {"properties": {"brain": {"properties": {"content_pools": {"not": {"required": ["browse_urls"]}}}}}}
+    },
+    {
+      "if": {"properties": {"execution": {"properties": {"enabled_workflows": {"contains": {"const": "BrowseYouTube"}}}}}},
+      "then": {"properties": {"brain": {"properties": {"content_pools": {"required": ["youtube_video_ids"], "properties": {"youtube_video_ids": {"minItems": 1}}}}}}},
+      "else": {"properties": {"brain": {"properties": {"content_pools": {"not": {"required": ["youtube_video_ids"]}}}}}}
+    },
+    {
+      "if": {"properties": {"execution": {"properties": {"enabled_workflows": {"contains": {"const": "WebSearch"}}}}}},
+      "then": {"properties": {"brain": {"properties": {"content_pools": {"required": ["web_search_queries"], "properties": {"web_search_queries": {"minItems": 1}}}}}}},
+      "else": {"properties": {"brain": {"properties": {"content_pools": {"not": {"required": ["web_search_queries"]}}}}}}
+    },
+    {
+      "if": {"properties": {"execution": {"properties": {"enabled_workflows": {"contains": {"const": "WhoisLookup"}}}}}},
+      "then": {"properties": {"brain": {"properties": {"content_pools": {"required": ["whois_domains"], "properties": {"whois_domains": {"minItems": 1}}}}}}},
+      "else": {"properties": {"brain": {"properties": {"content_pools": {"not": {"required": ["whois_domains"]}}}}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "execution": {
+            "properties": {
+              "brain": {"enum": ["browseruse", "smolagents"]},
+              "enabled_workflows": {"contains": {"const": "DownloadFiles"}}
+            },
+            "required": ["brain", "enabled_workflows"]
+          }
+        }
+      },
+      "then": {"properties": {"brain": {"properties": {"content_pools": {"required": ["download_urls"], "properties": {"download_urls": {"minItems": 1}}}}}}},
+      "else": {"properties": {"brain": {"properties": {"content_pools": {"not": {"required": ["download_urls"]}}}}}}
+    },
+    {
+      "if": {"properties": {"channels": {"properties": {"shape_floor": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]}}}}},
+      "then": {"properties": {"shape": {"properties": {"enabled": {"const": true}}}}}
+    },
+    {
+      "if": {"properties": {"shape": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]}}},
+      "then": {
+        "properties": {
+          "channels": {
+            "anyOf": [
+              {"properties": {"persistent_sessions": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]}}},
+              {"properties": {"shape_floor": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]}}}
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nonnegativeNumber": {"type": "number", "minimum": 0},
+    "probability": {"type": "number", "minimum": 0, "maximum": 1},
+    "httpsUriWithHost": {"type": "string", "format": "uri", "pattern": "^https://[^/?#\\s]+(?:[/?#].*)?$"},
+    "httpUriWithHost": {"type": "string", "format": "uri", "pattern": "^https?://[^/?#\\s]+(?:[/?#].*)?$"},
+    "hourlySeries": {
+      "type": "array",
+      "description": "Native logical actions per UTC hour. Eligibility still comes only from activity.windows_utc.",
+      "minItems": 24,
+      "maxItems": 24,
+      "items": {"$ref": "#/$defs/nonnegativeNumber"}
+    },
+    "hourlyPositiveSeries": {
+      "allOf": [
+        {"$ref": "#/$defs/hourlySeries"},
+        {"contains": {"type": "number", "exclusiveMinimum": 0}, "minContains": 1}
+      ]
+    },
+    "window": {
+      "type": "array",
+      "prefixItems": [
+        {"type": "integer", "minimum": 0, "maximum": 1439},
+        {"type": "integer", "minimum": 1, "maximum": 1440}
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "percentiles": {
+      "type": "object",
+      "required": ["p05", "p25", "p50", "p75", "p95", "max"],
+      "additionalProperties": false,
+      "properties": {
+        "p05": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p25": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p50": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p75": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p95": {"$ref": "#/$defs/nonnegativeNumber"},
+        "max": {"$ref": "#/$defs/nonnegativeNumber"}
+      }
+    },
+    "countPercentiles": {
+      "type": "object",
+      "required": ["p05", "p25", "p50", "p75", "p95", "max"],
+      "additionalProperties": false,
+      "properties": {
+        "p05": {"type": "integer", "minimum": 1},
+        "p25": {"type": "integer", "minimum": 1},
+        "p50": {"type": "integer", "minimum": 1},
+        "p75": {"type": "integer", "minimum": 1},
+        "p95": {"type": "integer", "minimum": 1},
+        "max": {"type": "integer", "minimum": 1}
+      }
+    },
+    "shapePercentiles": {
+      "type": "object",
+      "required": ["p25", "p50", "p75", "p90", "max"],
+      "additionalProperties": false,
+      "properties": {
+        "p25": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p50": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p75": {"$ref": "#/$defs/nonnegativeNumber"},
+        "p90": {"$ref": "#/$defs/nonnegativeNumber"},
+        "max": {"$ref": "#/$defs/nonnegativeNumber"}
+      }
+    },
+    "sharedWorkflow": {"enum": ["BrowseWeb", "BrowseYouTube", "WebSearch", "DownloadFiles", "WhoisLookup"]},
+    "mchpWorkflow": {"enum": ["BrowseWeb", "BrowseYouTube", "WebSearch", "DownloadFiles", "WhoisLookup", "DocumentEditor", "SpreadsheetEditor", "ExecuteCommand", "ListFiles"]},
+    "metadata": {
+      "type": "object",
+      "required": ["contract_version", "feedback_run_id", "sup_config", "seed", "generated_at", "producer", "model_namespace", "model_version", "target_dataset", "iteration"],
+      "additionalProperties": false,
+      "properties": {
+        "contract_version": {"const": "ruse.decoy.behavior/v2"},
+        "feedback_run_id": {"type": "string", "minLength": 1},
+        "sup_config": {"type": "string", "pattern": "^[BMS][A-Za-z0-9.]+$"},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "generated_at": {"type": "string", "format": "date-time"},
+        "producer": {"const": "phase.feedback_engine"},
+        "model_namespace": {"type": "string", "minLength": 1},
+        "model_version": {"type": "string", "minLength": 1},
+        "target_dataset": {"type": "string", "minLength": 1},
+        "iteration": {"type": "integer", "minimum": 0}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": ["driver", "brain", "hardware_class", "enabled_workflows"],
+      "additionalProperties": false,
+      "properties": {
+        "driver": {"const": "brain"},
+        "brain": {"enum": ["browseruse", "smolagents", "mchp"]},
+        "hardware_class": {"enum": ["cpu", "gpu", "rtx"]},
+        "enabled_workflows": {
+          "type": "array",
+          "description": "Startup registration whitelist. Unlisted workflows are disabled; no dynamic/native fallback registration is allowed in V2.",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/mchpWorkflow"}
+        }
+      }
+    },
+    "activity": {
+      "type": "object",
+      "required": ["windows_utc", "start_fence_seconds"],
+      "additionalProperties": false,
+      "properties": {
+        "windows_utc": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/window"}},
+        "start_fence_seconds": {"type": "integer", "minimum": 0, "maximum": 3600}
+      }
+    },
+    "workflowStarts": {
+      "type": "object",
+      "description": "Per-workflow starts/hour for the R3 replacement scheduler: zero initial credit; rate/3600 accrual only while open and pre-fence; one token/start; per-workflow cap equal to cluster.workflows_per_cluster.max; excess accrual discarded; integral and fractional credit reset at 00:00:00 UTC; unchanged-workflow credit and due timestamps survive hot rate changes but are clipped to the new cap; globally oldest due token wins with deterministic seed/workflow-ID ties; no weight fallback.",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/mchpWorkflow"},
+      "additionalProperties": {"$ref": "#/$defs/hourlyPositiveSeries"}
+    },
+    "workflowChannel": {
+      "type": "object",
+      "required": ["starts_per_utc_hour", "cluster"],
+      "additionalProperties": false,
+      "properties": {
+        "starts_per_utc_hour": {"$ref": "#/$defs/workflowStarts"},
+        "cluster": {
+          "type": "object",
+          "description": "Groups already-due workflow starts. Cluster values cannot create starts, spend future credit, or override a zero budget.",
+          "required": ["workflows_per_cluster", "inter_workflow_seconds", "inter_cluster_seconds"],
+          "additionalProperties": false,
+          "properties": {
+            "workflows_per_cluster": {"$ref": "#/$defs/countPercentiles"},
+            "inter_workflow_seconds": {"$ref": "#/$defs/percentiles"},
+            "inter_cluster_seconds": {"$ref": "#/$defs/percentiles"}
+          }
+        }
+      }
+    },
+    "backgroundActions": {
+      "type": "object",
+      "propertyNames": {"enum": ["dns_query", "http_head", "ntp_check"]},
+      "additionalProperties": {"$ref": "#/$defs/hourlyPositiveSeries"}
+    },
+    "scriptedActions": {
+      "type": "object",
+      "propertyNames": {"enum": ["smb_probe", "ldap_probe", "imap_probe", "doh_probe", "mdns_probe", "websocket_probe", "failed_connection_probe"]},
+      "additionalProperties": {"$ref": "#/$defs/hourlyPositiveSeries"}
+    },
+    "actionChannel": {
+      "type": "object",
+      "required": ["enabled", "actions_per_utc_hour"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "actions_per_utc_hour": {"type": "object"}
+      }
+    },
+    "backgroundChannel": {
+      "allOf": [
+        {"$ref": "#/$defs/actionChannel"},
+        {"properties": {"actions_per_utc_hour": {"$ref": "#/$defs/backgroundActions"}}},
+        {
+          "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+          "then": {"properties": {"actions_per_utc_hour": {"minProperties": 1}}},
+          "else": {"properties": {"actions_per_utc_hour": {"maxProperties": 0}}}
+        }
+      ]
+    },
+    "scriptedChannel": {
+      "allOf": [
+        {"$ref": "#/$defs/actionChannel"},
+        {"properties": {"actions_per_utc_hour": {"$ref": "#/$defs/scriptedActions"}}},
+        {
+          "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+          "then": {"properties": {"actions_per_utc_hour": {"minProperties": 1}}},
+          "else": {"properties": {"actions_per_utc_hour": {"maxProperties": 0}}}
+        }
+      ]
+    },
+    "persistentChannel": {
+      "type": "object",
+      "required": ["enabled", "opens_per_utc_hour", "keepalives_per_utc_hour", "endpoint_pool"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "opens_per_utc_hour": {"$ref": "#/$defs/hourlySeries"},
+        "keepalives_per_utc_hour": {
+          "allOf": [{"$ref": "#/$defs/hourlySeries"}],
+          "description": "Aggregate HTTP keepalive actions/hour across all live persistent sessions. No credit accrues after the fence; pre-fence credit may drain until window close."
+        },
+        "endpoint_pool": {"type": "array", "description": "Persistent-session-owned endpoints; never inherited by shape_floor.", "uniqueItems": true, "items": {"$ref": "#/$defs/httpsUriWithHost"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+          "then": {
+            "properties": {
+              "opens_per_utc_hour": {"$ref": "#/$defs/hourlyPositiveSeries"},
+              "endpoint_pool": {"minItems": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "opens_per_utc_hour": {"not": {"$ref": "#/$defs/hourlyPositiveSeries"}},
+              "keepalives_per_utc_hour": {"not": {"$ref": "#/$defs/hourlyPositiveSeries"}},
+              "endpoint_pool": {"maxItems": 0}
+            }
+          }
+        }
+      ]
+    },
+    "floorChannel": {
+      "type": "object",
+      "required": ["enabled", "opens_per_utc_hour", "endpoint_pool"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "opens_per_utc_hour": {"$ref": "#/$defs/hourlySeries"},
+        "endpoint_pool": {"type": "array", "description": "Shape-floor-owned HTTPS endpoints; never inherited from persistent_sessions.", "uniqueItems": true, "items": {"$ref": "#/$defs/httpsUriWithHost"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+          "then": {
+            "properties": {
+              "opens_per_utc_hour": {"$ref": "#/$defs/hourlyPositiveSeries"},
+              "endpoint_pool": {"minItems": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "opens_per_utc_hour": {"not": {"$ref": "#/$defs/hourlyPositiveSeries"}},
+              "endpoint_pool": {"maxItems": 0}
+            }
+          }
+        }
+      ]
+    },
+    "channels": {
+      "type": "object",
+      "required": ["workflows", "background", "scripted", "persistent_sessions", "shape_floor"],
+      "additionalProperties": false,
+      "properties": {
+        "workflows": {"$ref": "#/$defs/workflowChannel"},
+        "background": {"$ref": "#/$defs/backgroundChannel"},
+        "scripted": {"$ref": "#/$defs/scriptedChannel"},
+        "persistent_sessions": {"$ref": "#/$defs/persistentChannel"},
+        "shape_floor": {"$ref": "#/$defs/floorChannel"}
+      }
+    },
+    "shape": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "orig_bytes": {
+          "allOf": [{"$ref": "#/$defs/shapePercentiles"}],
+          "description": "Desired cumulative application-request bytes per shaped TLS connection. The 4096-byte implementation cap applies per serialized HTTP request, not to this cumulative Zeek value; achievable bounds are unmeasured."
+        },
+        "duration_seconds": {"$ref": "#/$defs/shapePercentiles"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+          "then": {"required": ["orig_bytes", "duration_seconds"]},
+          "else": {"not": {"anyOf": [{"required": ["orig_bytes"]}, {"required": ["duration_seconds"]}]}}
+        }
+      ]
+    },
+    "maxSteps": {
+      "type": "object",
+      "required": ["default"],
+      "additionalProperties": false,
+      "properties": {
+        "default": {"type": "integer", "minimum": 1, "maximum": 100},
+        "per_workflow": {
+          "type": "object",
+          "propertyNames": {"enum": ["BrowseWeb", "BrowseYouTube", "WebSearch"]},
+          "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 100}
+        }
+      }
+    },
+    "pageDwell": {
+      "type": "object",
+      "required": ["min", "max"],
+      "additionalProperties": false,
+      "properties": {
+        "min": {"$ref": "#/$defs/nonnegativeNumber"},
+        "max": {"$ref": "#/$defs/nonnegativeNumber"}
+      }
+    },
+    "downloadOutcomes": {
+      "type": "object",
+      "required": ["success", "http_404", "timeout", "reset"],
+      "additionalProperties": false,
+      "properties": {
+        "success": {"$ref": "#/$defs/probability"},
+        "http_404": {"$ref": "#/$defs/probability"},
+        "timeout": {"$ref": "#/$defs/probability"},
+        "reset": {"$ref": "#/$defs/probability"}
+      }
+    },
+    "llmContentPools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "browse_urls": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/httpUriWithHost"}},
+        "youtube_video_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "web_search_queries": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "download_urls": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/httpUriWithHost"}},
+        "whois_domains": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9.-]+$"}}
+      }
+    },
+    "mchpContentPools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "browse_urls": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/httpUriWithHost"}},
+        "youtube_video_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "web_search_queries": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "whois_domains": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9.-]+$"}}
+      }
+    },
+    "browseruseBrain": {
+      "type": "object",
+      "required": ["content_pools"],
+      "additionalProperties": false,
+      "properties": {
+        "max_steps": {"$ref": "#/$defs/maxSteps"},
+        "page_dwell_seconds": {"$ref": "#/$defs/pageDwell"},
+        "download_outcome_weights": {"$ref": "#/$defs/downloadOutcomes"},
+        "content_pools": {"$ref": "#/$defs/llmContentPools"}
+      }
+    },
+    "smolagentsBrain": {
+      "type": "object",
+      "required": ["content_pools"],
+      "additionalProperties": false,
+      "properties": {
+        "max_steps": {"$ref": "#/$defs/maxSteps"},
+        "download_outcome_weights": {"$ref": "#/$defs/downloadOutcomes"},
+        "content_pools": {"$ref": "#/$defs/llmContentPools"}
+      }
+    },
+    "mchpBrain": {
+      "type": "object",
+      "required": ["content_pools"],
+      "additionalProperties": false,
+      "properties": {
+        "page_dwell_seconds": {"$ref": "#/$defs/pageDwell"},
+        "navigation_clicks_max": {"type": "integer", "minimum": 0, "maximum": 100},
+        "keep_alive_probability": {"$ref": "#/$defs/probability"},
+        "content_pools": {"$ref": "#/$defs/mchpContentPools"}
+      }
+    },
+    "sidecarRates": {
+      "type": "object",
+      "propertyNames": {"enum": ["smb", "ldap", "wsus", "printer", "ipmi", "winrm", "ntp_receive", "mdns", "ssdp", "scan"]},
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
+    "sidecar": {
+      "type": "object",
+      "required": ["topology_inbound"],
+      "additionalProperties": false,
+      "properties": {
+        "topology_inbound": {
+          "type": "object",
+          "description": "Immutable deployment fingerprint for the off-host sidecar. Any change requires redeployment and cannot participate in SUP hot reload.",
+          "required": ["enabled", "probes_per_hour"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "probes_per_hour": {"$ref": "#/$defs/sidecarRates"}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+              "then": {"properties": {"probes_per_hour": {"minProperties": 1}}},
+              "else": {"properties": {"probes_per_hour": {"maxProperties": 0}}}
+            }
+          ]
+        }
+      }
+    }
+  }
+}

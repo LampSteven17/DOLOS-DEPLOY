@@ -37,6 +37,7 @@ class BaseEmulationLoop(ABC):
         seed: int = 42,
         behavior_config_dir: Optional[str] = None,
         config_key: Optional[str] = None,
+        initial_behavior_snapshot=None,
     ):
         self.seed = seed
         self.cluster_size = cluster_size
@@ -52,6 +53,13 @@ class BaseEmulationLoop(ABC):
         # Cluster boundaries can occur frequently; identical bytes are a no-op
         # so reloads do not repeatedly mutate workflows or restart agents.
         self._behavior_config_digest = None
+        # R1-only immutable V2 candidate.  V2 actuator/gate consumption is
+        # deliberately deferred to R3; this pointer is swapped only after a
+        # complete schema, semantic, capability, and static-reload validation.
+        self._behavior_v2_snapshot = initial_behavior_snapshot
+        self._loaded_contract_version = (
+            getattr(initial_behavior_snapshot, "contract_version", None)
+        )
         # Immutable, post-load workflow defaults. Every hot-reload is rendered
         # from these values so removing a PHASE override restores the original
         # behavior instead of leaving stale state behind.
@@ -242,7 +250,45 @@ class BaseEmulationLoop(ABC):
         # load_behavioral_config raises RuntimeError if behavior.json is
         # missing — service crash-loops, audit surfaces it. No legacy
         # baseline path: every SUP must have a config.
-        fc = load_behavioral_config(Path(self._behavior_config_dir), self._config_key)
+        fc = load_behavioral_config(
+            Path(self._behavior_config_dir),
+            self._config_key,
+            previous_v2=self._behavior_v2_snapshot,
+        )
+
+        from common.behavior_v2 import BehaviorV2Snapshot
+        if isinstance(fc, BehaviorV2Snapshot):
+            if (
+                self._loaded_contract_version is not None
+                and self._loaded_contract_version != fc.contract_version
+            ):
+                raise RuntimeError(
+                    "hot reload cannot change behavior contract version; restart required"
+                )
+            # R1 activation is one immutable pointer assignment.  No V2 field
+            # is projected into the legacy mutable consumers here: budget
+            # schedulers, ledgers, and unified gating are separately gated
+            # R2/R3 work.
+            self._behavior_v2_snapshot = fc
+            self._loaded_contract_version = fc.contract_version
+            self._behavior_config_digest = fc.raw_sha256
+            if self.logger:
+                self.logger.info(
+                    "[behavior] Validated V2 snapshot",
+                    details={
+                        "config_key": self._config_key,
+                        "contract_version": fc.contract_version,
+                        "raw_sha256": fc.raw_sha256,
+                        "brain": fc.brain,
+                        "enabled_workflows": list(fc.enabled_workflows),
+                    },
+                )
+            return True
+
+        if self._behavior_v2_snapshot is not None:
+            raise RuntimeError(
+                "V2 hot reload cannot change contract version; restart required"
+            )
 
         # Stash mode for the gate + cluster loop.
         self._mode = fc.mode
@@ -473,6 +519,9 @@ class BaseEmulationLoop(ABC):
         # apply is retried on the next boundary instead of being mistaken for a
         # successfully consumed version.
         self._behavior_config_digest = digest
+        self._loaded_contract_version = (
+            fc.contract_version or "legacy-unversioned"
+        )
         return True
 
     # ── Workflow selection ────────────────────────────────────────────
@@ -1010,6 +1059,12 @@ class BaseEmulationLoop(ABC):
 
         self.workflows = self._load_workflows()
         self._reload_behavioral_config()
+
+        if self._behavior_v2_snapshot is not None:
+            raise RuntimeError(
+                "V2 behavior validated and dispatched, but V2 actuation remains "
+                "disabled until separately authorized R2/R3 runtime work"
+            )
 
         if not self.workflows:
             print("Error: No workflows loaded!")

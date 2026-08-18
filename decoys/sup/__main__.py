@@ -110,7 +110,7 @@ Configuration Keys:
     behavior_dir = resolve_behavioral_config_dir(
         config.config_key, override_dir=args.behavior_config_dir
     )
-    phase_seed = peek_seed(behavior_dir)
+    phase_seed = peek_seed(behavior_dir, config.config_key)
     if phase_seed is not None and phase_seed != config.seed:
         print(f"  PHASE _metadata.seed={phase_seed} overrides CLI seed={config.seed}")
         config.seed = phase_seed

@@ -33,14 +33,15 @@ def run_mchp(config: SUPConfig, behavior_config_dir: str = None):
     # Resolve behavioral config directory
     from common.behavioral_config import (
         resolve_behavioral_config_dir, load_behavioral_config,
-        apply_phase_seed, MODE_CONTROLS,
+        apply_phase_seed, resolve_runtime_dispatch,
     )
     resolved_behavior_config_dir = resolve_behavioral_config_dir(config.config_key, override_dir=behavior_config_dir)
+    fc = load_behavioral_config(resolved_behavior_config_dir, config.config_key)
 
     # PHASE _metadata.seed override BEFORE AgentLogger creation, so the
     # session_id derives from the PHASE seed (deterministic per-deploy)
     # rather than falling back to uuid.uuid4().
-    apply_phase_seed(config, resolved_behavior_config_dir)
+    apply_phase_seed(config, resolved_behavior_config_dir, fc)
 
     logger = AgentLogger(agent_type=config.config_key)
 
@@ -48,8 +49,9 @@ def run_mchp(config: SUPConfig, behavior_config_dir: str = None):
     # controls, bypass the brain agent entirely and run the brain-agnostic
     # controls floor. Cross-deploy diff stays bit-identical regardless of
     # which service started this process.
-    fc = load_behavioral_config(resolved_behavior_config_dir, config.config_key)
-    if fc.mode == MODE_CONTROLS:
+    if resolve_runtime_dispatch(
+        fc, config.brain, config.config_key
+    ) == "scripted_baseline":
         from brains.controls import run_controls
         logger.session_start(config={
             "brain": "controls",
@@ -104,6 +106,7 @@ def run_mchp(config: SUPConfig, behavior_config_dir: str = None):
     })
 
     try:
+        from common.behavior_v2 import BehaviorV2Snapshot
         agent = MCHPAgent(
             logger=logger,
             calibration_profile=calibration_profile,
@@ -111,6 +114,9 @@ def run_mchp(config: SUPConfig, behavior_config_dir: str = None):
             seed=config.seed,
             behavior_config_dir=str(resolved_behavior_config_dir),
             config_key=config.config_key,
+            initial_behavior_snapshot=(
+                fc if isinstance(fc, BehaviorV2Snapshot) else None
+            ),
         )
         agent.run()
         logger.session_success(message="MCHP agent completed successfully")

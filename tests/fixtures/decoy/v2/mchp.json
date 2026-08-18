@@ -1,0 +1,82 @@
+{
+  "_metadata": {
+    "contract_version": "ruse.decoy.behavior/v2",
+    "feedback_run_id": "contract-fixture-mchp-v2",
+    "sup_config": "M1",
+    "seed": 2521962739,
+    "generated_at": "2026-08-18T20:00:00Z",
+    "producer": "phase.feedback_engine",
+    "model_namespace": "colfix_contract_fixture",
+    "model_version": "v2-proposal",
+    "target_dataset": "cptc11-zeektx",
+    "iteration": 0
+  },
+  "execution": {
+    "driver": "brain",
+    "brain": "mchp",
+    "hardware_class": "cpu",
+    "enabled_workflows": ["BrowseWeb", "BrowseYouTube", "WebSearch", "DownloadFiles", "WhoisLookup"]
+  },
+  "activity": {
+    "windows_utc": [[540, 1080]],
+    "start_fence_seconds": 60
+  },
+  "channels": {
+    "workflows": {
+      "starts_per_utc_hour": {
+        "BrowseWeb": [0, 0, 0, 0, 0, 0, 0, 0, 0, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 0, 0, 0, 0, 0, 0],
+        "BrowseYouTube": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0, 0, 0, 0, 0, 0],
+        "WebSearch": [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+        "DownloadFiles": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0, 0, 0, 0, 0, 0],
+        "WhoisLookup": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0, 0, 0, 0, 0, 0]
+      },
+      "cluster": {
+        "workflows_per_cluster": {"p05": 1, "p25": 2, "p50": 3, "p75": 4, "p95": 5, "max": 6},
+        "inter_workflow_seconds": {"p05": 5, "p25": 10, "p50": 15, "p75": 25, "p95": 45, "max": 60},
+        "inter_cluster_seconds": {"p05": 120, "p25": 240, "p50": 500, "p75": 720, "p95": 1200, "max": 1800}
+      }
+    },
+    "background": {
+      "enabled": true,
+      "actions_per_utc_hour": {
+        "dns_query": [0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 10, 10, 10, 10, 10, 10, 10, 10, 0, 0, 0, 0, 0, 0],
+        "http_head": [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    "scripted": {
+      "enabled": true,
+      "actions_per_utc_hour": {
+        "smb_probe": [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+        "failed_connection_probe": [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0]
+      }
+    },
+    "persistent_sessions": {
+      "enabled": true,
+      "opens_per_utc_hour": [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0],
+      "keepalives_per_utc_hour": [0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 8, 8, 8, 8, 8, 0, 0, 0, 0, 0, 0],
+      "endpoint_pool": ["https://example.org/", "https://www.iana.org/domains/reserved"]
+    },
+    "shape_floor": {
+      "enabled": true,
+      "opens_per_utc_hour": [0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0],
+      "endpoint_pool": ["https://example.org/", "https://www.iana.org/domains/reserved"]
+    }
+  },
+  "shape": {
+    "enabled": true,
+    "orig_bytes": {"p25": 96, "p50": 384, "p75": 1024, "p90": 4096, "max": 6144},
+    "duration_seconds": {"p25": 0.25, "p50": 1, "p75": 3, "p90": 8, "max": 15}
+  },
+  "brain": {
+    "page_dwell_seconds": {"min": 1, "max": 6},
+    "navigation_clicks_max": 3,
+    "keep_alive_probability": 0.65,
+    "content_pools": {
+      "browse_urls": ["https://example.org/", "https://www.iana.org/domains/reserved"],
+      "youtube_video_ids": ["dQw4w9WgXcQ"],
+      "web_search_queries": ["network operations checklist", "linux workstation documentation"],
+      "whois_domains": ["example.org", "iana.org"]
+    }
+  },
+  "sidecar": {"topology_inbound": {"enabled": false, "probes_per_hour": {}}}
+}

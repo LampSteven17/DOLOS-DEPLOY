@@ -43,6 +43,22 @@ BEHAVIOR_GATED_WORKFLOWS = {
     'whois_lookup.py':   'enable_whois',
 }
 
+# Canonical V2 registration IDs by module.  This is consulted only when an
+# explicit V2 document supplies execution.enabled_workflows; v1 keeps the
+# existing dynamic loader unchanged.
+V2_WORKFLOW_IDS = {
+    "browse_web.py": "BrowseWeb",
+    "browse_youtube.py": "BrowseYouTube",
+    "download_files.py": "DownloadFiles",
+    "execute_command.py": "ExecuteCommand",
+    "google_search.py": "WebSearch",
+    "open_office_calc.py": "SpreadsheetEditor",
+    "open_office_writer.py": "DocumentEditor",
+    "spawn_shell.py": "ListFiles",
+    "whois_lookup.py": "WhoisLookup",
+    "ms_paint.py": "MicrosoftPaint",
+}
+
 
 class MCHPAgent(BaseEmulationLoop):
     """
@@ -67,6 +83,7 @@ class MCHPAgent(BaseEmulationLoop):
         seed: int = 42,
         behavior_config_dir: Optional[str] = None,
         config_key: Optional[str] = None,
+        initial_behavior_snapshot=None,
     ):
         self.extra = extra or []
         self.exclude_windows_workflows = exclude_windows_workflows
@@ -80,6 +97,7 @@ class MCHPAgent(BaseEmulationLoop):
             seed=seed,
             behavior_config_dir=behavior_config_dir,
             config_key=config_key,
+            initial_behavior_snapshot=initial_behavior_snapshot,
         )
 
     # ── Brain-specific implementations ───────────────────────────────
@@ -96,9 +114,19 @@ class MCHPAgent(BaseEmulationLoop):
                                       (enable_whois, enable_download) is false
         """
         from pathlib import Path
-        from common.behavioral_config import load_workflow_gates
+        from common.behavioral_config import (
+            load_workflow_gates,
+            load_workflow_registration,
+        )
 
-        gates = (load_workflow_gates(Path(self._behavior_config_dir))
+        config_dir = Path(self._behavior_config_dir) if self._behavior_config_dir else None
+        enabled_workflows = (
+            load_workflow_registration(config_dir, self._config_key)
+            if config_dir and self._config_key
+            else None
+        )
+        enabled = set(enabled_workflows) if enabled_workflows is not None else None
+        gates = (load_workflow_gates(config_dir)
                  if self._behavior_config_dir
                  else {"enable_whois": True, "enable_download": True})
         print(f"MCHP: loading workflows (gates={gates})")
@@ -112,6 +140,8 @@ class MCHPAgent(BaseEmulationLoop):
             dirs[:] = [d for d in dirs if not d[0] == '.' and not d[0] == "_"]
 
             for file in files:
+                if enabled is not None and V2_WORKFLOW_IDS.get(file) not in enabled:
+                    continue
                 if self.exclude_windows_workflows and file in WINDOWS_ONLY_WORKFLOWS:
                     print(f"Skipping Windows-only workflow: {file}")
                     continue
@@ -164,7 +194,7 @@ class MCHPAgent(BaseEmulationLoop):
                 baseline = self._baseline_attr(w, "website_list")
                 w.website_list = (list(fc.browse_url_pool)
                                   if fc.browse_url_pool is not None else baseline)
-            elif wname == "GoogleSearch" and hasattr(w, "search_list"):
+            elif wname == "WebSearch" and hasattr(w, "search_list"):
                 baseline = self._baseline_attr(w, "search_list")
                 w.search_list = (list(fc.google_search_pool)
                                  if fc.google_search_pool is not None else baseline)

@@ -17,6 +17,7 @@ def load_workflows(
     max_steps: int = 10,
     enable_whois: bool = True,
     enable_download: bool = True,
+    enabled_workflows=None,
 ) -> List[BUWorkflow]:
     """
     Load BrowserUse-native workflows.
@@ -42,16 +43,22 @@ def load_workflows(
     from brains.browseruse.workflows.web_search import load as load_web_search
     from brains.browseruse.workflows.browse_youtube import load as load_browse_youtube
 
-    workflows = [
-        load_browse_web(model=model, prompts=prompts, headless=headless, max_steps=max_steps),
-        load_web_search(model=model, prompts=prompts, headless=headless, max_steps=max_steps),
-        load_browse_youtube(model=model, prompts=prompts, headless=headless, max_steps=max_steps),
-    ]
+    enabled = set(enabled_workflows) if enabled_workflows is not None else None
+    workflows = []
+    if enabled is None or "BrowseWeb" in enabled:
+        workflows.append(load_browse_web(
+            model=model, prompts=prompts, headless=headless, max_steps=max_steps))
+    if enabled is None or "WebSearch" in enabled:
+        workflows.append(load_web_search(
+            model=model, prompts=prompts, headless=headless, max_steps=max_steps))
+    if enabled is None or "BrowseYouTube" in enabled:
+        workflows.append(load_browse_youtube(
+            model=model, prompts=prompts, headless=headless, max_steps=max_steps))
 
-    if enable_whois:
+    if enable_whois and (enabled is None or "WhoisLookup" in enabled):
         from brains.browseruse.workflows.whois_lookup import load as load_whois
         workflows.append(load_whois(model=model))
-    if enable_download:
+    if enable_download and (enabled is None or "DownloadFiles" in enabled):
         from brains.browseruse.workflows.download_files import load as load_download
         workflows.append(load_download(model=model))
 

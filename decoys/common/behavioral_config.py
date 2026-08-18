@@ -36,7 +36,10 @@ from typing import Optional, List
 MODE_FEEDBACK = "feedback"   # full PHASE-tuned schema (workflow_weights, site_categories, ...)
 MODE_CONTROLS = "controls"   # hardcoded floor (google_search_pool + browse_url_pool, fixed page_fetch, no LLM)
 BEHAVIOR_CONTRACT_V1 = "ruse.decoy.behavior/v1"
-SUPPORTED_BEHAVIOR_CONTRACTS = frozenset({BEHAVIOR_CONTRACT_V1})
+BEHAVIOR_CONTRACT_V2 = "ruse.decoy.behavior/v2"
+SUPPORTED_BEHAVIOR_CONTRACTS = frozenset(
+    {BEHAVIOR_CONTRACT_V1, BEHAVIOR_CONTRACT_V2}
+)
 
 
 @dataclass
@@ -238,7 +241,11 @@ def resolve_behavioral_config_dir(config_key: str, override_dir: Optional[str] =
     return path
 
 
-def apply_phase_seed(config, behavior_config_dir: Path) -> Optional[int]:
+def apply_phase_seed(
+    config,
+    behavior_config_dir: Path,
+    behavioral_config=None,
+) -> Optional[int]:
     """Read _metadata.seed from PHASE behavior.json and apply process-wide.
 
     Each brain runner calls this BEFORE creating AgentLogger so the session_id
@@ -251,7 +258,14 @@ def apply_phase_seed(config, behavior_config_dir: Path) -> Optional[int]:
     """
     import os
     import random as _rand
-    seed = peek_seed(behavior_config_dir)
+    seed = (
+        getattr(behavioral_config, "seed", None)
+        if behavioral_config is not None
+        else peek_seed(
+            behavior_config_dir,
+            getattr(config, "config_key", None),
+        )
+    )
     if seed is None:
         return None
     if config is not None and getattr(config, "seed", None) != seed:
@@ -266,7 +280,7 @@ def apply_phase_seed(config, behavior_config_dir: Path) -> Optional[int]:
     return seed
 
 
-def peek_seed(config_dir: Path) -> Optional[int]:
+def peek_seed(config_dir: Path, config_key: Optional[str] = None) -> Optional[int]:
     """Read just _metadata.seed from behavior.json without full validation.
 
     Used by BaseEmulationLoop.run() to override the CLI default seed BEFORE
@@ -282,7 +296,26 @@ def peek_seed(config_dir: Path) -> Optional[int]:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
-    seed = (data.get("_metadata") or {}).get("seed")
+    metadata = data.get("_metadata") or {}
+    contract_version = metadata.get("contract_version")
+    if contract_version == BEHAVIOR_CONTRACT_V2:
+        # A V2 seed is startup-static actuator input.  Never apply it from a
+        # partial peek: validate the complete document and its capability
+        # assertions first.
+        from common.behavior_v2 import load_behavior_v2_bytes
+
+        installed_key = config_key or metadata.get("sup_config")
+        if not installed_key:
+            raise RuntimeError("V2 behavior.json has no SUP config identity")
+        raw_bytes = path.read_bytes()
+        return load_behavior_v2_bytes(raw_bytes, installed_key).seed
+
+    if contract_version not in (None, BEHAVIOR_CONTRACT_V1):
+        raise RuntimeError(
+            f"Unsupported behavior contract_version {contract_version!r}"
+        )
+
+    seed = metadata.get("seed")
     if seed is None:
         return None
     try:
@@ -312,6 +345,14 @@ def load_workflow_gates(config_dir: Path) -> dict:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return {"enable_whois": True, "enable_download": True}
+    contract_version = (data.get("_metadata") or {}).get("contract_version")
+    if contract_version == BEHAVIOR_CONTRACT_V2:
+        # V2 registration is owned solely by execution.enabled_workflows.
+        return {"enable_whois": True, "enable_download": True}
+    if contract_version not in (None, BEHAVIOR_CONTRACT_V1):
+        raise RuntimeError(
+            f"Unsupported behavior contract_version {contract_version!r}"
+        )
     beh = data.get("behavior") or {}
     return {
         "enable_whois":    bool(beh.get("enable_whois", True)),
@@ -319,7 +360,68 @@ def load_workflow_gates(config_dir: Path) -> dict:
     }
 
 
-def load_behavioral_config(config_dir: Path, config_key: str) -> BehavioralConfig:
+def load_workflow_registration(
+    config_dir: Path,
+    config_key: str,
+) -> Optional[tuple[str, ...]]:
+    """Return V2's exact startup workflow whitelist, or None for v1.
+
+    Version inspection happens before any legacy behavior/mode fields are
+    interpreted.  A V2 document is fully validated before its registration
+    list is returned.
+    """
+    path = config_dir / "behavior.json"
+    if not path.exists():
+        return None
+    try:
+        raw_bytes = path.read_bytes()
+        data = json.loads(raw_bytes)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    version = (data.get("_metadata") or {}).get("contract_version")
+    if version == BEHAVIOR_CONTRACT_V2:
+        from common.behavior_v2 import load_behavior_v2_bytes
+
+        return load_behavior_v2_bytes(raw_bytes, config_key).enabled_workflows
+    if version not in (None, BEHAVIOR_CONTRACT_V1):
+        raise RuntimeError(f"Unsupported behavior contract_version {version!r}")
+    return None
+
+
+def resolve_runtime_dispatch(
+    behavioral_config,
+    installed_brain: str,
+    config_key: Optional[str] = None,
+) -> str:
+    """Return `scripted_baseline` or the validated installed brain.
+
+    V2 dispatch is based on the recognized contract object and its validated
+    execution assertion.  Only the v1 adapter is allowed to inspect `mode`.
+    """
+    from common.behavior_v2 import BehaviorV2Snapshot
+
+    if isinstance(behavioral_config, BehaviorV2Snapshot):
+        if behavioral_config.brain != installed_brain:
+            raise RuntimeError(
+                f"V2 requested brain {behavioral_config.brain!r}, "
+                f"but runner installed {installed_brain!r}"
+            )
+        return behavioral_config.brain
+    if config_key == "M1":
+        # M1 is the canonical unversioned controls SUP.  Only a fully
+        # validated, explicit V2 snapshot above may opt it into MCHP.
+        return "scripted_baseline"
+    if behavioral_config.mode == MODE_CONTROLS:
+        return "scripted_baseline"
+    return installed_brain
+
+
+def load_behavioral_config(
+    config_dir: Path,
+    config_key: str,
+    *,
+    previous_v2=None,
+):
     """Load the consolidated behavior.json for a SUP.
 
     Every DECOY SUP (except C0/M0 controls, which have no service that reads
@@ -369,23 +471,34 @@ def load_behavioral_config(config_dir: Path, config_key: str) -> BehavioralConfi
 
     # File present. A malformed JSON here means the source emitted a broken
     # file or the copy corrupted it — fail loud, don't silently degrade.
-    with open(path, "r") as f:
-        data = json.load(f)
+    raw_bytes = path.read_bytes()
+    data = json.loads(raw_bytes)
 
-    timing = data.get("timing") or {}
-    content = data.get("content") or {}
-    behavior = data.get("behavior") or {}
+    # Contract dispatch is deliberately the first interpretation of document
+    # content.  V2 has no legacy `mode` field and must never flow through the
+    # v1 adapter.
     metadata = data.get("_metadata") or {}
-    mode = metadata.get("mode")
     contract_version = metadata.get("contract_version")
+    if contract_version == BEHAVIOR_CONTRACT_V2:
+        from common.behavior_v2 import load_behavior_v2_bytes
 
-    if (contract_version is not None
-            and contract_version not in SUPPORTED_BEHAVIOR_CONTRACTS):
+        return load_behavior_v2_bytes(
+            raw_bytes,
+            config_key,
+            previous=previous_v2,
+        )
+
+    if contract_version not in (None, BEHAVIOR_CONTRACT_V1):
         supported = ", ".join(sorted(SUPPORTED_BEHAVIOR_CONTRACTS))
         raise RuntimeError(
             f"behavior.json contract unsupported for {config_key} at {path}: "
             f"{contract_version!r} (supported: {supported})"
         )
+
+    timing = data.get("timing") or {}
+    content = data.get("content") or {}
+    behavior = data.get("behavior") or {}
+    mode = metadata.get("mode")
 
     # Mode dispatch (PHASE 2026-05-08). PHASE consolidated to two shapes —
     # "feedback" (full schema) and "controls" (hardcoded floor). Every
