@@ -1,0 +1,53 @@
+{
+  "baseline_commit": "142733a6b7bf7c4465d475951c15ded07a08b8bd",
+  "manifest_sha256": "41206dde30c478c0bc623631f86a82994c6bb16f19026f18b6ee07e74316d540",
+  "shared": {
+    "ablation_gate": null,
+    "active_hour": 13,
+    "active_minute_window_source": null,
+    "active_minute_windows": [[780, 840]],
+    "behavior_modifiers": null,
+    "browse_url_pool": [
+      "https://www.google.com",
+      "https://www.wikipedia.org",
+      "https://www.youtube.com",
+      "https://www.nytimes.com",
+      "https://www.amazon.com"
+    ],
+    "conn_state_mix": null,
+    "connection_shape": null,
+    "contract_version": null,
+    "diversity_injection": null,
+    "download_outcome_mix": null,
+    "download_size_mix": null,
+    "download_url_pool": null,
+    "enable_download": false,
+    "enable_whois": false,
+    "google_search_pool": ["news", "google", "restaurants"],
+    "hard_fence_seconds": 60,
+    "llm_calls_enabled": false,
+    "min_window_minutes": 60,
+    "mode": "controls",
+    "off_hour": 14,
+    "page_fetch_interval_seconds": 30,
+    "prompt_augmentation": null,
+    "schedule": null,
+    "site_config": null,
+    "target_conn_per_minute_during_active": 2.0,
+    "timing_profile": null,
+    "tool_pool": ["web_browse"],
+    "variance_injection": null,
+    "whois_domain_pool": null,
+    "workflow_weights": null,
+    "youtube_video_pool": null
+  },
+  "overrides": {
+    "B0.gemma": {"seed": 1458526624},
+    "B0C.gemma": {"seed": 2287681893},
+    "B0R.gemma": {"seed": 3904652893},
+    "M1": {"seed": 2521962739},
+    "S0.gemma": {"seed": 2439404967},
+    "S0C.gemma": {"seed": 1332322640},
+    "S0R.gemma": {"seed": 1964414703}
+  }
+}

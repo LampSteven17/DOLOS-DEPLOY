@@ -1,0 +1,69 @@
+{
+  "baseline_commit": "142733a6b7bf7c4465d475951c15ded07a08b8bd",
+  "source_root": "/data/axes-mirror/feedback/decoy-controls/controls",
+  "manifest": {
+    "relative_path": "manifest.json",
+    "sha256": "41206dde30c478c0bc623631f86a82994c6bb16f19026f18b6ee07e74316d540"
+  },
+  "cases": [
+    {
+      "config_key": "B0.gemma",
+      "relative_path": "B.gemma/B0.gemma/behavior.json",
+      "sha256": "c1c39878ac3b291ed6aef52ab89492e7b1e8568bcca42c229d519297198dff76",
+      "brain": "browseruse",
+      "dispatch": "scripted_baseline"
+    },
+    {
+      "config_key": "B0C.gemma",
+      "relative_path": "B.gemma/B0C.gemma/behavior.json",
+      "sha256": "53d2ec68550ffafba9c0294795c64ee29f110b91c76a238f7a2152959207254d",
+      "brain": "browseruse",
+      "dispatch": "scripted_baseline"
+    },
+    {
+      "config_key": "B0R.gemma",
+      "relative_path": "B.gemma/B0R.gemma/behavior.json",
+      "sha256": "d358d2677161232e8aac5204269db7c79d235cc4ed3df363d9e5a7db928430d0",
+      "brain": "browseruse",
+      "dispatch": "scripted_baseline"
+    },
+    {
+      "config_key": "M1",
+      "relative_path": "M/M1/behavior.json",
+      "sha256": "fbf44461435a56277397cdc482e932d653f812922ee0c89044fa72abd1f1555c",
+      "brain": "mchp",
+      "dispatch": "scripted_baseline"
+    },
+    {
+      "config_key": "S0.gemma",
+      "relative_path": "S.gemma/S0.gemma/behavior.json",
+      "sha256": "353e72fd9eb7c86788919d19ab2bbb652ff1dffa7b82526ab41a68634565dc03",
+      "brain": "smolagents",
+      "dispatch": "scripted_baseline"
+    },
+    {
+      "config_key": "S0C.gemma",
+      "relative_path": "S.gemma/S0C.gemma/behavior.json",
+      "sha256": "cfde11bbd56e188b48541b8b60e04889a39323969593094cae0d580778166ac6",
+      "brain": "smolagents",
+      "dispatch": "scripted_baseline"
+    },
+    {
+      "config_key": "S0R.gemma",
+      "relative_path": "S.gemma/S0R.gemma/behavior.json",
+      "sha256": "c2f84b95f1fa7e1d017d47fe2d85241d7990086ae949e1d725abb1d12080ea8c",
+      "brain": "smolagents",
+      "dispatch": "scripted_baseline"
+    }
+  ],
+  "no_behavior_exemptions": [
+    {
+      "config_key": "C0",
+      "reason": "bare Ubuntu control has no RUSE behavior consumer"
+    },
+    {
+      "config_key": "M0",
+      "reason": "upstream MITRE pyhuman control does not read behavior.json"
+    }
+  ]
+}
