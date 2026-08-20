@@ -9,6 +9,7 @@ from pathlib import Path
 from .core import output
 from .core.ansible_runner import AnsibleRunner, default_event_handler
 from .core.config import DeploymentConfig
+from .core.openstack import OpenStack
 from .core.phase_run_registry import (
     PhaseRunRegistryError,
     close_deployment,
@@ -17,6 +18,7 @@ from .core.phase_run_registry import (
 )
 from .core.ssh_config import remove_all_managed_blocks
 from .core.teardown_steps import find_hosts_ini
+from .list import has_exact_run_vm
 
 
 def run_teardown(target: str, deploy_dir: Path) -> int:
@@ -88,6 +90,7 @@ def run_teardown_filtered(
     from .core.run_status import read_run_status, FAILED
 
     matches: list[tuple[str, str, Path]] = []  # (config_name, run_id, config_dir)
+    server_statuses = OpenStack().server_status_map()
 
     for config_dir in sorted(deploy_dir.iterdir()):
         if not config_dir.is_dir():
@@ -118,12 +121,9 @@ def run_teardown_filtered(
         if purpose is not None and config.purpose != purpose:
             continue
 
-        # Per-run iteration. Include EVERY run with local state, not just
-        # ones with live VMs on OpenStack — otherwise zombie runs (VMs
-        # deleted but local runs/{run_id}/ never cleaned up, e.g. after
-        # an interrupted deploy or a partial earlier teardown) are
-        # orphaned forever. Per-type teardown handles VMs-already-gone
-        # gracefully (prints "No VMs found", proceeds to local cleanup).
+        # Normal filtered teardown follows the same active-run definition as
+        # ./list: at least one OpenStack VM under this run's exact prefix.
+        # --failed remains the explicit path for locally failed zero-VM runs.
         runs_dir = config_dir / "runs"
         if not runs_dir.is_dir():
             continue
@@ -134,7 +134,12 @@ def run_teardown_filtered(
                 validate_run_id(run_dir.name)
             except PhaseRunRegistryError:
                 continue
-            if failed_only and read_run_status(run_dir) != FAILED:
+            if failed_only:
+                if read_run_status(run_dir) != FAILED:
+                    continue
+            elif not has_exact_run_vm(
+                config_dir.name, run_dir.name, config, server_statuses
+            ):
                 continue
             matches.append((config_dir.name, run_dir.name, config_dir))
 

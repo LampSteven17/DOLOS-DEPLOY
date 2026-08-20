@@ -67,7 +67,7 @@ def run_list(deploy_dir: Path) -> int:
             except PhaseRunRegistryError:
                 continue
 
-            is_active = _check_active(
+            is_active = has_exact_run_vm(
                 name, rid, config, server_statuses,
             )
             if not is_active:
@@ -118,7 +118,7 @@ def run_list(deploy_dir: Path) -> int:
     return 0
 
 
-def _check_active(
+def has_exact_run_vm(
     name: str,
     rid: str,
     config: DeploymentConfig,

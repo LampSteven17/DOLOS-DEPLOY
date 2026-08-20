@@ -17,6 +17,7 @@ from deployment_engine import list as deployment_list
 from deployment_engine import teardown as deployment_teardown
 from deployment_engine.core import teardown_steps
 from deployment_engine.core.phase_run_registry import PhaseRunRegistryError
+from deployment_engine.core.run_status import FAILED, write_run_status
 from deployment_engine.core.vm_naming import make_run_dep_id, make_vm_prefix
 from deployment_engine.decoy import teardown as decoy_teardown
 
@@ -76,8 +77,10 @@ def _write_purpose_config(
 class _Cloud:
     def __init__(self, statuses: dict[str, str]):
         self.statuses = statuses
+        self.status_map_calls = 0
 
     def server_status_map(self):
+        self.status_map_calls += 1
         return dict(self.statuses)
 
 
@@ -158,9 +161,14 @@ class OperatorCommandTests(unittest.TestCase):
             config_dir = _write_config(deploy_dir)
             (config_dir / "runs" / LEGACY_RUN).mkdir(parents=True)
             (config_dir / "runs" / CURRENT_RUN).mkdir()
+            prefix = make_vm_prefix(make_run_dep_id("decoy-controls", CURRENT_RUN))
+            cloud = _Cloud({prefix + "scripted-cpu-0": "ACTIVE"})
 
             stderr = StringIO()
             with (
+                mock.patch.object(
+                    deployment_teardown, "OpenStack", return_value=cloud
+                ),
                 mock.patch.object(deployment_teardown.output, "confirm", return_value=False),
                 redirect_stderr(stderr),
             ):
@@ -174,6 +182,7 @@ class OperatorCommandTests(unittest.TestCase):
             self.assertIn(CURRENT_RUN, stderr.getvalue())
             self.assertNotIn(LEGACY_RUN, stderr.getvalue())
             self.assertTrue((config_dir / "runs" / LEGACY_RUN).is_dir())
+            self.assertEqual(cloud.status_map_calls, 1)
 
     def test_filtered_teardown_selects_explicit_control_or_feedback_purpose(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -184,13 +193,23 @@ class OperatorCommandTests(unittest.TestCase):
             feedback = _write_purpose_config(
                 deploy_dir, "name-that-says-controls", "feedback", "axes-summer24"
             )
+            statuses = {}
+            for config_dir in (control, feedback):
+                prefix = make_vm_prefix(
+                    make_run_dep_id(config_dir.name, CURRENT_RUN)
+                )
+                statuses[prefix + "scripted-cpu-0"] = "ACTIVE"
 
             for purpose, included, excluded in (
                 ("control", control.name, feedback.name),
                 ("feedback", feedback.name, control.name),
             ):
+                cloud = _Cloud(statuses)
                 stderr = StringIO()
                 with (
+                    mock.patch.object(
+                        deployment_teardown, "OpenStack", return_value=cloud
+                    ),
                     mock.patch.object(
                         deployment_teardown.output, "confirm", return_value=False
                     ),
@@ -210,6 +229,134 @@ class OperatorCommandTests(unittest.TestCase):
                 rendered = stderr.getvalue()
                 self.assertIn(f"{included}/{CURRENT_RUN}", rendered)
                 self.assertNotIn(f"{excluded}/{CURRENT_RUN}", rendered)
+                self.assertEqual(cloud.status_map_calls, 1)
+
+    def test_list_and_filtered_teardown_share_exact_cloud_presence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            config_dir = _write_config(deploy_dir)
+            (config_dir / "runs" / CURRENT_RUN).mkdir(parents=True)
+            prefix = make_vm_prefix(make_run_dep_id(config_dir.name, CURRENT_RUN))
+            partial = prefix.removesuffix("-") + "extra-scripted-cpu-0"
+
+            for statuses in ({}, {partial: "ACTIVE"}):
+                list_cloud = _Cloud(statuses)
+                list_output = StringIO()
+                with (
+                    mock.patch.object(
+                        deployment_list, "OpenStack", return_value=list_cloud
+                    ),
+                    redirect_stderr(list_output),
+                ):
+                    self.assertEqual(deployment_list.run_list(deploy_dir), 0)
+                self.assertIn("No active deployments.", list_output.getvalue())
+                self.assertEqual(list_cloud.status_map_calls, 1)
+
+                teardown_cloud = _Cloud(statuses)
+                teardown_output = StringIO()
+                with (
+                    mock.patch.object(
+                        deployment_teardown, "OpenStack", return_value=teardown_cloud
+                    ),
+                    mock.patch.object(
+                        deployment_teardown.output, "confirm"
+                    ) as confirm,
+                    redirect_stderr(teardown_output),
+                ):
+                    self.assertEqual(
+                        deployment_teardown.run_teardown_filtered(
+                            deploy_dir,
+                            types={
+                                "decoy": True,
+                                "rampart": False,
+                                "ghosts": False,
+                            },
+                        ),
+                        0,
+                    )
+                self.assertIn("No deployments match", teardown_output.getvalue())
+                confirm.assert_not_called()
+                self.assertEqual(teardown_cloud.status_map_calls, 1)
+
+            exact_statuses = {
+                prefix + "scripted-cpu-0": "ACTIVE",
+                prefix + "mchp-cpu-0": "BUILD",
+                prefix + "browseruse-gpu-0": "ERROR",
+                prefix + "smolagents-gpu-0": "SHUTOFF",
+            }
+            list_cloud = _Cloud(exact_statuses)
+            list_output = StringIO()
+            with (
+                mock.patch.object(
+                    deployment_list, "OpenStack", return_value=list_cloud
+                ),
+                redirect_stderr(list_output),
+            ):
+                self.assertEqual(deployment_list.run_list(deploy_dir), 0)
+            self.assertIn(f"decoy-controls-{CURRENT_RUN}", list_output.getvalue())
+            self.assertEqual(list_cloud.status_map_calls, 1)
+
+            teardown_cloud = _Cloud(exact_statuses)
+            teardown_output = StringIO()
+            with (
+                mock.patch.object(
+                    deployment_teardown, "OpenStack", return_value=teardown_cloud
+                ),
+                mock.patch.object(
+                    deployment_teardown.output, "confirm", return_value=False
+                ),
+                redirect_stderr(teardown_output),
+            ):
+                self.assertEqual(
+                    deployment_teardown.run_teardown_filtered(
+                        deploy_dir,
+                        types={
+                            "decoy": True,
+                            "rampart": False,
+                            "ghosts": False,
+                        },
+                    ),
+                    0,
+                )
+            self.assertIn(
+                f"decoy-controls/{CURRENT_RUN}", teardown_output.getvalue()
+            )
+            self.assertEqual(teardown_cloud.status_map_calls, 1)
+
+    def test_failed_filter_keeps_zero_vm_failed_run_as_explicit_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            config_dir = _write_config(deploy_dir)
+            run_dir = config_dir / "runs" / CURRENT_RUN
+            run_dir.mkdir(parents=True)
+            write_run_status(run_dir, FAILED, "test failure")
+            cloud = _Cloud({})
+
+            stderr = StringIO()
+            with (
+                mock.patch.object(
+                    deployment_teardown, "OpenStack", return_value=cloud
+                ),
+                mock.patch.object(
+                    deployment_teardown.output, "confirm", return_value=False
+                ),
+                redirect_stderr(stderr),
+            ):
+                self.assertEqual(
+                    deployment_teardown.run_teardown_filtered(
+                        deploy_dir,
+                        types={
+                            "decoy": True,
+                            "rampart": False,
+                            "ghosts": False,
+                        },
+                        failed_only=True,
+                    ),
+                    0,
+                )
+
+            self.assertIn(f"decoy-controls/{CURRENT_RUN}", stderr.getvalue())
+            self.assertEqual(cloud.status_map_calls, 1)
 
     def test_teardown_purpose_cli_dispatch_and_validation(self):
         for flag, expected in (("--controls", "control"), ("--feedback", "feedback")):
