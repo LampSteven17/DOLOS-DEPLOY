@@ -51,6 +51,28 @@ def _write_config(deploy_dir: Path, name: str = "decoy-controls") -> Path:
     return config_dir
 
 
+def _write_purpose_config(
+    deploy_dir: Path, name: str, purpose: str, target: str | None
+) -> Path:
+    config_dir = deploy_dir / name
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "deployment_name": name,
+                "purpose": purpose,
+                "target": target,
+                "capture_interface": "eno2",
+                "deployments": [],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (config_dir / "runs" / CURRENT_RUN).mkdir(parents=True)
+    return config_dir
+
+
 class _Cloud:
     def __init__(self, statuses: dict[str, str]):
         self.statuses = statuses
@@ -145,13 +167,105 @@ class OperatorCommandTests(unittest.TestCase):
                 result = deployment_teardown.run_teardown_filtered(
                     deploy_dir,
                     types={"decoy": True, "rampart": False, "ghosts": False},
-                    feedback_only=False,
+                    purpose=None,
                 )
 
             self.assertEqual(result, 0)
             self.assertIn(CURRENT_RUN, stderr.getvalue())
             self.assertNotIn(LEGACY_RUN, stderr.getvalue())
             self.assertTrue((config_dir / "runs" / LEGACY_RUN).is_dir())
+
+    def test_filtered_teardown_selects_explicit_control_or_feedback_purpose(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            control = _write_purpose_config(
+                deploy_dir, "name-that-says-feedback", "control", None
+            )
+            feedback = _write_purpose_config(
+                deploy_dir, "name-that-says-controls", "feedback", "axes-summer24"
+            )
+
+            for purpose, included, excluded in (
+                ("control", control.name, feedback.name),
+                ("feedback", feedback.name, control.name),
+            ):
+                stderr = StringIO()
+                with (
+                    mock.patch.object(
+                        deployment_teardown.output, "confirm", return_value=False
+                    ),
+                    redirect_stderr(stderr),
+                ):
+                    result = deployment_teardown.run_teardown_filtered(
+                        deploy_dir,
+                        types={
+                            "decoy": True,
+                            "rampart": False,
+                            "ghosts": False,
+                        },
+                        purpose=purpose,
+                    )
+
+                self.assertEqual(result, 0)
+                rendered = stderr.getvalue()
+                self.assertIn(f"{included}/{CURRENT_RUN}", rendered)
+                self.assertNotIn(f"{excluded}/{CURRENT_RUN}", rendered)
+
+    def test_teardown_purpose_cli_dispatch_and_validation(self):
+        for flag, expected in (("--controls", "control"), ("--feedback", "feedback")):
+            with mock.patch(
+                "deployment_engine.teardown.run_teardown_filtered", return_value=0
+            ) as filtered:
+                self.assertEqual(deployment_cli._cmd_teardown(["--decoy", flag]), 0)
+            self.assertEqual(filtered.call_args.kwargs["purpose"], expected)
+            self.assertEqual(
+                filtered.call_args.kwargs["types"],
+                {"decoy": True, "rampart": False, "ghosts": False},
+            )
+
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(deployment_cli._cmd_teardown([flag]), 1)
+            self.assertIn("requires a system selector", stderr.getvalue())
+
+            with mock.patch(
+                "deployment_engine.teardown.run_teardown_all"
+            ) as teardown_all:
+                self.assertEqual(deployment_cli._cmd_teardown(["--all", flag]), 1)
+            teardown_all.assert_not_called()
+
+        with self.assertRaises(SystemExit):
+            deployment_cli._cmd_teardown(
+                ["--decoy", "--controls", "--feedback"]
+            )
+
+        help_text = deployment_cli._teardown_parser().format_help()
+        self.assertIn("--controls", help_text)
+        self.assertNotIn("--control ", help_text)
+
+    def test_failed_filter_still_spans_systems_and_composes_with_purpose(self):
+        with mock.patch(
+            "deployment_engine.teardown.run_teardown_filtered", return_value=0
+        ) as filtered:
+            self.assertEqual(deployment_cli._cmd_teardown(["--failed"]), 0)
+        self.assertEqual(
+            filtered.call_args.kwargs["types"],
+            {"decoy": True, "rampart": True, "ghosts": True},
+        )
+        self.assertIsNone(filtered.call_args.kwargs["purpose"])
+        self.assertTrue(filtered.call_args.kwargs["failed_only"])
+
+        with mock.patch(
+            "deployment_engine.teardown.run_teardown_filtered", return_value=0
+        ) as filtered:
+            self.assertEqual(
+                deployment_cli._cmd_teardown(
+                    ["--decoy", "--controls", "--failed"]
+                ),
+                0,
+            )
+        self.assertEqual(filtered.call_args.kwargs["purpose"], "control")
+        self.assertTrue(filtered.call_args.kwargs["failed_only"])
 
     def test_explicit_dated_teardown_dispatches_only_the_exact_run(self):
         with tempfile.TemporaryDirectory() as temporary:

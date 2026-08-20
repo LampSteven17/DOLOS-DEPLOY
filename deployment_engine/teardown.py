@@ -68,7 +68,7 @@ def run_teardown(target: str, deploy_dir: Path) -> int:
 def run_teardown_filtered(
     deploy_dir: Path,
     types: dict[str, bool],
-    feedback_only: bool,
+    purpose: str | None = None,
     failed_only: bool = False,
 ) -> int:
     """Teardown all active deployments matching the given filters.
@@ -77,7 +77,8 @@ def run_teardown_filtered(
     deployments matching any selected type get torn down. If all False,
     matches nothing (caller should prevent that).
 
-    feedback_only: only target deployments named *-feedback-* (vs controls).
+    purpose: when set, only target deployments whose explicit configuration
+    purpose matches this value.
 
     failed_only: only target runs stamped FAILED in deploy_status.json
     (see core/run_status.py). Runs with no stamp (UNKNOWN) or an OK stamp
@@ -112,8 +113,9 @@ def run_teardown_filtered(
             if not types.get("decoy"):
                 continue
 
-        # Feedback filter
-        if feedback_only and "-feedback-" not in config_dir.name:
+        # Purpose is explicit configuration metadata. Deployment and directory
+        # names never determine whether a run is a control or feedback run.
+        if purpose is not None and config.purpose != purpose:
             continue
 
         # Per-run iteration. Include EVERY run with local state, not just

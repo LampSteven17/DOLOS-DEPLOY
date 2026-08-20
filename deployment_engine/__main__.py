@@ -119,6 +119,7 @@ def _teardown_parser() -> argparse.ArgumentParser:
         epilog="""examples:
   ./teardown decoy-controls-2026-08-20_130523Z
                                              teardown one exact dated run
+  ./teardown --decoy --controls            teardown all active DECOY control deployments
   ./teardown --decoy --feedback            teardown all active DECOY feedback deployments
   ./teardown --rampart                     teardown all active RAMPART deployments
   ./teardown --ghosts --feedback           teardown all active GHOSTS feedback deployments
@@ -136,10 +137,20 @@ def _teardown_parser() -> argparse.ArgumentParser:
                    help="Filter: RAMPART enterprise deployments (--ramparts alias)")
     p.add_argument("--ghosts", "--ghost", action="store_true", dest="ghosts",
                    help="Filter: GHOSTS NPC deployments (--ghost alias)")
-    p.add_argument("--feedback", action="store_true", help="Filter: only feedback-enabled deployments")
+    purpose = p.add_mutually_exclusive_group()
+    purpose.add_argument(
+        "--controls",
+        action="store_true",
+        help="Filter: only deployments with purpose: control",
+    )
+    purpose.add_argument(
+        "--feedback",
+        action="store_true",
+        help="Filter: only deployments with purpose: feedback",
+    )
     p.add_argument("--failed", action="store_true",
                    help="Filter: only runs stamped failed (deploy_status.json). "
-                        "Composes with type/--feedback filters; alone, spans all types")
+                        "Composes with system/purpose filters; alone, spans all types")
     return p
 
 
@@ -345,22 +356,31 @@ def _cmd_teardown(argv: list[str]) -> int:
     parser = _teardown_parser()
     args = parser.parse_args(argv)
 
+    has_system = args.decoy or args.rampart or args.ghosts
+    purpose = "control" if args.controls else ("feedback" if args.feedback else None)
+    if purpose is not None and not has_system:
+        output.error(
+            "ERROR: --controls/--feedback requires a system selector "
+            "(--decoy, --rampart, or --ghosts)"
+        )
+        return 1
+
     if args.teardown_all:
         from .teardown import run_teardown_all
         return run_teardown_all(DEPLOY_DIR)
 
-    has_filter = args.decoy or args.rampart or args.ghosts or args.feedback or args.failed
+    has_filter = has_system or purpose is not None or args.failed
     if has_filter:
         from .teardown import run_teardown_filtered
         # --failed with no explicit type spans all types (otherwise the
         # type filter would match nothing). With a type flag it narrows.
         types = {"decoy": args.decoy, "rampart": args.rampart, "ghosts": args.ghosts}
-        if args.failed and not (args.decoy or args.rampart or args.ghosts):
+        if args.failed and not has_system:
             types = {"decoy": True, "rampart": True, "ghosts": True}
         return run_teardown_filtered(
             DEPLOY_DIR,
             types=types,
-            feedback_only=args.feedback,
+            purpose=purpose,
             failed_only=args.failed,
         )
 
