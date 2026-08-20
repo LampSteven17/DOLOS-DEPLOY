@@ -51,7 +51,7 @@ def _deploy_parser() -> argparse.ArgumentParser:
   chosen type. Use --controls or --feedback to narrow.
 
 scope flags:
-  --controls            deploy baseline controls only
+  --controls            deploy the control fleet only
   --feedback            deploy feedback variants (all, or --target/--source one)
 
 Feedback without --target/--source = batch every discovered dataset.
@@ -59,7 +59,7 @@ Pass --target or --source to deploy a single dataset.
 
 examples:
   ./deploy --decoy                          controls + ALL feedback datasets
-  ./deploy --decoy --controls               baseline controls only
+  ./deploy --decoy --controls               control fleet only
   ./deploy --decoy --feedback               ALL feedback datasets (no controls)
   ./deploy --decoy --feedback --target sum24  single dataset (no controls)
   ./deploy --decoy --feedback --target sum24,axyear,vt50g --gpu rtx
@@ -67,7 +67,7 @@ examples:
   ./deploy --decoy --controls --feedback    controls + ALL feedback (explicit)
   ./deploy --decoy --controls --target sum24  controls + single feedback
   ./deploy --ghosts                         controls + ALL GHOSTS feedback
-  ./deploy --rampart --controls             RAMPART baseline only""",
+  ./deploy --rampart --controls             RAMPART control fleet only""",
     )
     p.add_argument("--decoy", "--decoys", action="store_true", dest="decoy",
                    help="Deploy DECOY SUP agents (default; --decoys alias)")
@@ -78,7 +78,7 @@ examples:
     p.add_argument("config_name", nargs="?", help="Deployment config name (default: {type}-controls)")
 
     # Scope flags — opt into just controls, just feedback, or (default) both.
-    p.add_argument("--controls", action="store_true", help="Deploy baseline controls (no feedback)")
+    p.add_argument("--controls", action="store_true", help="Deploy the control fleet (no feedback)")
     p.add_argument("--feedback", action="store_true", help="Deploy PHASE feedback variants")
 
     p.add_argument("--preset", type=str,

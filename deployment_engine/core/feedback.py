@@ -10,6 +10,12 @@ from . import output
 
 
 FEEDBACK_BASE = Path("/mnt/AXES2U1/feedback")
+WORKFLOW_CAPABILITIES_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "contracts"
+    / "phase-workflow-plan-v1"
+    / "capabilities-v1.json"
+)
 
 # Slots inside {type}-controls/ that are NOT feedback datasets. The
 # `controls` slot is the new authoritative location for the baseline
@@ -103,19 +109,51 @@ _CONTROL_BEHAVIOR_LABELS = {
 }
 
 
-def _controls_vm_runtime_details(behavior: str) -> tuple[str, str]:
-    """(brain, model) for a controls behavior — special-cases C0/M0, else
-    falls back to the standard brain/model derivation."""
+def _legacy_controls_vm_runtime_details(behavior: str) -> tuple[str, str]:
+    """Return runtime details for controls outside the workflow contract."""
     special = _CONTROL_BEHAVIOR_LABELS.get(behavior.split(".")[0])
     return special if special else _vm_runtime_details(behavior)
 
 
+def _workflow_control_runtime_details(
+    sup_config: str, capabilities: dict,
+) -> tuple[str, str] | None:
+    """Read one canonical control's brain and model from the contract."""
+    configurations = capabilities.get("sup_configurations")
+    if not isinstance(configurations, dict) or sup_config not in configurations:
+        return None
+    configuration = configurations[sup_config]
+    brain = configuration.get("brain")
+    if not isinstance(brain, str) or not brain:
+        raise ValueError(f"invalid Brain capability for {sup_config}")
+
+    # Convert canonical contract identifiers to their operator casing without
+    # maintaining a second SUP-configuration map.
+    words = re.sub(r"(use|agents)$", r"-\1", brain).split("-")
+    brain_label = "".join(
+        word.upper() if word == "mchp" else word.capitalize()
+        for word in words
+    )
+
+    profiles = capabilities.get("brain_profiles", {}).get(sup_config, {})
+    profile = profiles.get("control", {}) if isinstance(profiles, dict) else {}
+    model = profile.get("model") if isinstance(profile, dict) else None
+    if model is None:
+        model_label = "—"
+    elif isinstance(model, dict) and isinstance(model.get("ollama"), str):
+        model_label = model["ollama"]
+    else:
+        raise ValueError(f"invalid model capability for {sup_config}")
+    return brain_label, model_label
+
+
 def _render_vm_table(rows: list[tuple], indent: str) -> list[str]:
-    """Aligned Behavior/Brain/Flavor/LLM-model table from (beh, brain, flavor,
+    """Aligned SUP-config/Brain/Flavor/LLM-model table from rows of
+    (configuration, brain, flavor,
     model) rows. Empty list when no rows."""
     if not rows:
         return []
-    headers = ("Behavior", "Brain", "Flavor", "LLM model")
+    headers = ("SUP config", "Brain", "Flavor", "LLM model")
     widths = [
         max(len(headers[i]), max(len(row[i]) for row in rows))
         for i in range(4)
@@ -145,10 +183,20 @@ def config_vm_table_lines(deployments: list[dict], indent: str = "    ") -> list
     """Per-VM provisioning table for a config.yaml `deployments` list
     ([{behavior, flavor, count}, ...]). Used for CONTROLS, whose VMs come from
     config.yaml rather than a GPU-tier template."""
+    try:
+        capabilities = json.loads(
+            WORKFLOW_CAPABILITIES_PATH.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"cannot read workflow capabilities {WORKFLOW_CAPABILITIES_PATH}: {exc}"
+        ) from exc
+
     rows = []
     for dep in deployments or []:
         beh = dep.get("behavior", "?")
-        brain, model = _controls_vm_runtime_details(beh)
+        details = _workflow_control_runtime_details(beh, capabilities)
+        brain, model = details or _legacy_controls_vm_runtime_details(beh)
         rows.append((beh, brain, dep.get("flavor", "?"), model))
     return _render_vm_table(rows, indent)
 

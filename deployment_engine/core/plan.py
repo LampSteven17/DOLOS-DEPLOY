@@ -90,7 +90,7 @@ def _build_controls_task(deploy_type: str, deploy_dir: Path) -> dict:
         # the only "soft" case: a fresh repo without a controls config
         # shouldn't crash the planner.
         return {
-            "label": f"{deploy_type}-controls (baseline)",
+            "label": f"{deploy_type}-controls (control)",
             "behavior_source": None,
             "configs_spec": None,
             "manifest": None,
@@ -101,7 +101,7 @@ def _build_controls_task(deploy_type: str, deploy_dir: Path) -> dict:
     cfg = DeploymentConfig.load(controls_cfg_path)  # raises on parse errors — fail loud
     src = Path(cfg.behavior_source) if cfg.behavior_source else None
     return {
-        "label": f"{deploy_type}-controls (baseline)",
+        "label": f"{deploy_type}-controls (control)",
         "behavior_source": src,
         "configs_spec": None,
         "manifest": load_manifest(src) if src else None,
@@ -220,7 +220,7 @@ def show_plan_and_confirm(
             src = task.get("behavior_source")
             mf = task.get("manifest")
             if src is None:
-                output.info("      (baseline controls — no PHASE feedback)")
+                output.info("      (control — no PHASE feedback)")
             else:
                 for line in manifest_summary_lines(src, mf, indent="      "):
                     output.info(line)

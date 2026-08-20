@@ -7,7 +7,6 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ..core import output
@@ -17,16 +16,16 @@ from ..core.openstack import OpenStack
 from ..core.ssh_config import install_ssh_config
 from ..core.feedback import generate_feedback_config
 from ..core.revision import RevisionError, resolve_ruse_revision
-from ..core.vm_naming import make_vm_prefix
+from ..core.vm_naming import make_run_dep_id, make_vm_prefix
 from ..core import run_status
 from ..core.deploy_steps import (
     neighborhood_vms, register_phase_run, ssh_connectivity_test,
 )
 from ..core.phase_run_registry import (
     PhaseRunRegistryError,
-    close_deployment,
     run_id_from_started_at,
     utc_deployment_start,
+    validate_run_id,
 )
 
 
@@ -79,6 +78,15 @@ def run_decoy_spinup(
         output.error(f"ERROR: No hosts.ini found for: {config_name}")
         return 1
 
+    active_runs = _active_current_runs(config_dir, config_name)
+    if active_runs:
+        output.error(f"ERROR: Active deployment already exists for {config_name}.")
+        for prior_run_id in active_runs:
+            output.error(f"  {config_name}-{prior_run_id}")
+        output.error("Tear down the active run explicitly before deploying again:")
+        output.error(f"  ./teardown {config_name}-{active_runs[0]}")
+        return 1
+
     # A VM install must be reproducible from one immutable Git object. Resolve
     # this before provisioning so a dirty runtime tree or malformed override
     # cannot leave paid-for VMs waiting on an install that can never match the
@@ -95,7 +103,7 @@ def run_decoy_spinup(
     started_at = utc_deployment_start()
     run_id = run_id_from_started_at(started_at)
     run_dir = config_dir / "runs" / run_id
-    dep_id = _make_run_dep_id(config_name, run_id)
+    dep_id = make_run_dep_id(config_name, run_id)
     vm_prefix = make_vm_prefix(dep_id)
     vm_count = config.vm_count()
 
@@ -141,19 +149,6 @@ def run_decoy_spinup(
     run_status.write_run_status(run_dir, run_status.FAILED, "in_progress")
 
     runner = AnsibleRunner(deploy_dir / "logs")
-
-    # Phase 0: idempotent same-deploy refresh.
-    # If a prior run under this same config_name has matching gpu_tier +
-    # deployments[] template (= same logical deploy), teardown its VMs and
-    # drop its run_dir before we provision the new ones. Without this,
-    # ./deploy on an existing config silently piles new VMs alongside old
-    # ones (each new run_id makes a different OpenStack name, so there's
-    # no collision — just orphan accumulation).
-    #
-    # Different gpu_tier or different deployments[] under the same name
-    # = operator hand-edited config.yaml = NOT a match, leave alone and
-    # proceed (caller can fix it up explicitly with ./teardown).
-    _teardown_matching_prior_runs(config_dir, run_dir, config)
 
     # Phase 1: Provision
     output.info("")
@@ -535,104 +530,45 @@ def _legacy_distribution_source(
     return None
 
 
-def _make_run_dep_id(deployment_name: str, run_id: str) -> str:
-    """Build run dep_id: strip prefixes, remove hyphens, append run_id."""
-    dep = deployment_name
-    if dep.startswith("decoy-"):
-        dep = dep[len("decoy-"):]
-    dep = dep.replace("-", "")
-    return f"{dep}{run_id}"
-
-
 def _copy_file(src: Path, dst: Path) -> None:
     import shutil
     shutil.copy2(src, dst)
 
 
-def _teardown_matching_prior_runs(
-    config_dir: Path, new_run_dir: Path, new_config: DeploymentConfig,
-) -> None:
-    """Teardown VMs from any prior run of this config_name whose
-    gpu_tier + deployments[] match the new config.
+def _active_current_runs(config_dir: Path, config_name: str) -> list[str]:
+    """Return dated runs with at least one exact-prefix OpenStack VM.
 
-    Three checks per prior run (all must match to count as "same deploy"):
-      1. prior run_dir/config.yaml exists (= the run got past Phase 0)
-      2. prior config.gpu_tier == new config.gpu_tier
-      3. prior config.deployments == new config.deployments
-
-    On match: delete every VM under the prior run's prefix, close that exact
-    PHASE run, then remove the prior local run directory.
-
-    On mismatch (gpu_tier or deployments[] changed): leave the prior run
-    fully intact. Operator clearly meant something different by reusing
-    the name; they can clean it up with explicit ./teardown.
+    Legacy and invalid directory names are ignored before any file inside
+    them is inspected. Local history alone never blocks a deployment.
     """
     runs_dir = config_dir / "runs"
     if not runs_dir.is_dir():
-        return
+        return []
 
-    prior_run_dirs = [
-        d for d in runs_dir.iterdir()
-        if d.is_dir() and d != new_run_dir and (d / "config.yaml").exists()
+    current_run_ids = []
+    for run_dir in sorted(runs_dir.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        try:
+            validate_run_id(run_dir.name)
+        except PhaseRunRegistryError:
+            continue
+        current_run_ids.append(run_dir.name)
+
+    if not current_run_ids:
+        return []
+
+    server_names = OpenStack().server_status_map()
+    return [
+        run_id
+        for run_id in current_run_ids
+        if any(
+            name.startswith(
+                make_vm_prefix(make_run_dep_id(config_name, run_id))
+            )
+            for name in server_names
+        )
     ]
-    if not prior_run_dirs:
-        return
-
-    from ..core.teardown_steps import safe_rmtree, wait_until_zero
-
-    to_teardown: list[tuple[Path, str]] = []  # (prior_run_dir, vm_prefix)
-    for prior in prior_run_dirs:
-        try:
-            prior_cfg = DeploymentConfig.load(prior / "config.yaml")
-        except Exception as e:
-            output.dim(f"  skipping prior run {prior.name}: can't parse config.yaml ({e})")
-            continue
-        if prior_cfg.gpu_tier != new_config.gpu_tier:
-            output.dim(
-                f"  prior run {prior.name} has gpu_tier={prior_cfg.gpu_tier} "
-                f"(new is {new_config.gpu_tier}) — leaving alone"
-            )
-            continue
-        if prior_cfg.deployments != new_config.deployments:
-            output.dim(
-                f"  prior run {prior.name} has different deployments[] — leaving alone"
-            )
-            continue
-        prior_dep_id = _make_run_dep_id(new_config.deployment_name, prior.name)
-        prior_prefix = make_vm_prefix(prior_dep_id)
-        to_teardown.append((prior, prior_prefix))
-
-    if not to_teardown:
-        return
-
-    output.info("")
-    output.info(f"--- Refreshing {len(to_teardown)} matching prior run(s) ---")
-    os_client = OpenStack()
-    for prior_dir, prior_prefix in to_teardown:
-        servers = os_client.server_list_with_ids(prefix=prior_prefix)
-        if servers:
-            output.info(f"  Deleting {len(servers)} VM(s) under {prior_prefix}*")
-            os_client.server_delete_many([s["id"] for s in servers], wait=True)
-            remaining = wait_until_zero(os_client, prior_prefix)
-            if remaining:
-                output.error(
-                    f"  ERROR: {remaining} VM(s) under {prior_prefix}* still alive after teardown wait. "
-                    f"Aborting before provisioning new VMs (avoid mixing old + new state)."
-                )
-                raise SystemExit(1)
-        else:
-            output.dim(f"  no live VMs under {prior_prefix}* — just dropping run_dir")
-        try:
-            close_deployment(
-                new_config.deployment_name,
-                prior_dir.name,
-                ended_at=datetime.now(timezone.utc),
-            )
-        except PhaseRunRegistryError as exc:
-            output.error(f"  ERROR: cannot close prior PHASE run: {exc}")
-            raise SystemExit(1) from exc
-        safe_rmtree(prior_dir)
-        output.dim(f"  dropped prior run_dir {prior_dir.name}")
 
 
 def _parse_inventory(inventory_path: Path) -> list[dict]:
