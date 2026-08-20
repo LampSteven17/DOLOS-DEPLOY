@@ -167,13 +167,42 @@
           stderr: {{ stage2_result.stderr | default('') | truncate(400) }}
       when: stage2_result.rc != 0
 
-    # NOTE: service-active assertion moved to distribute-behavior-configs.yaml
-    # tail. Reason: with mandatory behavior.json, the brain raises on missing
-    # config — so between INSTALL_SUP.sh starting the service (end of stage 2)
-    # and distribute-behavior-configs.yaml landing the file, the service
-    # crash-loops briefly. Asserting "active" here would race that window and
-    # fail spuriously. The distribute tail asserts active + NRestarts ≤ 20
-    # AFTER the file lands, which is the real fail-loud signal.
+    - name: Derive canonical workflow service name
+      when: sup_behavior in ['scripted-cpu', 'mchp-cpu', 'browseruse-gpu', 'smolagents-gpu']
+      set_fact:
+        canonical_sup_service: "{{ sup_behavior | lower | replace('.', '_') }}.service"
+
+    - name: Start canonical workflow service after Stage 2
+      when: sup_behavior in ['scripted-cpu', 'mchp-cpu', 'browseruse-gpu', 'smolagents-gpu']
+      systemd:
+        name: "{{ canonical_sup_service }}"
+        state: started
+        daemon_reload: yes
+
+    - name: Wait for canonical workflow service to become active
+      when: sup_behavior in ['scripted-cpu', 'mchp-cpu', 'browseruse-gpu', 'smolagents-gpu']
+      command: "systemctl is-active {{ canonical_sup_service }}"
+      register: canonical_service_probe
+      changed_when: false
+      failed_when: false
+      retries: 12
+      delay: 5
+      until: canonical_service_probe.stdout | trim == 'active'
+
+    - name: Assert canonical workflow service is active
+      when:
+        - sup_behavior in ['scripted-cpu', 'mchp-cpu', 'browseruse-gpu', 'smolagents-gpu']
+        - canonical_service_probe.stdout | default('') | trim != 'active'
+      fail:
+        msg: >-
+          {{ canonical_sup_service }} did not become active after Stage 2 on
+          {{ inventory_hostname }}. Check systemctl status and the installed
+          workflow plan under /opt/ruse/deployed_sups/{{ sup_behavior }}.
+
+    # Legacy service-active assertions remain at the tail of
+    # distribute-behavior-configs.yaml. Those services cannot start until the
+    # separately distributed behavior.json lands. Canonical workflow controls
+    # are asserted above because INSTALL_SUP.sh installs their plan itself.
 
     # MCHP brains have a slow Selenium/pyautogui memory leak. Schedule a daily
     # service restart at 03:00 UTC + a weekly full VM reboot Sundays at 04:00 UTC

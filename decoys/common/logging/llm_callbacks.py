@@ -37,6 +37,18 @@ if TYPE_CHECKING:
 # SmolAgents generates Python code that calls tools; we parse the code to
 # detect which mechanical actions are being performed.
 _SMOL_ACTION_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
+    # Canonical bounded DocumentCreation action.
+    (
+        re.compile(r"\bcreate_assigned_document\s*\(", re.IGNORECASE),
+        "create_assigned_document",
+        "office",
+    ),
+    # Canonical bounded VideoViewing action.
+    (
+        re.compile(r"\bplay_assigned_video\s*\(", re.IGNORECASE),
+        "play_assigned_video",
+        "video",
+    ),
     # Tool calls → search
     (re.compile(r"(?:web_search|duckduckgo_search|DuckDuckGoSearchTool)\s*\(", re.IGNORECASE), "search", "browser"),
     # Page-visit tool → navigate. BrowseWeb gained VisitWebpageTool on

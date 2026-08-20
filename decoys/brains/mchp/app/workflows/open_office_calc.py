@@ -4,6 +4,7 @@ import random
 import subprocess
 import pyautogui
 from lorem.text import TextLorem
+from pathlib import Path
 from time import sleep
 from ..utility.base_workflow import BaseWorkflow
 
@@ -62,6 +63,40 @@ class SpreadsheetEditor(BaseWorkflow):
 
     def action(self, extra=None, logger=None):
         self._create_spreadsheet(logger=logger)
+
+    def create_assigned(self, resource, workspace, logger=None):
+        """Create one exact assigned spreadsheet through LibreOffice Calc."""
+        artifact = Path(workspace) / resource["filename"]
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        if logger:
+            logger.step_start(
+                "open_application", category="office", message="LibreOffice Calc"
+            )
+        self._new_spreadsheet()
+        if logger:
+            logger.step_success("open_application")
+
+        if logger:
+            logger.step_start(
+                "edit_content", category="office", message="Typing assigned table"
+            )
+        rows = [resource["columns"], *resource["rows"]]
+        for row_index, row in enumerate(rows, start=1):
+            for column_index, value in enumerate(row):
+                column = chr(ord("A") + column_index)
+                self._move_to_cell([column, row_index])
+                pyautogui.write(str(value))
+        if logger:
+            logger.step_success("edit_content")
+
+        if logger:
+            logger.step_start(
+                "save_document", category="office", message=str(artifact)
+            )
+        self._save_assigned(artifact)
+        if logger:
+            logger.step_success("save_document")
+        return artifact
 
     def _create_spreadsheet(self, logger=None):
         app_name = "LibreOffice Calc" if IS_LINUX else "OpenOffice Calc"
@@ -150,6 +185,15 @@ class SpreadsheetEditor(BaseWorkflow):
         pyautogui.hotkey('alt','y') # choose "yes" if a popup asks if you'd like to overwrite another file
         sleep(self.default_wait_time)
         pyautogui.hotkey('ctrl','q') # quit
+
+    def _save_assigned(self, artifact):
+        pyautogui.hotkey("ctrl", "s")
+        sleep(self.default_wait_time)
+        pyautogui.write(str(artifact))
+        pyautogui.press("enter")
+        sleep(self.default_wait_time)
+        pyautogui.hotkey("alt", "y")
+        pyautogui.hotkey("ctrl", "q")
 
     def _move_to_cell(self, cell_coordinate):
         # Use Ctrl+G for Go To dialog (works in both LibreOffice and OpenOffice)

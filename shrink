@@ -1,7 +1,0 @@
-#!/bin/bash
-# Entry point — invokes deployment_engine module.
-# State (per-deploy configs, runs, logs) lives in deployments/.
-# Code (engine + playbooks) lives in deployment_engine/.
-HERE="$(dirname "$(readlink -f "$0")")"
-cd "$HERE"
-exec python3 -m deployment_engine shrink "$@"

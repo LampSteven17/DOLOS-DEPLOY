@@ -1,0 +1,104 @@
+{
+  "schema": "phase-workflow-capabilities-v1",
+  "max_parallel_workflows": 10,
+  "control_instructions": {
+    "WebResearch": "Use the assigned research resource. For a search query, open one result and read it. For a direct page, read it and follow one relevant link.",
+    "VideoViewing": "Open the assigned video and play it for five minutes.",
+    "DocumentCreation": "Create and save the assigned document or spreadsheet using the provided template and sample content."
+  },
+  "brain_profiles": {
+    "browseruse-gpu": {
+      "control": {
+        "framework": {
+          "name": "browser-use",
+          "version": "0.12.7"
+        },
+        "model": {
+          "key": "gemma",
+          "ollama": "gemma4:26b"
+        },
+        "system_guidance": null,
+        "max_steps": 10
+      }
+    },
+    "smolagents-gpu": {
+      "control": {
+        "framework": {
+          "name": "smolagents",
+          "version": "1.25.0"
+        },
+        "model": {
+          "key": "gemma",
+          "ollama": "gemma4:26b"
+        },
+        "system_guidance": null,
+        "max_steps": 10
+      }
+    },
+    "mchp-cpu": {
+      "control": {
+        "model": null,
+        "system_guidance": null,
+        "max_steps": null,
+        "workflows": {
+          "WebResearch": {
+            "resource_kinds": ["direct_url", "search_query"]
+          },
+          "VideoViewing": {
+            "resource_kinds": ["youtube_video"]
+          },
+          "DocumentCreation": {
+            "resource_kinds": ["document", "spreadsheet"]
+          }
+        }
+      }
+    }
+  },
+  "sup_configurations": {
+    "scripted-cpu": {
+      "brain": "scripted",
+      "hardware": "cpu",
+      "instruction": "forbidden",
+      "workflows": {
+        "WebResearch": ["control"],
+        "VideoViewing": ["control"],
+        "DocumentCreation": ["control"]
+      }
+    },
+    "mchp-cpu": {
+      "brain": "mchp",
+      "hardware": "cpu",
+      "instruction": "forbidden",
+      "workflows": {
+        "WebResearch": ["control"],
+        "VideoViewing": ["control"],
+        "DocumentCreation": ["control"]
+      }
+    },
+    "browseruse-gpu": {
+      "brain": "browseruse",
+      "hardware": "gpu",
+      "instruction": "required",
+      "workflows": {
+        "WebResearch": ["control"],
+        "VideoViewing": ["control"],
+        "DocumentCreation": ["control"]
+      }
+    },
+    "smolagents-gpu": {
+      "brain": "smolagents",
+      "hardware": "gpu",
+      "instruction": "required",
+      "workflows": {
+        "WebResearch": ["control"],
+        "VideoViewing": ["control"],
+        "DocumentCreation": ["control"]
+      }
+    }
+  },
+  "target_profiles": {
+    "control-default": {
+      "path": "target-profiles/control-default.json"
+    }
+  }
+}

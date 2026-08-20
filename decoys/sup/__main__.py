@@ -61,6 +61,9 @@ Configuration Keys:
         from runners import list_configs, list_aliases
         print("Available configuration keys:")
         print("-" * 50)
+        from phase_workflow.configurations import CONFIGURATIONS
+        for key in CONFIGURATIONS:
+            print(f"  {key} (phase-workflow-plan-v1)")
         for key in list_configs():
             print(f"  {key}")
         print("")
@@ -74,6 +77,13 @@ Configuration Keys:
             if len(aliases) > 6:
                 print(f"  ... and {len(aliases) - 6} more")
         return
+
+    if args.config_key:
+        from phase_workflow.configurations import is_workflow_configuration
+        if is_workflow_configuration(args.config_key):
+            from phase_workflow.runtime import run_workflow_runtime
+            run_workflow_runtime(args.config_key, args.behavior_config_dir)
+            return
 
     from runners import get_config, build_config
 

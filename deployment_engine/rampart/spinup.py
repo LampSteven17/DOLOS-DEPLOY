@@ -16,7 +16,11 @@ from ..core.ansible_runner import AnsibleRunner, default_event_handler
 from ..core.config import DeploymentConfig
 from ..core.ssh_config import install_ssh_config
 from ..core.vm_naming import make_ent_vm_prefix
-from ..core.deploy_steps import register_phase
+from ..core.deploy_steps import (
+    infrastructure_vms_from_ssh_config,
+    register_phase_run,
+)
+from ..core.phase_run_registry import run_id_from_started_at, utc_deployment_start
 from ..core import run_status
 
 
@@ -53,7 +57,8 @@ def run_rampart_spinup(
     # else fall back to the deployment's own config.yaml (controls path).
     effective_source = behavior_source or config.behavior_source
 
-    run_id = time.strftime("%m%d%y%H%M%S")
+    started_at = utc_deployment_start()
+    run_id = run_id_from_started_at(started_at)
     run_dir = config_dir / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -222,33 +227,14 @@ def run_rampart_spinup(
         output.error("  FAIL: No endpoint VMs with users found — check simulate-logins.py output")
         return 1
 
-    # P1: PHASE registration is fail-loud — a registered-but-missing deploy
-    # means logs are collected by nothing. Consistent with the spinup.py
-    # fail-loud contract.
+    # P1: PHASE registration is fail-loud and uses the final actual VM roster.
     snippet_path = run_dir / "ssh_config_snippet.txt"
-    if snippet_path.exists():
-        # RAMPART has no inventory.ini for register_experiment.py to parse,
-        # so the start_date must be passed explicitly. Without it, PHASE.py
-        # later dredges ALL eno2 history into one DuckDB COPY and spills
-        # /tmp until disk fills (incident 2026-05-12).
-        today = time.strftime("%Y-%m-%d")
-        # baseline_user_roles is RAMPART-only — PHASE's rampart_generator
-        # reads it via `entry.get("baseline_user_roles")` to clone pyhuman
-        # baseline roles for feedback generation. DECOY/GHOSTS don't need
-        # this field (their baselines live where PHASE already looks).
-        # Per PHASE 4.2-rampart SKILL.md A6.
-        baseline_path = str(Path(wdir) / config.enterprise_user_roles())
-        if not register_phase(
-            snippet_path, deployment, run_id,
-            start_date=today,
-            baseline_user_roles=baseline_path,
-        ):
-            output.error("")
-            output.error("ABORTING: PHASE experiments.json registration failed.")
-            output.error("RAMPART VMs are running but won't appear in PHASE analysis.")
-            return 1
-    else:
-        output.error("  WARNING: ssh_config_snippet.txt missing — skipping PHASE registration")
+    phase_vms = infrastructure_vms_from_ssh_config(snippet_path)
+    if not register_phase_run(config, "rampart", started_at, phase_vms):
+        output.error("")
+        output.error("ABORTING: PHASE deployment registration failed.")
+        output.error("RAMPART VMs are running but this fleet has no PHASE run record.")
+        return 1
 
     run_status.write_run_status(run_dir, run_status.OK, "deploy complete")
     output.info("")
@@ -433,9 +419,8 @@ def _generate_ssh_config(
 ) -> None:
     """Generate and install SSH config from enterprise deploy output.
 
-    Snippet is mandatory: register_phase reads it to find each VM's IP.
-    A missing snippet silently kills PHASE registration, which then makes
-    Zeek dredge unscoped logs (disk-fill risk).
+    The snippet is also the final RAMPART VM roster source for PHASE
+    registration, so a missing snippet fails registration loudly.
     """
     from ..core.enterprise_ssh_config import generate_ssh_config
 

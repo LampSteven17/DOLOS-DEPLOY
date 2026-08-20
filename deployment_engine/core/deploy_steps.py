@@ -2,7 +2,7 @@
 
 Three things every spinup does post-provision:
   1. SSH connectivity test — parallel probe across the new VMs
-  2. PHASE registration — write to experiments.json
+  2. PHASE registration — write one phase-run-v1 deployment record
   3. SSH config snippet install — covered by core/ssh_config.py
      (caller-side because the VM list shape differs per type)
 """
@@ -13,13 +13,15 @@ import concurrent.futures
 import os
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 
 from . import output
-
-
-# Path to the register_experiment.py script, lives next to this module.
-_REGISTER_SCRIPT = Path(__file__).resolve().parent / "register_experiment.py"
+from .config import DeploymentConfig
+from .phase_run_registry import (
+    PhaseRunRegistryError,
+    create_deployment,
+)
 
 
 def ssh_connectivity_test(
@@ -87,91 +89,60 @@ def ssh_connectivity_test(
     return ok_count
 
 
-def register_phase(
-    snippet_path: Path,
-    config_name: str,
-    run_id: str,
-    *,
-    extra_ips: list[str] | None = None,
-    start_date: str | None = None,
-    baseline_user_roles: str | None = None,
-    gpu_tier: str | None = None,
+def register_phase_run(
+    config: DeploymentConfig,
+    system: str,
+    started_at: datetime,
+    vms: list[dict],
 ) -> bool:
-    """Register in PHASE experiments.json via the canonical script.
-
-    Returns True on rc=0; False on registration failure or missing inventory.
-    Missing snippet_path returns True — that means an earlier stage already
-    aborted, no point double-failing here.
-
-    extra_ips is a list of `IP=HOSTNAME` pairs (DECOY uses this for the
-    neighborhood sidecar VM so it shows up in experiments.json alongside
-    the SUPs).
-
-    start_date (YYYY-MM-DD) explicitly scopes PHASE Zeek dredging. Without
-    it (and without an inventory.ini for the script to extract from),
-    register_experiment.py writes start_date=None and PHASE.py later
-    materializes ALL eno2 history — disk-fill incident observed
-    2026-05-12 against rampart-controls (no inventory.ini → null
-    start_date → DuckDB spilled 7+ months of traffic to /tmp).
-
-    gpu_tier (decoy feedback only) is forwarded to register_experiment.py
-    as a hint so lineage_key is correctly stripped even for newly-added
-    tier suffixes the lineage helper doesn't yet recognize.
-    """
-    if not snippet_path.exists():
-        output.error("  WARNING: ssh_config_snippet.txt missing — skipping PHASE registration")
-        return True
-
-    if not _REGISTER_SCRIPT.exists():
-        output.error(
-            f"  ERROR: register_experiment.py not found at {_REGISTER_SCRIPT}. "
-            f"Engine layout broken — fail loud."
+    """Create the one exact PHASE deployment record for a completed spinup."""
+    try:
+        run_id, path = create_deployment(
+            experiment_id=config.deployment_name,
+            system=system,
+            purpose=config.purpose,
+            target=config.target,
+            started_at=started_at,
+            capture_interface=config.capture_interface,
+            vms=vms,
         )
+    except PhaseRunRegistryError as exc:
+        output.error(f"  ERROR: PHASE deployment registration failed: {exc}")
         return False
-
-    run_dir = snippet_path.parent
-    inventory_path = run_dir / "inventory.ini"
-
-    cmd = [
-        "python3", str(_REGISTER_SCRIPT),
-        "--name", config_name,
-        "--snippet", str(snippet_path),
-        "--inventory", str(inventory_path),
-        "--run-id", run_id,
-    ]
-    if start_date:
-        cmd.extend(["--start-date", start_date])
-    if baseline_user_roles:
-        cmd.extend(["--baseline-user-roles", baseline_user_roles])
-    if gpu_tier:
-        cmd.extend(["--gpu-tier", gpu_tier])
-    for pair in extra_ips or []:
-        cmd.extend(["--extra-ip", pair])
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if result.returncode == 0:
-        output.dim("  Registered in PHASE experiments.json")
-        return True
-
-    err = (result.stderr or result.stdout or "").strip()[:400]
-    output.error(f"  ERROR: PHASE registration FAILED (rc={result.returncode}): {err}")
-    return False
+    output.dim(f"  Registered PHASE run {run_id}: {path}")
+    return True
 
 
-def neighborhood_extra_ips(run_dir: Path) -> list[str]:
-    """DECOY-specific helper. Scan neighborhood-inventory.ini for sidecar VMs.
-
-    Returns a list of `IP=HOSTNAME` strings for --extra-ip. Empty list if
-    no neighborhood inventory (controls + non-topology-gated feedback).
-    """
+def neighborhood_vms(run_dir: Path) -> list[dict]:
+    """Return DECOY sidecar VMs with explicit null SUP configuration."""
     inv = run_dir / "neighborhood-inventory.ini"
     if not inv.exists():
         return []
-    pairs = []
+    vms = []
     import re
     for line in inv.read_text().splitlines():
         m = re.match(r"^(\S+)\s+ansible_host=(\S+)", line)
         if m:
-            host, ip = m.group(1), m.group(2)
-            pairs.append(f"{ip}={host}")
-    return pairs
+            vms.append({"name": m.group(1), "ip": m.group(2), "sup_config": None})
+    return vms
+
+
+def infrastructure_vms_from_ssh_config(snippet_path: Path) -> list[dict]:
+    """Read actual infrastructure VM names and IPs from a RUSE SSH snippet."""
+    if not snippet_path.is_file():
+        return []
+    vms = []
+    current_name = None
+    for raw_line in snippet_path.read_text().splitlines():
+        line = raw_line.strip()
+        if line.startswith("Host "):
+            name = line.removeprefix("Host ").strip()
+            current_name = None if "*" in name else name
+        elif current_name is not None and line.startswith("HostName "):
+            vms.append({
+                "name": current_name,
+                "ip": line.removeprefix("HostName ").strip(),
+                "sup_config": None,
+            })
+            current_name = None
+    return vms

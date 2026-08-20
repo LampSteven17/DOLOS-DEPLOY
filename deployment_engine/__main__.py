@@ -4,7 +4,6 @@ Entry points (via shell scripts at RUSE/ root):
   ./deploy   → python3 -m deployment_engine deploy [--decoy|--rampart|--ghosts] [--feedback] ...
   ./teardown → python3 -m deployment_engine teardown <target> | --all
   ./list     → python3 -m deployment_engine list
-  ./shrink   → python3 -m deployment_engine shrink <target>
   ./audit    → python3 -m deployment_engine audit [--decoy|--rampart|--ghosts]
 
 Layout (post 2026-05-08 restructure):
@@ -12,9 +11,9 @@ Layout (post 2026-05-08 restructure):
     core/                   ← shared utilities (output, config, openstack,
                               ansible_runner, ssh_config, vm_naming,
                               feedback, teardown_steps, deploy_steps,
-                              register_experiment, enterprise_ssh_config)
+                              phase_run_registry, enterprise_ssh_config)
     decoy/  rampart/  ghosts/   ← per-type spinup, teardown, audit
-    teardown.py / list.py / shrink.py    ← thin top-level routers
+    teardown.py / list.py              ← thin top-level routers
     playbooks/              ← Ansible YAMLs
 
   deployments/              ← state only (no code)
@@ -124,7 +123,9 @@ def _teardown_parser() -> argparse.ArgumentParser:
   ./teardown --ghosts --feedback           teardown all active GHOSTS feedback deployments
   ./teardown --all                         nuclear: delete ALL VMs""",
     )
-    p.add_argument("target", nargs="?", help="Teardown target: name-MMDDYYHHMMSS")
+    p.add_argument(
+        "target", nargs="?", help="Teardown target: name-YYYY-MM-DD_HHMMSSZ"
+    )
     p.add_argument("--all", action="store_true", dest="teardown_all", help="Delete ALL DECOY, Enterprise, and GHOSTS VMs")
 
     # Filter flags for batch teardown
@@ -168,7 +169,7 @@ DECOY checks per VM:
 
 cross-deployment:
   - OpenStack vs inventory orphans/missing
-  - PHASE experiments.json registration
+  - PHASE phase-run-v1 registration
   - duplicate run_ids
   - orphan boot volumes
 
@@ -183,35 +184,11 @@ Outputs a terminal summary + markdown report at deployments/logs/audit_*.md""",
     return p
 
 
-def _shrink_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="shrink",
-        description="Shrink a running deployment in-place to match its top-level config.yaml",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""how it works:
-  1. Diffs the run's config.yaml snapshot against the top-level config.yaml
-  2. Deletes surplus VMs from OpenStack
-  3. Cleans up inventory.ini, ssh_config_snippet.txt, ~/.ssh/config block,
-     and PHASE experiments.json
-  4. Updates the run snapshot to match the desired config
-
-Surviving VMs keep running with their existing behavioral configs —
-no reboot, no reinstall.
-
-example:
-  # 1. Edit deployments/decoy-controls/config.yaml to remove unwanted VMs
-  # 2. Run shrink against the active run
-  ./shrink decoy-controls-040226205037""",
-    )
-    p.add_argument("target", help="Deployment target: name-MMDDYYHHMMSS")
-    return p
-
-
 def main(argv: list[str] | None = None) -> int:
     argv = argv or sys.argv[1:]
 
     if not argv:
-        print("Usage: deploy|teardown|list|shrink|audit [options]", file=sys.stderr)
+        print("Usage: deploy|teardown|list|audit [options]", file=sys.stderr)
         return 1
 
     command = argv[0]
@@ -227,13 +204,11 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_teardown(rest)
         elif command == "list":
             return _cmd_list(rest)
-        elif command == "shrink":
-            return _cmd_shrink(rest)
         elif command == "audit":
             return _cmd_audit(rest)
         else:
             print(f"Unknown command: {command}", file=sys.stderr)
-            print("Usage: deploy|teardown|list|shrink|audit [options]", file=sys.stderr)
+            print("Usage: deploy|teardown|list|audit [options]", file=sys.stderr)
             return 1
 
     except KeyboardInterrupt:
@@ -389,7 +364,10 @@ def _cmd_teardown(argv: list[str]) -> int:
         )
 
     if not args.target:
-        output.error("ERROR: specify a target (name-MMDDYYHHMMSS), use filter flags, or use --all")
+        output.error(
+            "ERROR: specify a target (name-YYYY-MM-DD_HHMMSSZ), "
+            "use filter flags, or use --all"
+        )
         parser.print_help(sys.stderr)
         return 1
 
@@ -401,13 +379,6 @@ def _cmd_list(argv: list[str]) -> int:
     _list_parser().parse_args(argv)  # just for --help support
     from .list import run_list
     return run_list(DEPLOY_DIR)
-
-
-def _cmd_shrink(argv: list[str]) -> int:
-    parser = _shrink_parser()
-    args = parser.parse_args(argv)
-    from .shrink import run_shrink
-    return run_shrink(args.target, DEPLOY_DIR)
 
 
 def _cmd_audit(argv: list[str]) -> int:

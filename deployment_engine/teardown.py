@@ -10,6 +10,7 @@ from .core.vm_naming import (
 import os
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .core import output
@@ -21,17 +22,21 @@ from .core.teardown_steps import find_hosts_ini, make_dep_id, safe_rmtree
 
 
 def run_teardown(target: str, deploy_dir: Path) -> int:
-    """Teardown a specific deployment run. Target format: name-MMDDYYHHMMSS.
+    """Teardown one run addressed by deployment name and UTC run ID.
 
     Dispatches by deploy type to the per-subsystem teardown.
     """
-    match = re.match(r"^(.+)-(\d{12})$", target)
+    match = re.match(r"^(.+)-(\d{4}-\d{2}-\d{2}_\d{6}Z)$", target)
     if not match:
-        output.error(f"ERROR: Invalid teardown target: {target} (expected: name-MMDDYYHHMMSS)")
+        output.error(
+            f"ERROR: Invalid teardown target: {target} "
+            "(expected: name-YYYY-MM-DD_HHMMSSZ)"
+        )
         return 1
 
     config_name = match.group(1)
     run_id = match.group(2)
+
     config_dir = deploy_dir / config_name
     config_file = config_dir / "config.yaml"
 
@@ -142,8 +147,7 @@ def run_teardown_filtered(
     # CLI invocation in isolation — own OpenStack auth, own session log,
     # own ansible runs. Concurrency-safe because:
     #   - ~/.ssh/config edits are fcntl-locked (core/ssh_config.py)
-    #   - experiments.json read-modify-write is fcntl-locked
-    #     (core/teardown_steps.py::close_phase_experiment)
+    #   - each PHASE run closes under its own run-directory lock
     #   - per-deploy state lives in distinct config_dir/runs/{rid}/ trees
     #   - OpenStack handles concurrent server/volume DELETEs natively
     # Sequential serial run was 8 × ~3min = ~25min; parallel run is bounded
@@ -244,7 +248,7 @@ def run_teardown_all(deploy_dir: Path) -> int:
     if removed:
         output.info(f"  Removed {len(removed)} SSH config blocks")
 
-    # Clean up local state + close PHASE experiments.json entries for
+    # Clean up local state + close each exact PHASE deployment record for
     # every deployment with run state. The playbook above already nuked
     # all VMs/volumes/inventory; this loop just removes the surviving
     # deployment-side state directories so `./list` shows nothing.
@@ -254,8 +258,9 @@ def run_teardown_all(deploy_dir: Path) -> int:
     # writes deployment_type + timelines/. Stale GHOSTS run dirs got
     # left behind. After --all, every run_dir in every config_dir gets
     # rmtree'd unconditionally.
-    from .core.teardown_steps import close_phase_experiment
+    from .core.phase_run_registry import PhaseRunRegistryError, close_deployment
     feedback_markers = ("decoy-feedback-", "rampart-feedback-", "ghosts-feedback-")
+    close_failures = 0
     for config_dir in deploy_dir.iterdir():
         if not config_dir.is_dir():
             continue
@@ -267,9 +272,21 @@ def run_teardown_all(deploy_dir: Path) -> int:
             if not run_dir.is_dir():
                 continue
             had_runs = True
+            try:
+                close_deployment(
+                    config_dir.name,
+                    run_dir.name,
+                    ended_at=datetime.now(timezone.utc),
+                )
+            except PhaseRunRegistryError as exc:
+                close_failures += 1
+                output.error(
+                    f"  ERROR: PHASE deployment close failed for "
+                    f"{config_dir.name}/{run_dir.name}: {exc}"
+                )
+                continue
             safe_rmtree(run_dir)
         if had_runs:
-            close_phase_experiment(config_dir.name)
             # Drop empty feedback config dirs (controls dirs persist as the
             # baseline config). Feedback dirs are deploy-time artifacts.
             if any(m in config_dir.name for m in feedback_markers):
@@ -277,4 +294,4 @@ def run_teardown_all(deploy_dir: Path) -> int:
                 if not remaining:
                     safe_rmtree(config_dir)
 
-    return result.rc
+    return result.rc if result.rc != 0 else (1 if close_failures else 0)

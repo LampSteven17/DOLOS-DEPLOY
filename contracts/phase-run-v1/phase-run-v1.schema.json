@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phase.local/contracts/phase-run-v1.schema.json",
+  "title": "PHASE deployment record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "system",
+    "purpose",
+    "target",
+    "started_at",
+    "ended_at",
+    "capture_interface",
+    "vms"
+  ],
+  "properties": {
+    "system": {
+      "enum": ["decoy", "rampart", "ghosts", "training"]
+    },
+    "purpose": {
+      "enum": ["control", "feedback", "other"]
+    },
+    "target": {
+      "oneOf": [
+        {"$ref": "#/$defs/identifier"},
+        {"type": "null"}
+      ]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "ended_at": {
+      "oneOf": [
+        {"type": "string", "format": "date-time"},
+        {"type": "null"}
+      ]
+    },
+    "capture_interface": {
+      "type": "string",
+      "minLength": 1
+    },
+    "vms": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/vm"
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "vm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "ip", "sup_config"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ip": {
+          "type": "string",
+          "format": "ipv4"
+        },
+        "sup_config": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ]
+        }
+      }
+    }
+  }
+}

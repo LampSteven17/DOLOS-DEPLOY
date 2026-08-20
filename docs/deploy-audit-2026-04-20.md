@@ -8,7 +8,7 @@ atomic-rename'd data never actually persisted. Session logs passed; the
 file state did not.
 
 Scope: the three spinup modules (`spinup.py` / `ghosts.py` / `rampart.py`),
-the teardown / list / audit / shrink commands, the shared libs
+the teardown / list / audit commands, the shared libs
 (`register_experiment.py`, `vm_naming.py`, `enterprise_ssh_config.py`),
 and the Ansible playbooks.
 

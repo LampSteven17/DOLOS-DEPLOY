@@ -42,6 +42,7 @@ class EventType(str, Enum):
     # Workflow events
     WORKFLOW_START = "workflow_start"
     WORKFLOW_END = "workflow_end"
+    WORKFLOW_PLAN_TERMINAL = "workflow_plan_terminal"
 
     # Step events (replaces BROWSER_ACTION/GUI_ACTION)
     STEP_START = "step_start"
@@ -686,6 +687,14 @@ class AgentLogger:
         if details:
             sample.update(details)
         return self._log(EventType.NETWORK_SAMPLE, details=sample)
+
+    def workflow_plan_terminal(self, details: Dict[str, Any]) -> LogEvent:
+        """Write one canonical planned-occurrence terminal event."""
+        return self._log(
+            EventType.WORKFLOW_PLAN_TERMINAL,
+            workflow=details.get("workflow"),
+            details=details,
+        )
 
     def warning(self, message: str, details: Optional[Dict[str, Any]] = None) -> LogEvent:
         """Log warning event."""

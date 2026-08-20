@@ -4,6 +4,9 @@
 
 deployment_name: rampart-controls
 type: rampart
+purpose: control
+target: null
+capture_interface: eno2
 
 # PHASE owns the controls source of truth (post 2026-05-08). Per-node
 # user-roles.json files at this path carry _phase_metadata.mode=controls;

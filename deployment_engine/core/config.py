@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,6 +16,9 @@ class DeploymentConfig:
 
     deployment_name: str
     deployment_type: str = "decoy"  # "decoy", "rampart", or "ghosts"
+    purpose: str = ""
+    target: str | None = None
+    capture_interface: str = "eno2"
     flavor_capacity: dict[str, int] = field(default_factory=dict)
     deployments: list[dict] = field(default_factory=list)
     behavior_source: str | None = None
@@ -30,9 +34,36 @@ class DeploymentConfig:
         with open(config_path) as f:
             raw = yaml.safe_load(f)
 
+        if not isinstance(raw, dict):
+            raise ValueError(f"deployment config must be a mapping: {config_path}")
+        missing = [field for field in ("purpose", "target") if field not in raw]
+        if missing:
+            raise ValueError(
+                f"deployment config missing required field(s): {', '.join(missing)}"
+            )
+        purpose = raw["purpose"]
+        if purpose not in {"control", "feedback", "other"}:
+            raise ValueError(
+                "deployment config purpose must be control, feedback, or other"
+            )
+        target = raw["target"]
+        if target is not None and (
+            not isinstance(target, str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", target) is None
+        ):
+            raise ValueError("deployment config target must be an identifier or null")
+        if purpose == "feedback" and target is None:
+            raise ValueError("feedback deployment config target must not be null")
+        capture_interface = raw.get("capture_interface", "eno2")
+        if not isinstance(capture_interface, str) or not capture_interface:
+            raise ValueError("deployment config capture_interface must be non-empty")
+
         return cls(
             deployment_name=raw.get("deployment_name", config_path.parent.name),
             deployment_type=raw.get("type", "decoy"),
+            purpose=purpose,
+            target=target,
+            capture_interface=capture_interface,
             flavor_capacity=raw.get("flavor_capacity", {}),
             deployments=raw.get("deployments", []),
             behavior_source=raw.get("behavior_source"),

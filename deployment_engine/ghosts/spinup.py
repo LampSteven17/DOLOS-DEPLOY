@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..core import output
@@ -18,7 +19,13 @@ from ..core.config import DeploymentConfig
 from ..core.openstack import OpenStack
 from ..core.ssh_config import install_ssh_config
 from ..core.vm_naming import make_ghosts_vm_prefix
-from ..core.deploy_steps import ssh_connectivity_test, register_phase
+from ..core.deploy_steps import register_phase_run, ssh_connectivity_test
+from ..core.phase_run_registry import (
+    PhaseRunRegistryError,
+    close_deployment,
+    run_id_from_started_at,
+    utc_deployment_start,
+)
 
 
 def run_ghosts_spinup(
@@ -56,7 +63,8 @@ def run_ghosts_spinup(
     client_count = config.ghosts_client_count()
     total_vms = 1 + client_count  # 1 API + N clients
 
-    run_id = time.strftime("%m%d%y%H%M%S")
+    started_at = utc_deployment_start()
+    run_id = run_id_from_started_at(started_at)
     run_dir = config_dir / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -232,10 +240,14 @@ def run_ghosts_spinup(
     # P1: PHASE registration is fail-loud — consistent with spinup.py and
     # rampart.py. A registered-but-missing deploy means logs are invisible
     # to PHASE inference.
-    if not register_phase(snippet_path, deployment, run_id):
+    phase_vms = [
+        {"name": vm["name"], "ip": vm["ip"], "sup_config": None}
+        for vm in all_vms
+    ]
+    if not register_phase_run(config, "ghosts", started_at, phase_vms):
         output.error("")
-        output.error("ABORTING: PHASE experiments.json registration failed.")
-        output.error("GHOSTS VMs are running but won't appear in PHASE analysis.")
+        output.error("ABORTING: PHASE deployment registration failed.")
+        output.error("GHOSTS VMs are running but this fleet has no PHASE run record.")
         return 1
 
     output.info("")
@@ -363,7 +375,7 @@ def _provision_vms(
 
     # G4 (part 2): fail loud if we silently dropped any VMs due to IP extraction
     # failures. Previously a VM that reached ACTIVE but had no extractable IP
-    # was silently omitted from the inventory, shrinking the deploy.
+    # was silently omitted from the inventory, reducing the intended deploy.
     if dropped_for_no_ip:
         output.error(f"  FAIL: {len(dropped_for_no_ip)} ACTIVE VMs had no extractable IP: "
                      f"{', '.join(dropped_for_no_ip)}")
@@ -534,10 +546,8 @@ def _teardown_matching_prior_runs(
       1. prior run_dir/config.yaml exists and parses (= got past snapshot)
       2. prior ghosts topology == new ghosts topology (_ghosts_topology)
 
-    On match: openstack-delete every VM under the prior run's g- prefix,
-    wait until zero, then safe_rmtree the prior run_dir. The experiments.json
-    entry is left alone — register_phase's upsert refreshes its IPs +
-    end_date=None at the end of this same spinup.
+    On match: delete every VM under the prior run's g- prefix, wait until zero,
+    close that exact PHASE run, then remove the prior local run directory.
 
     On mismatch (ghosts block hand-edited): leave the prior run fully intact;
     the operator clearly meant something different by reusing the name and
@@ -594,6 +604,15 @@ def _teardown_matching_prior_runs(
                 raise SystemExit(1)
         else:
             output.dim(f"  no live VMs under {prior_prefix}* — just dropping run_dir")
+        try:
+            close_deployment(
+                new_config.deployment_name,
+                prior_dir.name,
+                ended_at=datetime.now(timezone.utc),
+            )
+        except PhaseRunRegistryError as exc:
+            output.error(f"  ERROR: cannot close prior PHASE run: {exc}")
+            raise SystemExit(1) from exc
         safe_rmtree(prior_dir)
         output.dim(f"  dropped prior run_dir {prior_dir.name}")
 

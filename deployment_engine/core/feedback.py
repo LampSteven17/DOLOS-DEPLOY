@@ -221,6 +221,29 @@ def validate_manifest_target(
         )
     return None
 
+
+def require_manifest_training_dataset(source: Path, deploy_type: str) -> str:
+    """Return the exact PHASE model target required for a feedback config."""
+    manifest = load_manifest(source)
+    if manifest is None:
+        output.error(f"ERROR: required manifest.json missing or invalid: {source}")
+        raise SystemExit(1)
+    mismatch = validate_manifest_target(manifest, deploy_type)
+    if mismatch:
+        output.error(f"ERROR: {mismatch}")
+        raise SystemExit(1)
+    training_dataset = manifest.get("training_dataset")
+    if (
+        not isinstance(training_dataset, str)
+        or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", training_dataset) is None
+    ):
+        output.error(
+            f"ERROR: manifest.training_dataset missing or invalid: "
+            f"{source / 'manifest.json'}"
+        )
+        raise SystemExit(1)
+    return training_dataset
+
 # GPU-conserving 5-VM feedback template (gemma4 cutover 2026-04-08):
 # gemma only, V100 only (no RTX) — V100 uses gemma4:26b, CPU uses gemma4:e2b.
 FEEDBACK_TEMPLATE = [
@@ -745,6 +768,7 @@ def generate_feedback_config(
         )
         raise SystemExit(1)
 
+    target = require_manifest_training_dataset(source_dir, "decoy")
     _experiment, dataset, preset_name = _parse_source_name(source_dir)
 
     # Abbreviate dataset (exact match first, then longest substring match)
@@ -774,6 +798,9 @@ def generate_feedback_config(
     tier_spec = FEEDBACK_TEMPLATES_BY_TIER[gpu_tier]
     config = {
         "deployment_name": dep_name,
+        "purpose": "feedback",
+        "target": target,
+        "capture_interface": "eno2",
         "behavior_source": str(source_dir),
         "behavior_configs": behavior_configs,
         "gpu_tier": gpu_tier,
@@ -808,6 +835,7 @@ def generate_rampart_feedback_config(
         )
         raise SystemExit(1)
 
+    target = require_manifest_training_dataset(source_dir, "rampart")
     _experiment, dataset, preset_name = _parse_source_name(source_dir)
 
     # Abbreviate dataset (exact match first, then longest substring match)
@@ -833,6 +861,9 @@ def generate_rampart_feedback_config(
         base = {"type": "rampart"}
 
     base["deployment_name"] = dep_name
+    base["purpose"] = "feedback"
+    base["target"] = target
+    base["capture_interface"] = base.get("capture_interface", "eno2")
     base["behavior_source"] = str(source_dir)
     if configs_spec == "all":
         base["behavior_configs"] = "all"
@@ -876,6 +907,7 @@ def generate_ghosts_feedback_config(
         )
         raise SystemExit(1)
 
+    target = require_manifest_training_dataset(source_dir, "ghosts")
     _experiment, dataset, preset_name = _parse_source_name(source_dir)
 
     # Abbreviate dataset (exact match first, then longest substring match)
@@ -902,6 +934,9 @@ def generate_ghosts_feedback_config(
     config = {
         "deployment_name": dep_name,
         "type": "ghosts",
+        "purpose": "feedback",
+        "target": target,
+        "capture_interface": "eno2",
         "behavior_source": str(source_dir),
         "behavior_configs": behavior_configs,
         "ghosts": {

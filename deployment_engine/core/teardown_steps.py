@@ -8,18 +8,16 @@ without importing from each other or from the router (teardown.py).
 from __future__ import annotations
 
 import datetime
-import fcntl
-import json
 import os
 import shutil
-import tempfile
 from pathlib import Path
 
 from . import output
 from .openstack import OpenStack
-
-
-EXPERIMENTS_JSON = Path("/mnt/AXES2U1/experiments.json")
+from .phase_run_registry import (
+    PhaseRunRegistryError,
+    close_deployment,
+)
 
 
 def find_hosts_ini(config_dir: Path | None, deploy_dir: Path) -> Path | None:
@@ -70,77 +68,6 @@ def cleanup_orphaned_volumes(os_client: OpenStack) -> int:
     return 0
 
 
-def close_phase_experiment(config_name: str) -> None:
-    """Set end_date on the PHASE experiments.json entry for this deployment.
-
-    Without this, PHASE batch pipelines (e.g. PHASE.py --decoy) treat torn-down
-    deploys as active and try to dredge their (now-deleted) VM IPs.
-
-    Uses fcntl-locked read-modify-write + atomic rename so concurrent
-    teardowns and deploy registrations can't clobber each other. A race
-    on 2026-04-17 wiped 12 entries before the lock went in.
-    """
-    if not EXPERIMENTS_JSON.exists():
-        return
-
-    lock_path = EXPERIMENTS_JSON.with_suffix(EXPERIMENTS_JSON.suffix + ".lock")
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
-    lock_fd = None
-    try:
-        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-
-        try:
-            data = json.loads(EXPERIMENTS_JSON.read_text())
-        except (OSError, json.JSONDecodeError) as e:
-            output.error(f"  WARNING: cannot read experiments.json: {e}")
-            return
-
-        entry = data.get(config_name)
-        if not entry:
-            return
-        if entry.get("end_date"):
-            return
-
-        # Yesterday, not today: teardown-day Zeek captures are partial. Using
-        # the day before gives PHASE a clean last-full-day boundary for log
-        # dredging.
-        #
-        # Clamp to start_date though — a same-day deploy-then-teardown (failed
-        # deploy, immediate retry) would otherwise produce end_date < start_date.
-        # Observed on 2026-05-20: 2025-all and axyear-all both ended up with
-        # start=05-20, end=05-19 from this exact path. ISO date strings sort
-        # lexicographically, so max() does what you'd expect.
-        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-        start = entry.get("start_date") or yesterday
-        entry["end_date"] = max(yesterday, start)
-
-        try:
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w", dir=str(EXPERIMENTS_JSON.parent),
-                prefix=f".{EXPERIMENTS_JSON.name}.", suffix=".tmp",
-                delete=False,
-            )
-            tmp.write(json.dumps(data, indent=4) + "\n")
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            tmp.close()
-            os.replace(tmp.name, EXPERIMENTS_JSON)
-            output.info(f"  Closed experiments.json entry: {config_name} end_date={yesterday}")
-        except OSError as e:
-            output.error(f"  WARNING: cannot write experiments.json: {e}")
-    finally:
-        if lock_fd is not None:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
-            os.close(lock_fd)
-
-
 def safe_rmtree(path: Path) -> None:
     """Recursively remove a directory; swallow OSError."""
     try:
@@ -185,7 +112,7 @@ def finalize_teardown(
       2. verify VMs gone (poll_for_zero=True polls; False does one-shot count
          — DECOY's playbook already waited internally)
       3. cleanup_orphaned_volumes
-      4. close_phase_experiment
+      4. close the exact phase-run-v1 deployment record
       5. safe_rmtree run_dir
       6. if config name starts with feedback_marker, drop the empty config dir
 
@@ -209,7 +136,17 @@ def finalize_teardown(
 
     output.info(f"  Verified: 0 VMs remaining on OpenStack (prefix: {vm_prefix})")
     cleanup_orphaned_volumes(os_client)
-    close_phase_experiment(config_name)
+    try:
+        close_deployment(
+            config_name,
+            run_id,
+            ended_at=datetime.datetime.now(datetime.timezone.utc),
+        )
+        output.info(f"  Closed PHASE deployment record: {config_name}/{run_id}")
+    except PhaseRunRegistryError as exc:
+        output.error(f"  ERROR: PHASE deployment close failed: {exc}")
+        output.info("  Local state preserved. Re-run teardown after fixing the record.")
+        return False
 
     if run_dir.is_dir():
         safe_rmtree(run_dir)

@@ -1,75 +1,22 @@
----
-# decoy-controls: Lean baseline (gemma4 cutover 2026-04-08)
-#
-# Includes:
-#   C0        - Bare Ubuntu VM (pure control, no software)
-#   M0        - Upstream MITRE pyhuman (control)
-#   M1        - MCHP baseline (no timing, no LLM)
-#   B0.gemma  - BrowserUse baseline on V100 (gemma4:26b MoE)
-#   S0.gemma  - SmolAgents baseline on V100 (gemma4:26b MoE)
-#   B0R.gemma - BrowserUse baseline on RTX 2080 Ti (gemma4:e4b edge)
-#   S0R.gemma - SmolAgents baseline on RTX 2080 Ti (gemma4:e4b edge)
-#   B0C.gemma - BrowserUse baseline on CPU (gemma4:e2b edge)
-#   S0C.gemma - SmolAgents baseline on CPU (gemma4:e2b edge)
-#
-# Total VMs: 9 (5 non-GPU, 2 V100, 2 RTX 2080 Ti)
-#
-# R-tier baseline note: B0R/S0R reuse the V100 .gemma baseline behavior.json
-# (B.gemma/B0.gemma, S.gemma/S0.gemma) via the R-strip in
-# spinup._derive_behavior_paths — same mechanism as B2R/S2R feedback. Only the
-# runtime model (gemma4:e4b) and OpenStack flavor differ. Placed on the rtx-a
-# pool (rtx2080ti-A-1gpu): 2026-05-26 the non-A rtx pool was full (sum25 + vt1g
-# feedback), so we dropped the axyear rtx-a feedback deploy and put the controls
-# in its freed slots — net-zero on rtx-a, non-A untouched. gemma4:e4b is
-# identical across both pools so this is a valid baseline for all RTX feedback.
-# Swap flavor to rtx2080ti-1gpu to rebalance onto the non-A pool.
-
 deployment_name: decoy-controls
-
-# Default behavioral configuration. DECOY deploys must always have a
-# behavior.json on every non-control SUP — the controls dataset slots into
-# the same /mnt/AXES2U1/feedback/{type}-controls/{dataset}/ tree as PHASE
-# feedback datasets. spinup.py validates resolution before provisioning;
-# distribute-behavior-configs.yaml fails loud if any source file is missing.
-behavior_source: /mnt/AXES2U1/feedback/decoy-controls/controls
+purpose: control
+target: null
+capture_interface: eno2
 
 flavor_capacity:
-  v1.14vcpu.28g: 5
+  v1.14vcpu.28g: 2
   v100-1gpu.14vcpu.28g: 2
-  rtx2080ti-A-1gpu.14vcpu.28g: 2
 
 deployments:
-  # === Controls (3) - non-GPU ===
-  - behavior: C0
+  - behavior: scripted-cpu
     flavor: v1.14vcpu.28g
     count: 1
-  - behavior: M0
+  - behavior: mchp-cpu
     flavor: v1.14vcpu.28g
     count: 1
-  - behavior: M1
-    flavor: v1.14vcpu.28g
-    count: 1
-
-  # === V100 baselines (2) — gemma4:26b ===
-  - behavior: B0.gemma
+  - behavior: browseruse-gpu
     flavor: v100-1gpu.14vcpu.28g
     count: 1
-  - behavior: S0.gemma
+  - behavior: smolagents-gpu
     flavor: v100-1gpu.14vcpu.28g
-    count: 1
-
-  # === RTX 2080 Ti baselines (2) — gemma4:e4b on the rtx-a pool ===
-  - behavior: B0R.gemma
-    flavor: rtx2080ti-A-1gpu.14vcpu.28g
-    count: 1
-  - behavior: S0R.gemma
-    flavor: rtx2080ti-A-1gpu.14vcpu.28g
-    count: 1
-
-  # === CPU baselines (2) — gemma4:e2b ===
-  - behavior: B0C.gemma
-    flavor: v1.14vcpu.28g
-    count: 1
-  - behavior: S0C.gemma
-    flavor: v1.14vcpu.28g
     count: 1

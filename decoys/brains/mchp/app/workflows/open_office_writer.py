@@ -4,6 +4,7 @@ import random
 import subprocess
 import pyautogui
 from lorem.text import TextLorem
+from pathlib import Path
 from time import sleep
 from ..utility.base_workflow import BaseWorkflow
 
@@ -70,6 +71,42 @@ class DocumentEditor(BaseWorkflow):
 
     def action(self, extra=None, logger=None):
         self._create_document(logger=logger)
+
+    def create_assigned(self, resource, workspace, logger=None):
+        """Create one exact assigned document through LibreOffice Writer."""
+        artifact = Path(workspace) / resource["filename"]
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        if logger:
+            logger.step_start(
+                "open_application", category="office", message="LibreOffice Writer"
+            )
+        self._new_document()
+        if logger:
+            logger.step_success("open_application")
+
+        if logger:
+            logger.step_start(
+                "edit_content", category="office", message="Typing assigned content"
+            )
+        pyautogui.write(str(resource["title"]))
+        pyautogui.press("enter", presses=2)
+        for heading, values in resource["sections"].items():
+            pyautogui.write(str(heading))
+            pyautogui.press("enter")
+            for value in values:
+                pyautogui.write(str(value))
+                pyautogui.press("enter")
+        if logger:
+            logger.step_success("edit_content")
+
+        if logger:
+            logger.step_start(
+                "save_document", category="office", message=str(artifact)
+            )
+        self._save_assigned(artifact)
+        if logger:
+            logger.step_success("save_document")
+        return artifact
 
     def _create_document(self, logger=None):
         app_name = "LibreOffice Writer" if IS_LINUX else "OpenOffice Writer"
@@ -210,6 +247,15 @@ class DocumentEditor(BaseWorkflow):
         pyautogui.hotkey('alt','y') # choose "yes" if a popup asks if you'd like to overwrite another file
         sleep(self.default_wait_time)
         pyautogui.hotkey('ctrl','q') # quit
+
+    def _save_assigned(self, artifact):
+        pyautogui.hotkey("ctrl", "s")
+        sleep(self.default_wait_time)
+        pyautogui.write(str(artifact))
+        pyautogui.press("enter")
+        sleep(self.default_wait_time)
+        pyautogui.hotkey("alt", "y")
+        pyautogui.hotkey("ctrl", "q")
 
     def _write_paragraph(self):
         pyautogui.typewrite(_get_paragraph())

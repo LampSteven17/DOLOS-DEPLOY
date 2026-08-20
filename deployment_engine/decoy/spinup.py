@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..core import output
@@ -19,7 +20,27 @@ from ..core.revision import RevisionError, resolve_ruse_revision
 from ..core.vm_naming import make_vm_prefix
 from ..core import run_status
 from ..core.deploy_steps import (
-    ssh_connectivity_test, register_phase, neighborhood_extra_ips,
+    neighborhood_vms, register_phase_run, ssh_connectivity_test,
+)
+from ..core.phase_run_registry import (
+    PhaseRunRegistryError,
+    close_deployment,
+    run_id_from_started_at,
+    utc_deployment_start,
+)
+
+
+CANONICAL_WORKFLOW_CONFIGS = frozenset({
+    "scripted-cpu",
+    "mchp-cpu",
+    "browseruse-gpu",
+    "smolagents-gpu",
+})
+WORKFLOW_CONTROL_ROOT = (
+    Path(__file__).resolve().parents[2]
+    / "contracts"
+    / "phase-workflow-plan-v1"
+    / "controls"
 )
 
 
@@ -69,8 +90,10 @@ def run_decoy_spinup(
         output.error(f"ERROR: Cannot select immutable RUSE revision: {exc}")
         return 1
 
-    # Generate run ID and paths
-    run_id = time.strftime("%m%d%y%H%M%S")
+    # Record the deployment start once; the readable UTC run ID is derived
+    # from this exact timestamp and shared with the PHASE registry path.
+    started_at = utc_deployment_start()
+    run_id = run_id_from_started_at(started_at)
     run_dir = config_dir / "runs" / run_id
     dep_id = _make_run_dep_id(config_name, run_id)
     vm_prefix = make_vm_prefix(dep_id)
@@ -230,16 +253,19 @@ def run_decoy_spinup(
         output.error("  Tear down with: ./teardown " + f"{config_name}-{run_id}")
         return 1
 
-    # Phase 2b: Distribute behavioral configs (if applicable)
+    # Phase 2b: Legacy/generated configurations retain their existing
+    # distribution path. Canonical workflow controls are already complete
+    # after INSTALL_SUP.sh and must not receive a second behavior.json copy.
     effective_source = behavior_source or config.behavior_source
-    if effective_source:
+    distribution_source = _legacy_distribution_source(effective_source, config)
+    if distribution_source:
         output.info("")
         output.info("--- Distributing behavioral configs ---")
         dist_vars = {
             "deployment_dir": str(config_dir),
             "deployment_id": dep_id,
             "run_dir": str(run_dir),
-            "config_source": effective_source,
+            "config_source": distribution_source,
         }
         if configs_spec and configs_spec != "all":
             dist_vars["behavior_configs"] = configs_spec
@@ -269,9 +295,9 @@ def run_decoy_spinup(
     #   (a) effective_source is None on controls, and
     #   (b) we gate on topology_mimicry rates existing in the PHASE source.
     # See docs/topology-mimicry.md for design rationale.
-    if effective_source:
+    if distribution_source:
         sups_json = _synthesize_neighborhood_config(
-            Path(effective_source), inventory_path, run_dir,
+            Path(distribution_source), inventory_path, run_dir,
         )
         if sups_json is not None:
             rc = _provision_and_install_neighborhood(
@@ -296,16 +322,20 @@ def run_decoy_spinup(
     # invisible to PHASE inference — logs collected but never analyzed. DONE
     # must mean "every VM functional AND registered" per the fail-loud
     # contract.
-    phase_ok = register_phase(
-        snippet_path, config_name, run_id,
-        extra_ips=neighborhood_extra_ips(run_dir),
-        gpu_tier=config.gpu_tier,
-    )
+    phase_vms = [
+        {
+            "name": host["name"],
+            "ip": host["ip"],
+            "sup_config": host["behavior"],
+        }
+        for host in provisioned_hosts
+    ]
+    phase_vms.extend(neighborhood_vms(run_dir))
+    phase_ok = register_phase_run(config, "decoy", started_at, phase_vms)
     if not phase_ok:
         output.error("")
-        output.error("ABORTING: PHASE experiments.json registration failed.")
-        output.error("VMs are running but logs won't be picked up by PHASE inference.")
-        output.error("Tear down and fix register_experiment.py, or register manually.")
+        output.error("ABORTING: PHASE deployment registration failed.")
+        output.error("VMs are running but this fleet has no PHASE run record.")
         return 1
 
     # Final summary
@@ -414,15 +444,24 @@ def _stamped_namespace(behavior_json_path: Path) -> str | None:
 def _validate_behavior_source(
     effective_source: str | None, config,
 ) -> list[str]:
-    """Check every non-C0/M0 SUP has a resolvable behavior.json.
+    """Check every behavior consumer has exactly one authoritative source.
 
-    Returns a list of error lines (empty = OK). Caller decides how to
-    abort. Walks config.deployments, derives the expected
-    {behavior_dir}/{baseline_config}/behavior.json path, and verifies
-    each one exists under effective_source. C0 / M0 exempt (they don't
-    read behavior.json).
+    Canonical workflow controls use their source-controlled plan, which
+    INSTALL_SUP.sh installs. Legacy and generated-feedback configurations keep
+    the existing behavior_source derivation and distribution path unchanged.
     """
     errors: list[str] = []
+    for dep in config.deployments:
+        behavior = dep.get("behavior", "")
+        if behavior not in CANONICAL_WORKFLOW_CONFIGS:
+            continue
+        path = WORKFLOW_CONTROL_ROOT / behavior / "behavior.json"
+        if not path.is_file():
+            errors.append(f"{behavior}: expected source-controlled plan {path}")
+
+    if not _requires_legacy_behavior_distribution(config):
+        return errors
+
     if not effective_source:
         errors.append("No behavior_source configured. DECOY controls must point at")
         errors.append("/data/axes-mirror/feedback/decoy-controls/controls (set in config.yaml).")
@@ -447,7 +486,7 @@ def _validate_behavior_source(
     seen: set[tuple[str, str]] = set()
     for dep in config.deployments:
         beh = dep.get("behavior", "")
-        if beh in ("C0", "M0"):
+        if beh in ("C0", "M0") or beh in CANONICAL_WORKFLOW_CONFIGS:
             continue
         behavior_dir, baseline_config = _derive_behavior_paths(beh)
         if (behavior_dir, baseline_config) in seen:
@@ -478,6 +517,24 @@ def _validate_behavior_source(
     return errors
 
 
+def _requires_legacy_behavior_distribution(config: DeploymentConfig) -> bool:
+    """Return whether any configured SUP uses the legacy distribution path."""
+    return any(
+        deployment.get("behavior") not in CANONICAL_WORKFLOW_CONFIGS | {"C0", "M0"}
+        for deployment in config.deployments
+    )
+
+
+def _legacy_distribution_source(
+    effective_source: str | None,
+    config: DeploymentConfig,
+) -> str | None:
+    """Select the unchanged distribution source only for legacy consumers."""
+    if effective_source and _requires_legacy_behavior_distribution(config):
+        return effective_source
+    return None
+
+
 def _make_run_dep_id(deployment_name: str, run_id: str) -> str:
     """Build run dep_id: strip prefixes, remove hyphens, append run_id."""
     dep = deployment_name
@@ -503,10 +560,8 @@ def _teardown_matching_prior_runs(
       2. prior config.gpu_tier == new config.gpu_tier
       3. prior config.deployments == new config.deployments
 
-    On match: openstack server delete for every VM under the prior run's
-    prefix, then safe_rmtree the prior run_dir. The experiments.json entry
-    is left alone — register_phase's upsert will refresh end_date=None
-    + IPs at the end of this same spinup.
+    On match: delete every VM under the prior run's prefix, close that exact
+    PHASE run, then remove the prior local run directory.
 
     On mismatch (gpu_tier or deployments[] changed): leave the prior run
     fully intact. Operator clearly meant something different by reusing
@@ -523,7 +578,7 @@ def _teardown_matching_prior_runs(
     if not prior_run_dirs:
         return
 
-    from ..core.teardown_steps import request_server_deletes, safe_rmtree, wait_until_zero
+    from ..core.teardown_steps import safe_rmtree, wait_until_zero
 
     to_teardown: list[tuple[Path, str]] = []  # (prior_run_dir, vm_prefix)
     for prior in prior_run_dirs:
@@ -557,7 +612,7 @@ def _teardown_matching_prior_runs(
         servers = os_client.server_list_with_ids(prefix=prior_prefix)
         if servers:
             output.info(f"  Deleting {len(servers)} VM(s) under {prior_prefix}*")
-            request_server_deletes(os_client, servers)
+            os_client.server_delete_many([s["id"] for s in servers], wait=True)
             remaining = wait_until_zero(os_client, prior_prefix)
             if remaining:
                 output.error(
@@ -567,6 +622,15 @@ def _teardown_matching_prior_runs(
                 raise SystemExit(1)
         else:
             output.dim(f"  no live VMs under {prior_prefix}* — just dropping run_dir")
+        try:
+            close_deployment(
+                new_config.deployment_name,
+                prior_dir.name,
+                ended_at=datetime.now(timezone.utc),
+            )
+        except PhaseRunRegistryError as exc:
+            output.error(f"  ERROR: cannot close prior PHASE run: {exc}")
+            raise SystemExit(1) from exc
         safe_rmtree(prior_dir)
         output.dim(f"  dropped prior run_dir {prior_dir.name}")
 

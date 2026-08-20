@@ -72,6 +72,8 @@ _BU_ACTION_MAP = {
     "replace_file": ("edit_content", "browser"),
     # misc
     "wait": ("wait", "browser"),
+    "play_assigned_video": ("play_assigned_video", "video"),
+    "create_assigned_document": ("create_assigned_document", "office"),
     # "done" intentionally omitted — workflow completion, not a step
     # --- pre-0.12 aliases (not in 0.12.7 registry; kept for pin-rollback) ---
     "go_to_url": ("navigate", "browser"),

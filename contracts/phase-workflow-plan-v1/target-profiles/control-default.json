@@ -1,0 +1,222 @@
+{
+  "schema": "phase-target-profile-v1",
+  "id": "control-default",
+  "resources": {
+    "wikipedia_compiler": {
+      "workflow": "WebResearch",
+      "kind": "direct_url",
+      "url": "https://en.wikipedia.org/wiki/Compiler"
+    },
+    "google_climate_change_news": {
+      "workflow": "WebResearch",
+      "kind": "search_query",
+      "provider": "google",
+      "query": "climate change news"
+    },
+    "wikipedia_geometry": {
+      "workflow": "WebResearch",
+      "kind": "direct_url",
+      "url": "https://en.wikipedia.org/wiki/Geometry"
+    },
+    "google_weather_today": {
+      "workflow": "WebResearch",
+      "kind": "search_query",
+      "provider": "google",
+      "query": "weather today"
+    },
+    "wikipedia_deep_learning": {
+      "workflow": "WebResearch",
+      "kind": "direct_url",
+      "url": "https://en.wikipedia.org/wiki/Deep_learning"
+    },
+    "google_recipes_for_dinner": {
+      "workflow": "WebResearch",
+      "kind": "search_query",
+      "provider": "google",
+      "query": "recipes for dinner"
+    },
+    "wikipedia_solar_power": {
+      "workflow": "WebResearch",
+      "kind": "direct_url",
+      "url": "https://en.wikipedia.org/wiki/Solar_power"
+    },
+    "google_renewable_energy": {
+      "workflow": "WebResearch",
+      "kind": "search_query",
+      "provider": "google",
+      "query": "renewable energy"
+    },
+    "wikipedia_python": {
+      "workflow": "WebResearch",
+      "kind": "direct_url",
+      "url": "https://en.wikipedia.org/wiki/Python_(programming_language)"
+    },
+    "google_running_shoes_review": {
+      "workflow": "WebResearch",
+      "kind": "search_query",
+      "provider": "google",
+      "query": "running shoes review"
+    },
+    "video_cpp_course": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "8jLOx1hD3_o",
+      "play_seconds": 300
+    },
+    "video_ai_mistake": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "wlMgNtBipe4",
+      "play_seconds": 300
+    },
+    "video_vpn_dragnet": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "hV9QEVf6CgI",
+      "play_seconds": 300
+    },
+    "video_cronie_jobs": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "FPVQ_w0wxCI",
+      "play_seconds": 300
+    },
+    "video_wrote_book": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "owMQZX862Ms",
+      "play_seconds": 300
+    },
+    "video_ps5_linux": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "rctl18VlUJk",
+      "play_seconds": 300
+    },
+    "video_python_beginner": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "kqtD5dpn9C8",
+      "play_seconds": 300
+    },
+    "video_embedded_player": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "M7lc1UVf-VE",
+      "play_seconds": 300
+    },
+    "video_epic_sax": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "kxopViU98Xo",
+      "play_seconds": 300
+    },
+    "document_team_meeting_notes": {
+      "workflow": "DocumentCreation",
+      "kind": "document",
+      "filename": "team-meeting-notes.odt",
+      "title": "Weekly Team Meeting Notes",
+      "sections": {
+        "Attendees": ["Alex Morgan", "Jamie Lee", "Taylor Reed"],
+        "Updates": ["Website content review completed", "Inventory count scheduled"],
+        "Action Items": ["Jamie will prepare the draft", "Taylor will confirm the meeting room"]
+      }
+    },
+    "spreadsheet_expense_tracker": {
+      "workflow": "DocumentCreation",
+      "kind": "spreadsheet",
+      "filename": "expense-tracker.ods",
+      "columns": ["Date", "Category", "Description", "Amount"],
+      "rows": [
+        ["2026-08-03", "Office", "Printer paper", 24.50],
+        ["2026-08-05", "Travel", "Parking", 18.00],
+        ["2026-08-07", "Meals", "Team lunch", 76.25],
+        ["2026-08-10", "Office", "Notebooks", 31.80]
+      ]
+    },
+    "document_project_status": {
+      "workflow": "DocumentCreation",
+      "kind": "document",
+      "filename": "project-status.odt",
+      "title": "Project Status Update",
+      "sections": {
+        "Summary": ["The project remains on schedule"],
+        "Completed": ["Reviewed requirements", "Prepared the test environment"],
+        "Next Steps": ["Run the planned checks", "Summarize the results"],
+        "Risks": ["One external dependency is still pending"]
+      }
+    },
+    "spreadsheet_inventory_tracker": {
+      "workflow": "DocumentCreation",
+      "kind": "spreadsheet",
+      "filename": "inventory-tracker.ods",
+      "columns": ["Item", "Category", "Quantity", "Reorder Level"],
+      "rows": [
+        ["Laptop charger", "Electronics", 8, 3],
+        ["USB cable", "Electronics", 14, 5],
+        ["Printer paper", "Office", 12, 4],
+        ["Whiteboard marker", "Office", 9, 3]
+      ]
+    },
+    "document_training_outline": {
+      "workflow": "DocumentCreation",
+      "kind": "document",
+      "filename": "training-outline.odt",
+      "title": "Training Session Outline",
+      "sections": {
+        "Objective": ["Introduce the updated team workflow"],
+        "Agenda": ["Overview", "Demonstration", "Practice", "Questions"],
+        "Materials": ["Reference guide", "Sample worksheet"],
+        "Follow-up": ["Share notes and collect questions"]
+      }
+    },
+    "spreadsheet_work_schedule": {
+      "workflow": "DocumentCreation",
+      "kind": "spreadsheet",
+      "filename": "weekly-work-schedule.ods",
+      "columns": ["Day", "Morning", "Afternoon"],
+      "rows": [
+        ["Monday", "Planning", "Project work"],
+        ["Tuesday", "Project work", "Review"],
+        ["Wednesday", "Team meeting", "Project work"],
+        ["Thursday", "Testing", "Documentation"],
+        ["Friday", "Follow-up", "Weekly summary"]
+      ]
+    },
+    "document_incident_summary": {
+      "workflow": "DocumentCreation",
+      "kind": "document",
+      "filename": "incident-summary.odt",
+      "title": "Incident Summary",
+      "sections": {
+        "Overview": ["A shared printer was unavailable for twenty minutes"],
+        "Impact": ["Two print jobs were delayed"],
+        "Resolution": ["The print service was restarted"],
+        "Follow-up": ["Monitor the print queue during the next workday"]
+      }
+    },
+    "spreadsheet_task_tracker": {
+      "workflow": "DocumentCreation",
+      "kind": "spreadsheet",
+      "filename": "task-tracker.ods",
+      "columns": ["Task", "Owner", "Priority", "Status", "Due Date"],
+      "rows": [
+        ["Review draft", "Alex", "High", "In Progress", "2026-08-21"],
+        ["Update checklist", "Jamie", "Medium", "Open", "2026-08-22"],
+        ["Confirm schedule", "Taylor", "Low", "Complete", "2026-08-20"],
+        ["Send summary", "Alex", "Medium", "Open", "2026-08-24"]
+      ]
+    },
+    "document_weekly_planning": {
+      "workflow": "DocumentCreation",
+      "kind": "document",
+      "filename": "weekly-planning-notes.odt",
+      "title": "Weekly Planning Notes",
+      "sections": {
+        "Priorities": ["Complete the current review", "Prepare next week's schedule"],
+        "Meetings": ["Team check-in on Wednesday", "Project review on Friday"],
+        "Reminders": ["Update the task tracker", "Send the weekly summary"]
+      }
+    }
+  }
+}

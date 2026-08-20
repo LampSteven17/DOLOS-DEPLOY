@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phase.local/schemas/phase-workflow-plan-v1.schema.json",
+  "title": "PHASE Workflow Plan V1",
+  "description": "A recurring local-time workflow schedule loaded once when one RUSE SUP configuration starts. Entries scheduled before startup are missed and are not caught up.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "sup_config",
+    "target_profile",
+    "timezone",
+    "max_parallel",
+    "schedule"
+  ],
+  "properties": {
+    "schema": {
+      "const": "phase-workflow-plan-v1"
+    },
+    "sup_config": {
+      "description": "Canonical new-path SUP configuration ID. Legacy configuration names are invalid and are not aliased.",
+      "enum": [
+        "scripted-cpu",
+        "mchp-cpu",
+        "browseruse-gpu",
+        "smolagents-gpu"
+      ]
+    },
+    "target_profile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timezone": {
+      "description": "IANA timezone for daily recurrence. Nonexistent spring-forward starts are missed; repeated fall-back starts execute once at their first occurrence.",
+      "type": "string",
+      "minLength": 1
+    },
+    "max_parallel": {
+      "description": "Maximum number of planned workflows that may be active at once.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "schedule": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/window"
+      }
+    }
+  },
+  "$defs": {
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "window_local",
+        "sequence"
+      ],
+      "properties": {
+        "window_local": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1439
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1440
+            }
+          ],
+          "items": false
+        },
+        "sequence": {
+          "description": "Entries are admitted by scheduled time, then by this array order when scheduled times are equal.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offset_minutes",
+        "workflow",
+        "resource_id",
+        "brain"
+      ],
+      "properties": {
+        "offset_minutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1439
+        },
+        "workflow": {
+          "enum": [
+            "WebResearch",
+            "VideoViewing",
+            "FileDownload",
+            "DocumentCreation",
+            "FileSyncUpload",
+            "NetworkShareAccess"
+          ]
+        },
+        "resource_id": {
+          "description": "Symbolic resource resolved by the selected RUSE target profile.",
+          "type": "string",
+          "minLength": 1
+        },
+        "brain": {
+          "$ref": "#/$defs/brain"
+        }
+      }
+    },
+    "brain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile"
+      ],
+      "properties": {
+        "profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

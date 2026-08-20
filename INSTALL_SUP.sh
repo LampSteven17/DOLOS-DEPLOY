@@ -57,6 +57,12 @@ Usage: ./INSTALL_SUP.sh <CONFIG> [OPTIONS]
 
 === Configuration Keys ===
 
+  Canonical Workflow Controls:
+    --scripted-cpu       Scripted Brain control (CPU)
+    --mchp-cpu           MCHP Brain control (CPU)
+    --browseruse-gpu     BrowserUse control (GPU, gemma4:26b)
+    --smolagents-gpu     SmolAgents control (GPU, gemma4:26b)
+
   Control Series:
     --C0                Bare Ubuntu VM (no software - pure control)
 
@@ -156,6 +162,12 @@ STAGE=0  # 0=full install, 1=pre-reboot only, 2=post-reboot only
 # Pre-defined configurations: brain:content:model:calibration
 declare -A CONFIGS
 CONFIGS=(
+    # Canonical phase-workflow-plan-v1 controls
+    ["scripted-cpu"]="scripted:none:none:none"
+    ["mchp-cpu"]="mchp:none:none:none"
+    ["browseruse-gpu"]="browseruse:none:gemma:none"
+    ["smolagents-gpu"]="smolagents:none:gemma:none"
+
     # Control
     ["C0"]="mchp:none:none:none"
 
@@ -289,6 +301,13 @@ MODEL_NAMES=(
 list_configs() {
     echo "Available configurations:"
     echo ""
+    echo "Canonical Workflow Controls:"
+    for key in scripted-cpu mchp-cpu browseruse-gpu smolagents-gpu; do
+        IFS=':' read -r brain content model calibration <<< "${CONFIGS[$key]}"
+        printf "  %-20s brain=%-12s model=%s\n" \
+            "--$key" "$brain" "$model"
+    done
+    echo ""
     echo "Control:"
     printf "  %-16s Bare Ubuntu VM (no software)\n" "--C0"
     echo ""
@@ -354,9 +373,21 @@ parse_config_key() {
     return 1
 }
 
+is_phase_workflow_config() {
+    case "$1" in
+        scripted-cpu|mchp-cpu|browseruse-gpu|smolagents-gpu) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
+            # Canonical phase-workflow-plan-v1 controls
+            --scripted-cpu|--mchp-cpu|--browseruse-gpu|--smolagents-gpu)
+                parse_config_key "${1#--}"
+                ;;
+
             # C0 - Control VM (bare Ubuntu, no installation)
             --C0)
                 log "C0 Control VM - no software installation required"
@@ -689,6 +720,11 @@ install_system_deps() {
     sudo apt-get install -y python3-pip python3-venv python3-dev build-essential
 
     case "$BRAIN" in
+        scripted)
+            sudo apt-get install -y xvfb xdg-utils unzip
+            install_chrome
+            install_chromedriver
+            ;;
         upstream)
             # M0: Upstream MITRE pyhuman requires Chrome (not Firefox)
             # Ref: https://github.com/mitre/human/wiki#installation--setup
@@ -709,9 +745,18 @@ install_system_deps() {
                 rm -f /tmp/geckodriver.tar.gz
             fi
             ;;
-        browseruse|smolagents)
+        browseruse)
             sudo apt-get install -y xvfb
             # Install uv (provides uvx for browser-use)
+            if ! command -v uvx &> /dev/null; then
+                log "Installing uv (provides uvx)..."
+                curl -LsSf https://astral.sh/uv/install.sh | sh
+                export PATH="$HOME/.local/bin:$PATH"
+            fi
+            ;;
+        smolagents)
+            sudo apt-get install -y xvfb ffmpeg
+            # Install uv (provides uvx for browser-use compatible tooling)
             if ! command -v uvx &> /dev/null; then
                 log "Installing uv (provides uvx)..."
                 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -737,6 +782,9 @@ install_python_deps() {
 
     # Base deps for brain type
     case "$BRAIN" in
+        scripted)
+            pip install selenium
+            ;;
         mchp)
             pip install selenium beautifulsoup4 webdriver-manager lxml pyautogui lorem \
                 certifi chardet colorama configparser crayons idna requests urllib3
@@ -776,6 +824,13 @@ copy_source_code() {
     cp -r "$SCRIPT_DIR/decoys/sup" "$dest_dir/decoys/"
     mkdir -p "$dest_dir/contracts"
     cp -r "$SCRIPT_DIR/contracts/decoy" "$dest_dir/contracts/"
+    if is_phase_workflow_config "$CONFIG_KEY"; then
+        cp -r "$SCRIPT_DIR/decoys/phase_workflow" "$dest_dir/decoys/"
+        cp -r "$SCRIPT_DIR/contracts/phase-workflow-plan-v1" "$dest_dir/contracts/"
+        mkdir -p "$dest_dir/behavioral_configurations"
+        cp "$SCRIPT_DIR/contracts/phase-workflow-plan-v1/controls/$CONFIG_KEY/behavior.json" \
+            "$dest_dir/behavioral_configurations/behavior.json"
+    fi
     touch "$dest_dir/decoys/__init__.py"
 }
 
@@ -802,26 +857,33 @@ create_run_script() {
     local runner_cmd=""
     local xvfb_prefix=""
 
-    case "$BRAIN" in
-        upstream)
-            # M0: Run upstream MITRE pyhuman via RUSE wrapper
-            runner_cmd="python3 -m runners.run_m0"
-            xvfb_prefix=""  # xvfb is handled inside run_m0.py
-            ;;
-        mchp)
-            runner_cmd="python3 -m runners.run_mchp --content=$content_arg $model_arg $calibration_arg"
+    if is_phase_workflow_config "$CONFIG_KEY"; then
+        runner_cmd="python3 -m sup $CONFIG_KEY --behavior-config-dir=$deploy_dir/behavioral_configurations"
+        if [[ "$BRAIN" == "mchp" ]]; then
             xvfb_prefix="xvfb-run -a "
-            ;;
-        smolagents)
-            # Always use loop mode for continuous execution and JSONL logging
-            runner_cmd="python3 -m runners.run_smolagents --loop $model_arg $calibration_arg"
-            ;;
-        browseruse)
-            # Always use loop mode for continuous execution and JSONL logging
-            runner_cmd="python3 -m runners.run_browseruse --loop $model_arg $calibration_arg"
-            xvfb_prefix="xvfb-run -a "
-            ;;
-    esac
+        fi
+    else
+        case "$BRAIN" in
+            upstream)
+                # M0: Run upstream MITRE pyhuman via RUSE wrapper
+                runner_cmd="python3 -m runners.run_m0"
+                xvfb_prefix=""  # xvfb is handled inside run_m0.py
+                ;;
+            mchp)
+                runner_cmd="python3 -m runners.run_mchp --content=$content_arg $model_arg $calibration_arg"
+                xvfb_prefix="xvfb-run -a "
+                ;;
+            smolagents)
+                # Always use loop mode for continuous execution and JSONL logging
+                runner_cmd="python3 -m runners.run_smolagents --loop $model_arg $calibration_arg"
+                ;;
+            browseruse)
+                # Always use loop mode for continuous execution and JSONL logging
+                runner_cmd="python3 -m runners.run_browseruse --loop $model_arg $calibration_arg"
+                xvfb_prefix="xvfb-run -a "
+                ;;
+        esac
+    fi
 
     cat > "$run_script" << EOF
 #!/bin/bash
@@ -914,6 +976,15 @@ run_directly() {
     # Map content to runner args
     local content_arg="none"
     [[ "$CONTENT" == "llm" ]] && content_arg="llm"
+
+    if is_phase_workflow_config "$CONFIG_KEY"; then
+        local behavior_dir="$SCRIPT_DIR/contracts/phase-workflow-plan-v1/controls/$CONFIG_KEY"
+        if [[ "$BRAIN" == "mchp" ]]; then
+            exec xvfb-run -a python3 -m sup "$CONFIG_KEY" \
+                --behavior-config-dir="$behavior_dir"
+        fi
+        exec python3 -m sup "$CONFIG_KEY" --behavior-config-dir="$behavior_dir"
+    fi
 
     case "$BRAIN" in
         mchp)
@@ -1048,7 +1119,11 @@ install_agent() {
         # before the service starts, otherwise the brain's mandatory-config
         # check crash-loops the service 60-100x while distribute runs).
         if [[ "${RUSE_NO_SERVICE_START:-0}" == "1" ]]; then
-            log "RUSE_NO_SERVICE_START=1 — skipping start, distribute step will start the service."
+            if is_phase_workflow_config "$CONFIG_KEY"; then
+                log "RUSE_NO_SERVICE_START=1 — deployment will start the canonical service after Stage 2."
+            else
+                log "RUSE_NO_SERVICE_START=1 — skipping start, distribute step will start the service."
+            fi
         else
             log "Starting $service_name service..."
             sudo systemctl start "${service_name}.service"
@@ -1105,4 +1180,6 @@ main() {
     fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
