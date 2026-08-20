@@ -1,7 +1,7 @@
 """GHOSTS NPC teardown — single deployment.
 
 Direct OpenStack VM deletion (no Ansible playbook). After deletion,
-finalize_teardown handles the shared epilogue.
+finalize_teardown closes the exact registry record and retains run history.
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from pathlib import Path
 
 from ..core import output
 from ..core.openstack import OpenStack
-from ..core.teardown_steps import finalize_teardown, make_dep_id
-from ..core.vm_naming import make_ghosts_vm_prefix
+from ..core.teardown_steps import finalize_teardown
+from ..core.vm_naming import make_ghosts_vm_prefix, make_run_dep_id
 
 
 def run_ghosts_teardown(
@@ -22,7 +22,7 @@ def run_ghosts_teardown(
 
     output.banner(f"TEARDOWN: {config_name}/{run_id} (ghosts)")
 
-    dep_id = make_dep_id(config_name, run_id)
+    dep_id = make_run_dep_id(config_name, run_id)
     g_prefix = make_ghosts_vm_prefix(dep_id)
     os_client = OpenStack()
 
@@ -44,10 +44,12 @@ def run_ghosts_teardown(
             output.info(f"  Deleted {len(servers)} VMs")
         else:
             output.error("  WARNING: server_delete_many reported non-zero rc")
+            output.error("ERROR: VM teardown failed; registry and local state were preserved")
+            return 1
     else:
         output.info("  No GHOSTS VMs found")
 
-    # Shared epilogue: ssh / volumes / phase / rmtree / feedback-dir.
+    # Shared epilogue: close exact registry record, then remove its SSH block.
     # poll_for_zero=True — direct OpenStack delete is async.
     ok = finalize_teardown(
         config_name, config_dir, run_id, run_dir,

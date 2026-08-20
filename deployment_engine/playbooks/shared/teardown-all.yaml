@@ -144,10 +144,4 @@
       async: 300
       poll: 0
 
-    # ── Cleanup ──────────────────────────────────────────────────────
-    - name: Remove ALL local inventory files
-      delegate_to: localhost
-      shell: |
-        find "{{ playbook_dir }}/.." -path "*/runs/*/inventory.ini" -type f -delete 2>/dev/null || true
-        find "{{ playbook_dir }}/.." -maxdepth 2 -name "inventory.ini" -type f -delete 2>/dev/null || true
-      ignore_errors: yes
+    # Local deployment history is intentionally retained.

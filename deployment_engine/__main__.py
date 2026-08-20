@@ -117,7 +117,8 @@ def _teardown_parser() -> argparse.ArgumentParser:
         description="Teardown deployments",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  ./teardown decoy-controls-040226205037   teardown a specific deployment
+  ./teardown decoy-controls-2026-08-20_130523Z
+                                             teardown one exact dated run
   ./teardown --decoy --feedback            teardown all active DECOY feedback deployments
   ./teardown --rampart                     teardown all active RAMPART deployments
   ./teardown --ghosts --feedback           teardown all active GHOSTS feedback deployments

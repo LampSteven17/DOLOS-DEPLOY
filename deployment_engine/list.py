@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .core.vm_naming import (
-    make_ent_vm_prefix, make_ghosts_vm_prefix, make_vm_prefix,
+    make_ent_vm_prefix, make_ghosts_vm_prefix, make_run_dep_id, make_vm_prefix,
 )
 import re
 from pathlib import Path
@@ -11,6 +11,7 @@ from pathlib import Path
 from .core import output
 from .core.config import DeploymentConfig
 from .core.openstack import OpenStack
+from .core.phase_run_registry import PhaseRunRegistryError, validate_run_id
 
 
 def run_list(deploy_dir: Path) -> int:
@@ -21,6 +22,7 @@ def run_list(deploy_dir: Path) -> int:
 
     output.dim("  Querying OpenStack...")
     os_client = OpenStack()
+    server_statuses = os_client.server_status_map()
 
     # Collect rows grouped by deployment type
     groups: dict[str, list[list[str]]] = {
@@ -60,9 +62,13 @@ def run_list(deploy_dir: Path) -> int:
             if not run_dir.is_dir():
                 continue
             rid = run_dir.name
+            try:
+                validate_run_id(rid)
+            except PhaseRunRegistryError:
+                continue
 
             is_active = _check_active(
-                run_dir, name, rid, config, os_client, deploy_dir,
+                name, rid, config, server_statuses,
             )
             if not is_active:
                 continue
@@ -70,7 +76,7 @@ def run_list(deploy_dir: Path) -> int:
             vm_summary = _get_vm_summary(run_dir, config)
             expected = _get_expected_count(run_dir, config)
             active, bad_statuses, nbhd_status = _count_live_vms(
-                name, rid, config, os_client,
+                name, rid, config, server_statuses,
             )
             active_col = f"{active}/{expected}" if expected > 0 else "?"
             status_col = _format_status_col(bad_statuses, nbhd_status, expected, active)
@@ -113,22 +119,14 @@ def run_list(deploy_dir: Path) -> int:
 
 
 def _check_active(
-    run_dir: Path,
     name: str,
     rid: str,
     config: DeploymentConfig,
-    os_client: OpenStack,
-    deploy_dir: Path,
+    server_statuses: dict[str, str],
 ) -> bool:
-    """Check if a run is still active."""
-    # Has inventory or deployment_type marker → definitely active
-    if (run_dir / "inventory.ini").exists():
-        return True
-    if (run_dir / "deployment_type").exists():
-        return True
-
-    # Check OpenStack for VMs with matching prefix
-    return os_client.has_vms_with_prefix(_prefix_for(config, _make_dep_id(name, rid)))
+    """Return whether OpenStack contains a VM for this exact run prefix."""
+    prefix = _prefix_for(config, make_run_dep_id(name, rid))
+    return any(vm_name.startswith(prefix) for vm_name in server_statuses)
 
 
 def _get_expected_count(run_dir: Path, config: DeploymentConfig) -> int:
@@ -153,7 +151,10 @@ def _get_expected_count(run_dir: Path, config: DeploymentConfig) -> int:
 
 
 def _count_live_vms(
-    name: str, rid: str, config: DeploymentConfig, os_client: OpenStack,
+    name: str,
+    rid: str,
+    config: DeploymentConfig,
+    server_statuses: dict[str, str],
 ) -> tuple[int, dict[str, int], str | None]:
     """Inspect OpenStack VMs for this deployment.
 
@@ -166,12 +167,12 @@ def _count_live_vms(
             exists, else None. Reported separately because it's not part of
             the SUP expected count.
     """
-    prefix = _prefix_for(config, _make_dep_id(name, rid))
+    prefix = _prefix_for(config, make_run_dep_id(name, rid))
     is_decoy = not config.is_rampart() and not config.is_ghosts()
     active = 0
     bad: dict[str, int] = {}
     nbhd_status: str | None = None
-    for vm_name, status in os_client.server_status_map().items():
+    for vm_name, status in server_statuses.items():
         if not vm_name.startswith(prefix):
             continue
         if is_decoy and vm_name.endswith("-neighborhood-0"):
@@ -303,18 +304,6 @@ def _get_enterprise_vm_count(run_dir: Path) -> str:
     return f"{total} ({infra} infra + {endpoints} ep)"
 
 
-def _make_dep_id(deployment_name: str, run_id: str) -> str:
-    """Build dep_id from deployment name + run_id."""
-    dep = deployment_name
-    for prefix in ("decoy-", "ghosts-", "rampart-", "enterprise-"):
-        if dep.startswith(prefix):
-            dep = dep[len(prefix):]
-    dep = dep.replace("-", "")
-    return f"{dep}{run_id}"
-
-
 def _format_run_date(rid: str) -> str:
-    """Format a run ID (MMDDYYHHmmss) into readable date."""
-    if len(rid) >= 12:
-        return f"{rid[0:2]}/{rid[2:4]} {rid[6:8]}:{rid[8:10]}"
-    return "-"
+    """Format a validated Phase 3 UTC run ID for the table."""
+    return f"{rid[5:7]}/{rid[8:10]} {rid[11:13]}:{rid[13:15]}"

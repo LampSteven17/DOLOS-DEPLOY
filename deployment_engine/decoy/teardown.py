@@ -12,10 +12,8 @@ from pathlib import Path
 
 from ..core import output
 from ..core.ansible_runner import AnsibleRunner, default_event_handler
-from ..core.teardown_steps import (
-    finalize_teardown, find_hosts_ini, make_dep_id,
-)
-from ..core.vm_naming import make_vm_prefix
+from ..core.teardown_steps import finalize_teardown, find_hosts_ini
+from ..core.vm_naming import make_run_dep_id, make_vm_prefix
 
 
 def run_decoy_teardown(
@@ -34,7 +32,7 @@ def run_decoy_teardown(
         output.info("ERROR: No hosts.ini found")
         return 1
 
-    dep_id = make_dep_id(config_name, run_id)
+    dep_id = make_run_dep_id(config_name, run_id)
     vm_prefix = make_vm_prefix(dep_id)
 
     runner = AnsibleRunner(deploy_dir / "logs")
@@ -54,10 +52,14 @@ def run_decoy_teardown(
         on_event=default_event_handler,
     )
 
+    if result.rc != 0:
+        output.error("ERROR: VM teardown failed; registry and local state were preserved")
+        return result.rc
+
     ok = finalize_teardown(
         config_name, config_dir, run_id, run_dir,
         vm_prefix=vm_prefix,
         feedback_marker="decoy-feedback-",
         poll_for_zero=False,  # playbook already waited
     )
-    return result.rc if ok else 1
+    return 0 if ok else 1

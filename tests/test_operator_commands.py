@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+import os
+import stat
+import subprocess
+import tempfile
+import unittest
+from contextlib import redirect_stderr
+from io import StringIO
+from pathlib import Path
+from unittest import mock
+
+import yaml
+
+from deployment_engine import __main__ as deployment_cli
+from deployment_engine import list as deployment_list
+from deployment_engine import teardown as deployment_teardown
+from deployment_engine.core import teardown_steps
+from deployment_engine.core.phase_run_registry import PhaseRunRegistryError
+from deployment_engine.core.vm_naming import make_run_dep_id, make_vm_prefix
+from deployment_engine.decoy import teardown as decoy_teardown
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+CURRENT_RUN = "2026-08-20_130523Z"
+LEGACY_RUN = "082026130523"
+CANONICAL = (
+    ("scripted-cpu", "v1.14vcpu.28g"),
+    ("mchp-cpu", "v1.14vcpu.28g"),
+    ("browseruse-gpu", "v100-1gpu.14vcpu.28g"),
+    ("smolagents-gpu", "v100-1gpu.14vcpu.28g"),
+)
+
+
+def _write_config(deploy_dir: Path, name: str = "decoy-controls") -> Path:
+    config_dir = deploy_dir / name
+    config_dir.mkdir(parents=True)
+    config = {
+        "deployment_name": name,
+        "purpose": "control",
+        "target": None,
+        "capture_interface": "eno2",
+        "deployments": [
+            {"behavior": behavior, "flavor": flavor, "count": 1}
+            for behavior, flavor in CANONICAL
+        ],
+    }
+    (config_dir / "config.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
+    )
+    return config_dir
+
+
+class _Cloud:
+    def __init__(self, statuses: dict[str, str]):
+        self.statuses = statuses
+
+    def server_status_map(self):
+        return dict(self.statuses)
+
+
+class OperatorCommandTests(unittest.TestCase):
+    def test_list_omits_legacy_and_valid_zero_vm_runs_without_deleting_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            config_dir = _write_config(deploy_dir)
+            legacy = config_dir / "runs" / LEGACY_RUN
+            current = config_dir / "runs" / CURRENT_RUN
+            legacy.mkdir(parents=True)
+            current.mkdir()
+            (legacy / "inventory.ini").write_text("historical\n")
+            (current / "inventory.ini").write_text("current\n")
+            before = {
+                path.relative_to(deploy_dir): path.read_bytes()
+                for path in deploy_dir.rglob("*")
+                if path.is_file()
+            }
+
+            stderr = StringIO()
+            with (
+                mock.patch.object(deployment_list, "OpenStack", return_value=_Cloud({})),
+                redirect_stderr(stderr),
+            ):
+                self.assertEqual(deployment_list.run_list(deploy_dir), 0)
+
+            self.assertIn("No active deployments.", stderr.getvalue())
+            self.assertNotIn(LEGACY_RUN, stderr.getvalue())
+            self.assertNotIn(CURRENT_RUN, stderr.getvalue())
+            self.assertTrue(legacy.is_dir())
+            self.assertTrue(current.is_dir())
+            after = {
+                path.relative_to(deploy_dir): path.read_bytes()
+                for path in deploy_dir.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+
+    def test_list_requires_an_exact_run_vm_prefix_and_reports_non_active_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            config_dir = _write_config(deploy_dir)
+            (config_dir / "runs" / CURRENT_RUN).mkdir(parents=True)
+            prefix = make_vm_prefix(make_run_dep_id("decoy-controls", CURRENT_RUN))
+            partial = prefix.removesuffix("-") + "extra-scripted-cpu-0"
+
+            stderr = StringIO()
+            with (
+                mock.patch.object(
+                    deployment_list,
+                    "OpenStack",
+                    return_value=_Cloud({partial: "ACTIVE"}),
+                ),
+                redirect_stderr(stderr),
+            ):
+                deployment_list.run_list(deploy_dir)
+            self.assertIn("No active deployments.", stderr.getvalue())
+
+            stderr = StringIO()
+            exact = prefix + "scripted-cpu-0"
+            with (
+                mock.patch.object(
+                    deployment_list,
+                    "OpenStack",
+                    return_value=_Cloud({partial: "ACTIVE", exact: "BUILD"}),
+                ),
+                redirect_stderr(stderr),
+            ):
+                deployment_list.run_list(deploy_dir)
+            rendered = stderr.getvalue()
+            self.assertIn(f"decoy-controls-{CURRENT_RUN}", rendered)
+            self.assertIn("1 BUILD", rendered)
+
+    def test_filtered_teardown_ignores_legacy_runs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            config_dir = _write_config(deploy_dir)
+            (config_dir / "runs" / LEGACY_RUN).mkdir(parents=True)
+            (config_dir / "runs" / CURRENT_RUN).mkdir()
+
+            stderr = StringIO()
+            with (
+                mock.patch.object(deployment_teardown.output, "confirm", return_value=False),
+                redirect_stderr(stderr),
+            ):
+                result = deployment_teardown.run_teardown_filtered(
+                    deploy_dir,
+                    types={"decoy": True, "rampart": False, "ghosts": False},
+                    feedback_only=False,
+                )
+
+            self.assertEqual(result, 0)
+            self.assertIn(CURRENT_RUN, stderr.getvalue())
+            self.assertNotIn(LEGACY_RUN, stderr.getvalue())
+            self.assertTrue((config_dir / "runs" / LEGACY_RUN).is_dir())
+
+    def test_explicit_dated_teardown_dispatches_only_the_exact_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            config_dir = _write_config(deploy_dir)
+            (config_dir / "runs" / CURRENT_RUN).mkdir(parents=True)
+
+            with mock.patch(
+                "deployment_engine.decoy.teardown.run_decoy_teardown",
+                return_value=0,
+            ) as dispatch:
+                result = deployment_teardown.run_teardown(
+                    f"decoy-controls-{CURRENT_RUN}", deploy_dir
+                )
+
+            self.assertEqual(result, 0)
+            dispatch.assert_called_once()
+            self.assertEqual(dispatch.call_args.args[1:3], ("decoy-controls", CURRENT_RUN))
+
+            with mock.patch(
+                "deployment_engine.decoy.teardown.run_decoy_teardown"
+            ) as legacy_dispatch:
+                result = deployment_teardown.run_teardown(
+                    f"decoy-controls-{LEGACY_RUN}", deploy_dir
+                )
+            self.assertEqual(result, 1)
+            legacy_dispatch.assert_not_called()
+
+            with mock.patch(
+                "deployment_engine.decoy.teardown.run_decoy_teardown"
+            ) as unsafe_dispatch:
+                result = deployment_teardown.run_teardown(
+                    f"../decoy-controls-{CURRENT_RUN}", deploy_dir
+                )
+            self.assertEqual(result, 1)
+            unsafe_dispatch.assert_not_called()
+
+    def test_teardown_failures_preserve_registry_run_and_ssh_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config_dir = Path(temporary) / "decoy-controls"
+            run_dir = config_dir / "runs" / CURRENT_RUN
+            run_dir.mkdir(parents=True)
+            sentinel = run_dir / "deployment-sentinel"
+            sentinel.write_text("unchanged\n")
+
+            cloud = mock.Mock()
+            cloud.count_vms_with_prefix.return_value = 0
+            with (
+                mock.patch.object(teardown_steps, "OpenStack", return_value=cloud),
+                mock.patch.object(
+                    teardown_steps,
+                    "close_deployment",
+                    side_effect=PhaseRunRegistryError("cannot close"),
+                ),
+                mock.patch(
+                    "deployment_engine.core.ssh_config.remove_ssh_config"
+                ) as remove_ssh,
+            ):
+                result = teardown_steps.finalize_teardown(
+                    "decoy-controls",
+                    config_dir,
+                    CURRENT_RUN,
+                    run_dir,
+                    "d-controls-exact-",
+                )
+
+            self.assertFalse(result)
+            self.assertEqual(sentinel.read_text(), "unchanged\n")
+            self.assertTrue(run_dir.is_dir())
+            remove_ssh.assert_not_called()
+
+            playbooks = (
+                REPOSITORY_ROOT / "deployment_engine" / "playbooks" / "decoy" / "teardown.yaml",
+                REPOSITORY_ROOT / "deployment_engine" / "playbooks" / "shared" / "teardown-all.yaml",
+            )
+            for playbook in playbooks:
+                self.assertNotIn("inventory.ini", playbook.read_text(encoding="utf-8"))
+
+    def test_vm_delete_failure_does_not_close_or_remove_the_exact_run(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            config_dir = deploy_dir / "decoy-controls"
+            run_dir = config_dir / "runs" / CURRENT_RUN
+            run_dir.mkdir(parents=True)
+            (config_dir / "hosts.ini").write_text("[sups]\n")
+            sentinel = run_dir / "registry-sentinel"
+            sentinel.write_text("open\n")
+            runner = mock.Mock()
+            runner.run_playbook.return_value = mock.Mock(rc=2)
+
+            with (
+                mock.patch.object(decoy_teardown, "AnsibleRunner", return_value=runner),
+                mock.patch.object(decoy_teardown, "finalize_teardown") as finalize,
+            ):
+                result = decoy_teardown.run_decoy_teardown(
+                    config_dir, "decoy-controls", CURRENT_RUN, deploy_dir
+                )
+
+            self.assertEqual(result, 2)
+            finalize.assert_not_called()
+            self.assertTrue(run_dir.is_dir())
+            self.assertEqual(sentinel.read_text(), "open\n")
+            expected_prefix = make_vm_prefix(
+                make_run_dep_id("decoy-controls", CURRENT_RUN)
+            )
+            self.assertEqual(
+                runner.run_playbook.call_args.kwargs["extra_vars"]["vm_prefix"],
+                expected_prefix,
+            )
+
+    def test_successful_teardown_closes_exact_record_but_preserves_run_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config_dir = Path(temporary) / "decoy-controls"
+            run_dir = config_dir / "runs" / CURRENT_RUN
+            run_dir.mkdir(parents=True)
+            sentinel = run_dir / "historical-state"
+            sentinel.write_text("retained\n")
+            cloud = mock.Mock()
+            cloud.count_vms_with_prefix.return_value = 0
+
+            with (
+                mock.patch.object(teardown_steps, "OpenStack", return_value=cloud),
+                mock.patch.object(teardown_steps, "close_deployment") as close,
+                mock.patch(
+                    "deployment_engine.core.ssh_config.remove_ssh_config"
+                ) as remove_ssh,
+            ):
+                result = teardown_steps.finalize_teardown(
+                    "decoy-controls",
+                    config_dir,
+                    CURRENT_RUN,
+                    run_dir,
+                    "d-controls-exact-",
+                )
+
+            self.assertTrue(result)
+            close.assert_called_once()
+            self.assertEqual(close.call_args.args, ("decoy-controls", CURRENT_RUN))
+            remove_ssh.assert_called_once_with(f"decoy-controls/{CURRENT_RUN}")
+            self.assertTrue(run_dir.is_dir())
+            self.assertEqual(sentinel.read_text(), "retained\n")
+
+    def test_deploy_command_builds_only_four_controls_without_provisioning(self):
+        captured: dict = {}
+
+        def refuse_execution(plan, deploy_type, config_name, deploy_dir, **kwargs):
+            captured.update(plan=plan, deploy_type=deploy_type, deploy_dir=deploy_dir)
+            return 0
+
+        with (
+            mock.patch.object(deployment_cli, "DEPLOY_DIR", REPOSITORY_ROOT / "deployments"),
+            mock.patch(
+                "deployment_engine.core.plan.execute_plan",
+                side_effect=refuse_execution,
+            ) as execute,
+        ):
+            result = deployment_cli._cmd_deploy(["--decoy", "--controls"])
+
+        self.assertEqual(result, 0)
+        execute.assert_called_once()
+        self.assertEqual(captured["deploy_type"], "decoy")
+        self.assertEqual(len(captured["plan"]), 1)
+        task = captured["plan"][0]
+        self.assertTrue(task["is_controls"])
+        self.assertIsNone(task["behavior_source"])
+        self.assertIsNone(task["configs_spec"])
+        self.assertEqual(
+            [(item["behavior"], item["flavor"], item["count"]) for item in task["deployments"]],
+            [(behavior, flavor, 1) for behavior, flavor in CANONICAL],
+        )
+
+    def test_root_wrappers_are_executable_and_dispatch_from_any_directory(self):
+        for command in ("deploy", "teardown", "list"):
+            wrapper = REPOSITORY_ROOT / command
+            self.assertTrue(wrapper.is_file())
+            self.assertTrue(wrapper.stat().st_mode & stat.S_IXUSR)
+
+        for command in ("deploy", "teardown"):
+            result = subprocess.run(
+                [str(REPOSITORY_ROOT / command), "--help"],
+                cwd="/",
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"usage: {command}", result.stdout.lower())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            fake_home = Path(temporary)
+            (fake_home / "vxn3kr-bot-rc").write_text("# test credentials\n")
+            fake_bin = fake_home / "bin"
+            fake_bin.mkdir()
+            openstack = fake_bin / "openstack"
+            openstack.write_text("#!/bin/sh\nexit 0\n")
+            openstack.chmod(0o755)
+            env = dict(os.environ)
+            env["HOME"] = str(fake_home)
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            result = subprocess.run(
+                [str(REPOSITORY_ROOT / "list")],
+                cwd="/",
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No active deployments.", result.stderr)
+
+    def test_shrink_is_absent(self):
+        self.assertFalse((REPOSITORY_ROOT / "shrink").exists())
+        self.assertFalse((REPOSITORY_ROOT / "deployment_engine" / "shrink.py").exists())
+        self.assertNotIn("shrink", deployment_cli._teardown_parser().format_help())
+
+
+if __name__ == "__main__":
+    unittest.main()

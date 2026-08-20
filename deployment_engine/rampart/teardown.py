@@ -2,8 +2,8 @@
 
 RAMPART teardown is direct OpenStack iteration (no Ansible playbook for
 deletion). Pre-step kills emulate.pid; mid-step deletes the per-deploy
-DNS zone. After VM deletion, finalize_teardown handles the shared
-epilogue (ssh / volumes / phase / rmtree / feedback-dir).
+DNS zone. After VM deletion, finalize_teardown closes the exact registry
+record and removes its managed SSH block while retaining run history.
 
 Performance: every `openstack` CLI call costs ~17s (python startup +
 auth). Step 2 batches all 23 VM deletes into a single `--wait` call
@@ -21,8 +21,8 @@ from pathlib import Path
 from ..core import output
 from ..core.config import DeploymentConfig
 from ..core.openstack import OpenStack
-from ..core.teardown_steps import finalize_teardown, make_dep_id
-from ..core.vm_naming import make_ent_vm_prefix
+from ..core.teardown_steps import finalize_teardown
+from ..core.vm_naming import make_ent_vm_prefix, make_run_dep_id
 
 
 def run_rampart_teardown(
@@ -34,7 +34,7 @@ def run_rampart_teardown(
 
     output.banner(f"TEARDOWN: {config_name}/{run_id} (rampart)")
 
-    dep_id = make_dep_id(config_name, run_id)
+    dep_id = make_run_dep_id(config_name, run_id)
     ent_vm_prefix = make_ent_vm_prefix(dep_id)
     os_client = OpenStack()
 
@@ -88,6 +88,7 @@ def run_rampart_teardown(
     # Batch VM delete with --wait. One CLI invocation handles all servers
     # and blocks until OpenStack reports each gone. finalize_teardown's
     # poll_for_zero check below then completes on the first iteration.
+    delete_ok = True
     if servers:
         ok_delete = os_client.server_delete_many(
             [s["id"] for s in servers], wait=True,
@@ -95,6 +96,7 @@ def run_rampart_teardown(
         if ok_delete:
             output.info(f"  Deleted {len(servers)} VMs")
         else:
+            delete_ok = False
             output.error("  WARNING: server_delete_many reported non-zero rc")
 
     output.info("[3/3] Cleaning up DNS zone...")
@@ -104,7 +106,11 @@ def run_rampart_teardown(
     if not zone_result["deleted"]:
         output.info("  No DNS zones found for this deployment")
 
-    # Shared epilogue: ssh / volumes / phase / rmtree / feedback-dir.
+    if not delete_ok:
+        output.error("ERROR: VM teardown failed; registry and local state were preserved")
+        return 1
+
+    # Shared epilogue: close exact registry record, then remove its SSH block.
     # poll_for_zero=True is still cheap here — `--wait` already drained
     # the cohort so wait_until_zero returns on its first iteration.
     ok = finalize_teardown(

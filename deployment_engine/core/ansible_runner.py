@@ -70,8 +70,6 @@ _STEP_TASKS = {
     "Find orphaned boot volumes (nameless, 200GB, available)": "Scanning for orphaned volumes",
     "Count remaining servers":    "Verifying cleanup",
     "Assert all VMs deleted":     "Asserting cleanup complete",
-    "Remove ALL local inventory files": "Removing local inventory files",
-    "Remove local inventory file": "Removing local inventory",
     # install-ghosts-api.yaml
     "Install Docker and Docker Compose": "Installing Docker",
     "Clone GHOSTS repository":    "Cloning GHOSTS repository",

@@ -8,7 +8,6 @@ without importing from each other or from the router (teardown.py).
 from __future__ import annotations
 
 import datetime
-import os
 import shutil
 from pathlib import Path
 
@@ -30,20 +29,6 @@ def find_hosts_ini(config_dir: Path | None, deploy_dir: Path) -> Path | None:
         if d.is_dir() and (d / "hosts.ini").exists():
             return d / "hosts.ini"
     return None
-
-
-def make_dep_id(deployment_name: str, run_id: str) -> str:
-    """Build the deployment ID used in VM names: {name_no_prefix}{run_id}.
-
-    Strips the deploy_type prefix (decoy-/rampart-/ghosts-/legacy-enterprise-)
-    so all three subsystems produce the same compact identifier shape.
-    """
-    dep = deployment_name
-    for prefix in ("decoy-", "ghosts-", "rampart-", "enterprise-"):
-        if dep.startswith(prefix):
-            dep = dep[len(prefix):]
-    dep = dep.replace("-", "")
-    return f"{dep}{run_id}"
 
 
 def cleanup_orphaned_volumes(os_client: OpenStack) -> int:
@@ -69,7 +54,7 @@ def cleanup_orphaned_volumes(os_client: OpenStack) -> int:
 
 
 def safe_rmtree(path: Path) -> None:
-    """Recursively remove a directory; swallow OSError."""
+    """Recursively remove a directory during failed spinup rollback."""
     try:
         shutil.rmtree(path)
     except OSError:
@@ -108,19 +93,17 @@ def finalize_teardown(
     """Shared epilogue for every teardown.
 
     Steps:
-      1. remove_ssh_config block
-      2. verify VMs gone (poll_for_zero=True polls; False does one-shot count
+      1. verify VMs gone (poll_for_zero=True polls; False does one-shot count
          — DECOY's playbook already waited internally)
-      3. cleanup_orphaned_volumes
-      4. close the exact phase-run-v1 deployment record
-      5. safe_rmtree run_dir
-      6. if config name starts with feedback_marker, drop the empty config dir
+      2. close the exact phase-run-v1 deployment record
+      3. remove the run's managed SSH block
+
+    Historical run and configuration directories are always retained.
 
     Returns True on success, False if VMs are still alive (caller should
     return non-zero).
     """
     from .ssh_config import remove_ssh_config
-    remove_ssh_config(f"{config_name}/{run_id}")
 
     os_client = OpenStack()
     if poll_for_zero:
@@ -135,7 +118,6 @@ def finalize_teardown(
         return False
 
     output.info(f"  Verified: 0 VMs remaining on OpenStack (prefix: {vm_prefix})")
-    cleanup_orphaned_volumes(os_client)
     try:
         close_deployment(
             config_name,
@@ -148,18 +130,5 @@ def finalize_teardown(
         output.info("  Local state preserved. Re-run teardown after fixing the record.")
         return False
 
-    if run_dir.is_dir():
-        safe_rmtree(run_dir)
-        output.info(f"  Removed local run directory: {run_dir.name}")
-
-    if feedback_marker and config_name.startswith(feedback_marker):
-        runs_dir = config_dir / "runs"
-        remaining_runs = (
-            [d for d in runs_dir.iterdir() if d.is_dir()]
-            if runs_dir.is_dir() else []
-        )
-        if not remaining_runs:
-            safe_rmtree(config_dir)
-            output.info(f"  Removed empty feedback config directory: {config_dir.name}")
-
+    remove_ssh_config(f"{config_name}/{run_id}")
     return True

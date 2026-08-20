@@ -156,11 +156,3 @@
         fail_msg: "{{ remaining_servers.stdout | trim }} VMs still exist with prefix {{ vm_prefix }}"
       ignore_errors: yes
       register: verify_result
-
-    - name: Remove local inventory file
-      delegate_to: localhost
-      file:
-        path: "{{ (run_dir | default(deployment_dir)) }}/inventory.ini"
-        state: absent
-      when: verify_result is not defined or verify_result is not failed
-      ignore_errors: yes

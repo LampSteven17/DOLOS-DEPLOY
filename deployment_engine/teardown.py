@@ -1,24 +1,22 @@
-"""Teardown router — dispatches to per-type modules under decoy/, rampart/,
-ghosts/. Also owns the `--all` nuke path (single playbook covering all 3
-prefixes via teardown-all.yaml regex)."""
+"""Teardown router for exact Phase 3 deployment runs."""
 
 from __future__ import annotations
 
-from .core.vm_naming import (
-    make_ent_vm_prefix, make_ghosts_vm_prefix, make_vm_prefix,
-)
 import os
-import re
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .core import output
 from .core.ansible_runner import AnsibleRunner, default_event_handler
 from .core.config import DeploymentConfig
-from .core.openstack import OpenStack
+from .core.phase_run_registry import (
+    PhaseRunRegistryError,
+    close_deployment,
+    validate_experiment_id,
+    validate_run_id,
+)
 from .core.ssh_config import remove_all_managed_blocks
-from .core.teardown_steps import find_hosts_ini, make_dep_id, safe_rmtree
+from .core.teardown_steps import find_hosts_ini
 
 
 def run_teardown(target: str, deploy_dir: Path) -> int:
@@ -26,22 +24,31 @@ def run_teardown(target: str, deploy_dir: Path) -> int:
 
     Dispatches by deploy type to the per-subsystem teardown.
     """
-    match = re.match(r"^(.+)-(\d{4}-\d{2}-\d{2}_\d{6}Z)$", target)
-    if not match:
+    separator = target[-19:-18] if len(target) >= 19 else ""
+    config_name = target[:-19] if separator == "-" else ""
+    run_id = target[-18:] if separator == "-" else ""
+    try:
+        if not separator or not config_name:
+            raise PhaseRunRegistryError("missing deployment name or run ID")
+        validate_experiment_id(config_name)
+        validate_run_id(run_id)
+    except PhaseRunRegistryError:
         output.error(
             f"ERROR: Invalid teardown target: {target} "
             "(expected: name-YYYY-MM-DD_HHMMSSZ)"
         )
         return 1
 
-    config_name = match.group(1)
-    run_id = match.group(2)
-
     config_dir = deploy_dir / config_name
     config_file = config_dir / "config.yaml"
 
     if not config_file.exists():
         output.error(f"ERROR: No config.yaml found for: {config_name}")
+        return 1
+
+    run_dir = config_dir / "runs" / run_id
+    if not run_dir.is_dir():
+        output.error(f"ERROR: No run directory found for: {config_name}/{run_id}")
         return 1
 
     config = DeploymentConfig.load(config_file)
@@ -120,6 +127,10 @@ def run_teardown_filtered(
             continue
         for run_dir in sorted(runs_dir.iterdir()):
             if not run_dir.is_dir():
+                continue
+            try:
+                validate_run_id(run_dir.name)
+            except PhaseRunRegistryError:
                 continue
             if failed_only and read_run_status(run_dir) != FAILED:
                 continue
@@ -243,23 +254,12 @@ def run_teardown_all(deploy_dir: Path) -> int:
         on_event=default_event_handler,
     )
 
-    # Remove all managed SSH config blocks
-    removed = remove_all_managed_blocks()
-    if removed:
-        output.info(f"  Removed {len(removed)} SSH config blocks")
+    if result.rc != 0:
+        output.error("ERROR: teardown-all failed; local state was preserved")
+        return result.rc
 
-    # Clean up local state + close each exact PHASE deployment record for
-    # every deployment with run state. The playbook above already nuked
-    # all VMs/volumes/inventory; this loop just removes the surviving
-    # deployment-side state directories so `./list` shows nothing.
-    #
-    # Previously this gated on `(run_dir/inventory.ini).exists()`, which
-    # is DECOY-specific — RAMPART writes deploy-output.json, GHOSTS
-    # writes deployment_type + timelines/. Stale GHOSTS run dirs got
-    # left behind. After --all, every run_dir in every config_dir gets
-    # rmtree'd unconditionally.
-    from .core.phase_run_registry import PhaseRunRegistryError, close_deployment
-    feedback_markers = ("decoy-feedback-", "rampart-feedback-", "ghosts-feedback-")
+    # Close only current Phase 3 records. Historical and invalid run
+    # directories remain untouched and are never interpreted as deployments.
     close_failures = 0
     for config_dir in deploy_dir.iterdir():
         if not config_dir.is_dir():
@@ -267,11 +267,13 @@ def run_teardown_all(deploy_dir: Path) -> int:
         runs_dir = config_dir / "runs"
         if not runs_dir.is_dir():
             continue
-        had_runs = False
         for run_dir in runs_dir.iterdir():
             if not run_dir.is_dir():
                 continue
-            had_runs = True
+            try:
+                validate_run_id(run_dir.name)
+            except PhaseRunRegistryError:
+                continue
             try:
                 close_deployment(
                     config_dir.name,
@@ -285,13 +287,12 @@ def run_teardown_all(deploy_dir: Path) -> int:
                     f"{config_dir.name}/{run_dir.name}: {exc}"
                 )
                 continue
-            safe_rmtree(run_dir)
-        if had_runs:
-            # Drop empty feedback config dirs (controls dirs persist as the
-            # baseline config). Feedback dirs are deploy-time artifacts.
-            if any(m in config_dir.name for m in feedback_markers):
-                remaining = [d for d in runs_dir.iterdir() if d.is_dir()] if runs_dir.is_dir() else []
-                if not remaining:
-                    safe_rmtree(config_dir)
 
-    return result.rc if result.rc != 0 else (1 if close_failures else 0)
+    if close_failures:
+        output.error("ERROR: one or more deployment records could not be closed")
+        return 1
+
+    removed = remove_all_managed_blocks()
+    if removed:
+        output.info(f"  Removed {len(removed)} SSH config blocks")
+    return 0

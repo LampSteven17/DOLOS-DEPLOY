@@ -46,8 +46,8 @@ def deployment_path(
     experiments_root: Path | None = None,
 ) -> Path:
     """Resolve one exact deployment record path after validating both IDs."""
-    _validate_experiment_id(experiment_id)
-    _validate_run_id(run_id)
+    validate_experiment_id(experiment_id)
+    validate_run_id(run_id)
     root = experiments_root or _default_experiments_root()
     return Path(root) / experiment_id / "runs" / run_id / "deployment.json"
 
@@ -170,12 +170,14 @@ def _validate_record(record: Mapping, run_id: str) -> None:
         raise PhaseRunRegistryError("deployment record contains duplicate VM IPs")
 
 
-def _validate_experiment_id(value: str) -> None:
+def validate_experiment_id(value: str) -> None:
+    """Validate one deployment name used as a Phase 3 experiment ID."""
     if not isinstance(value, str) or not EXPERIMENT_ID_RE.fullmatch(value):
         raise PhaseRunRegistryError(f"invalid experiment_id: {value!r}")
 
 
-def _validate_run_id(value: str) -> None:
+def validate_run_id(value: str) -> None:
+    """Validate one current Phase 3 UTC run identifier."""
     if not isinstance(value, str) or not RUN_ID_RE.fullmatch(value):
         raise PhaseRunRegistryError(f"invalid run_id: {value!r}")
     try:
