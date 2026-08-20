@@ -63,6 +63,12 @@ class _Cloud:
         self.force_ok = force_ok
         self.volume_delete_ok = volume_delete_ok
         self.faults = faults or {}
+        self.attachments: dict[str, list[str]] = {}
+        for snapshot in servers:
+            for server in snapshot:
+                self.attachments.setdefault(
+                    server["id"], list(server.get("volume_ids", []))
+                )
         self.call_cost = call_cost
         self.calls: list[tuple] = []
         self.timeouts: list[float] = []
@@ -82,6 +88,12 @@ class _Cloud:
     def server_cohort(self, prefix: str, *, timeout_s: float) -> list[dict]:
         self._consume("server_cohort", timeout_s, prefix)
         return deepcopy(self._next(self.server_results))
+
+    def server_attached_volume_ids(
+        self, server_id: str, *, timeout_s: float
+    ) -> list[str]:
+        self._consume("server_attached_volume_ids", timeout_s, server_id)
+        return list(self.attachments.get(server_id, []))
 
     def server_delete_many(
         self, ids: list[str], *, wait: bool, timeout_s: float
@@ -180,6 +192,16 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
         self.assertIn(("server_force_delete_many", ("vm-2",)), cloud.calls)
         self.assertIn(("volume_delete_many", ("vol-1", "vol-2")), cloud.calls)
         names = [call[0] for call in cloud.calls]
+        self.assertEqual(
+            [call for call in cloud.calls if call[0] == "server_attached_volume_ids"],
+            [
+                ("server_attached_volume_ids", "vm-1"),
+                ("server_attached_volume_ids", "vm-2"),
+            ],
+        )
+        self.assertLess(
+            names.index("server_attached_volume_ids"), names.index("server_delete_many")
+        )
         self.assertLess(names.index("server_delete_many"), names.index("server_cohort", 1))
         self.assertLess(names.index("server_force_delete_many"), names.index("volume_delete_many"))
         self.assertLess(names.index("volume_delete_many"), names.index("finalize"))
@@ -188,7 +210,7 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
         )
         self.assertNotIn("server_fault", names)
 
-    def test_initial_error_is_force_deleted_while_remaining_vm_is_ordinary_deleted(self):
+    def test_initial_error_is_repeatedly_force_deleted_while_it_remains_error(self):
         clock = _Clock()
         cloud = _Cloud(
             clock,
@@ -197,6 +219,7 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
                     _server("vm-error", "d-exact-error", "ERROR", "vol-error"),
                     _server("vm-active", "d-exact-active", "ACTIVE", "vol-active"),
                 ],
+                [_server("vm-error", "d-exact-error", "ERROR", "vol-error")],
                 [],
             ],
             volumes=[
@@ -212,7 +235,10 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
         self.assertEqual(final_calls, [(CONFIG_NAME, RUN_ID)])
         self.assertEqual(
             [call for call in cloud.calls if call[0] == "server_force_delete_many"],
-            [("server_force_delete_many", ("vm-error",))],
+            [
+                ("server_force_delete_many", ("vm-error",)),
+                ("server_force_delete_many", ("vm-error",)),
+            ],
         )
         self.assertEqual(
             [call for call in cloud.calls if call[0] == "server_delete_many"],
@@ -306,40 +332,51 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
 
 
 class OpenStackCohortTests(unittest.TestCase):
-    def test_exact_cohort_query_captures_attached_volume_ids(self):
+    def test_list_without_volume_data_requires_server_show_capture(self):
         rows = [
             {
                 "ID": "vm-1",
                 "Name": "d-exact-one",
                 "Status": "ACTIVE",
-                "Volumes Attached": [{"id": "vol-1"}],
             },
             {
                 "ID": "vm-2",
                 "Name": "d-exact-two",
                 "Status": "ERROR",
-                "Volumes Attached": "[{'id': 'vol-2'}]",
             },
             {
                 "ID": "unrelated",
                 "Name": "d-exactly-not-this-run",
                 "Status": "ACTIVE",
-                "Volumes Attached": [{"id": "other-volume"}],
             },
         ]
-        result = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
+        list_result = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
+        show_result = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({"volumes_attached": [{"id": "vol-1"}]}),
+            "",
+        )
         client = OpenStack()
-        with mock.patch.object(client, "_run", return_value=result) as command:
+        with mock.patch.object(
+            client, "_run", side_effect=[list_result, show_result]
+        ) as command:
             cohort = client.server_cohort("d-exact-", timeout_s=17.0)
+            volume_ids = client.server_attached_volume_ids(
+                "vm-1", timeout_s=16.0
+            )
 
         self.assertEqual(
             cohort,
             [
-                _server("vm-1", "d-exact-one", "ACTIVE", "vol-1"),
-                _server("vm-2", "d-exact-two", "ERROR", "vol-2"),
+                {"id": "vm-1", "name": "d-exact-one", "status": "ACTIVE"},
+                {"id": "vm-2", "name": "d-exact-two", "status": "ERROR"},
             ],
         )
-        self.assertEqual(command.call_args.kwargs["timeout_s"], 17.0)
+        self.assertEqual(volume_ids, ["vol-1"])
+        self.assertNotIn("Volumes Attached", command.call_args_list[0].args)
+        self.assertEqual(command.call_args_list[0].kwargs["timeout_s"], 17.0)
+        self.assertEqual(command.call_args_list[1].kwargs["timeout_s"], 16.0)
 
 
 if __name__ == "__main__":

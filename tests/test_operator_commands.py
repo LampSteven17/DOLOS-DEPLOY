@@ -373,6 +373,7 @@ class OperatorCommandTests(unittest.TestCase):
                 }
             ]
             cloud.server_delete_many.return_value = False
+            cloud.server_attached_volume_ids.return_value = ["vol-exact"]
             cloud.volume_statuses.return_value = {"vol-exact": "in-use"}
             cloud.server_fault.return_value = None
 

@@ -42,18 +42,25 @@ def run_decoy_teardown(
     captured_volumes: set[str] = set()
     last_volumes: dict[str, str] = {}
     ordinary_requested_ids: set[str] = set()
-    forced_ids: set[str] = set()
+    ever_forced_ids: set[str] = set()
+    volume_inspected_ids: set[str] = set()
 
     try:
         output.info("[1/2] Deleting exact Decoy VM cohort...")
         last_servers = _query_servers(os_client, vm_prefix, deadline)
-        _capture_volumes(last_servers, captured_volumes)
+        _capture_attached_volumes(
+            os_client,
+            last_servers,
+            volume_inspected_ids,
+            captured_volumes,
+            deadline,
+        )
         if last_servers:
             _delete_exact_servers(
                 os_client,
                 last_servers,
                 ordinary_requested_ids,
-                forced_ids,
+                ever_forced_ids,
                 deadline,
             )
         else:
@@ -61,7 +68,13 @@ def run_decoy_teardown(
 
         while last_servers:
             last_servers = _query_servers(os_client, vm_prefix, deadline)
-            _capture_volumes(last_servers, captured_volumes)
+            _capture_attached_volumes(
+                os_client,
+                last_servers,
+                volume_inspected_ids,
+                captured_volumes,
+                deadline,
+            )
             if not last_servers:
                 break
 
@@ -71,7 +84,7 @@ def run_decoy_teardown(
                 os_client,
                 last_servers,
                 ordinary_requested_ids,
-                forced_ids,
+                ever_forced_ids,
                 deadline,
             )
 
@@ -174,22 +187,37 @@ def _query_servers(
     )
 
 
-def _capture_volumes(servers: list[dict], captured: set[str]) -> None:
+def _capture_attached_volumes(
+    os_client: OpenStack,
+    servers: list[dict],
+    inspected_ids: set[str],
+    captured: set[str],
+    deadline: float,
+) -> None:
+    """Use server show once per discovered exact VM, before deletion."""
     for server in servers:
-        captured.update(server.get("volume_ids", []))
+        server_id = server["id"]
+        if server_id in inspected_ids:
+            continue
+        captured.update(
+            os_client.server_attached_volume_ids(
+                server_id, timeout_s=_remaining(deadline)
+            )
+        )
+        inspected_ids.add(server_id)
 
 
 def _delete_exact_servers(
     os_client: OpenStack,
     servers: list[dict],
     ordinary_requested_ids: set[str],
-    forced_ids: set[str],
+    ever_forced_ids: set[str],
     deadline: float,
 ) -> None:
     error_ids = [
         server["id"]
         for server in servers
-        if server["status"].upper() == "ERROR" and server["id"] not in forced_ids
+        if server["status"].upper() == "ERROR"
     ]
     if error_ids:
         if not os_client.server_force_delete_many(
@@ -199,7 +227,7 @@ def _delete_exact_servers(
                 "force-delete failed for exact ERROR VM IDs: "
                 + ", ".join(error_ids)
             )
-        forced_ids.update(error_ids)
+        ever_forced_ids.update(error_ids)
         output.info(f"  Force-delete requested for {len(error_ids)} ERROR VMs")
 
     ordinary_ids = [
@@ -207,7 +235,7 @@ def _delete_exact_servers(
         for server in servers
         if server["status"].upper() != "ERROR"
         and server["id"] not in ordinary_requested_ids
-        and server["id"] not in forced_ids
+        and server["id"] not in ever_forced_ids
     ]
     if ordinary_ids:
         if not os_client.server_delete_many(
@@ -235,7 +263,6 @@ def _refresh_diagnostics(
     """Best-effort final cohort snapshot without resetting the deadline."""
     try:
         servers = _query_servers(os_client, vm_prefix, deadline)
-        _capture_volumes(servers, captured_volumes)
     except (OpenStackCommandError, TeardownDeadlineExpired, subprocess.TimeoutExpired):
         pass
     try:

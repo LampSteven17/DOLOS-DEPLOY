@@ -83,15 +83,16 @@ class OpenStack:
     def server_cohort(
         self, prefix: str, *, timeout_s: float | None = None
     ) -> list[dict]:
-        """Query one exact name-prefix cohort, including boot-volume IDs.
+        """Query one exact name-prefix cohort's IDs, names, and statuses.
 
         Unlike the older cached list helpers, failure is explicit: teardown
-        must never interpret a failed query as an empty cohort.
+        must never interpret a failed query as an empty cohort. OpenStack's
+        server-list response does not reliably expose attached volumes; callers
+        must use server_attached_volume_ids before deletion.
         """
         result = self._run(
             "server",
             "list",
-            "--long",
             "-f",
             "json",
             "-c",
@@ -100,8 +101,6 @@ class OpenStack:
             "Name",
             "-c",
             "Status",
-            "-c",
-            "Volumes Attached",
             check=False,
             timeout_s=timeout_s,
         )
@@ -125,19 +124,43 @@ class OpenStack:
             if not server_id or not name.startswith(prefix):
                 continue
             status = str(row.get("Status", row.get("status", "UNKNOWN")))
-            attached = row.get(
-                "Volumes Attached",
-                row.get("volumes_attached", row.get("volumes attached", [])),
-            )
             cohort.append(
                 {
                     "id": server_id,
                     "name": name,
                     "status": status,
-                    "volume_ids": _attached_volume_ids(attached),
                 }
             )
         return cohort
+
+    def server_attached_volume_ids(
+        self, server_id: str, *, timeout_s: float | None = None
+    ) -> list[str]:
+        """Capture one exact server's attached volume IDs via server show."""
+        result = self._run(
+            "server", "show", server_id, "-f", "json",
+            check=False, timeout_s=timeout_s,
+        )
+        if result.returncode != 0:
+            raise OpenStackCommandError(
+                f"server show failed for {server_id}: "
+                f"{result.stderr.strip() or 'unknown error'}"
+            )
+        try:
+            details = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise OpenStackCommandError(
+                f"server show returned invalid JSON for {server_id}"
+            ) from exc
+        if not isinstance(details, dict):
+            raise OpenStackCommandError(
+                f"server show did not return an object for {server_id}"
+            )
+        attached = details.get(
+            "volumes_attached",
+            details.get("Volumes Attached", details.get("volumes attached", [])),
+        )
+        return _attached_volume_ids(attached)
 
     def server_delete(self, server_id: str) -> bool:
         """Delete a server by ID. Returns True on success."""
