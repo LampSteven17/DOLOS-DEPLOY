@@ -67,9 +67,8 @@ def wait_until_zero(
 ) -> int:
     """Poll OpenStack until no VMs match `vm_prefix`. Returns final count.
 
-    Used by RAMPART/GHOSTS teardowns where VM deletion is async (no Ansible
-    playbook to do the wait). DECOY's teardown.yaml waits internally via
-    its own retry loop, so this isn't called there.
+    Used by RAMPART/GHOSTS teardowns where VM deletion is async. Decoy has a
+    separate deployment-wide deadline covering both its VM and volume cohorts.
     """
     import time
     for attempt in range(1, attempts + 1):
@@ -93,8 +92,7 @@ def finalize_teardown(
     """Shared epilogue for every teardown.
 
     Steps:
-      1. verify VMs gone (poll_for_zero=True polls; False does one-shot count
-         — DECOY's playbook already waited internally)
+      1. verify VMs gone (poll_for_zero=True polls; False does one-shot count)
       2. close the exact phase-run-v1 deployment record
       3. remove the run's managed SSH block
 
@@ -103,8 +101,6 @@ def finalize_teardown(
     Returns True on success, False if VMs are still alive (caller should
     return non-zero).
     """
-    from .ssh_config import remove_ssh_config
-
     os_client = OpenStack()
     if poll_for_zero:
         remaining = wait_until_zero(os_client, vm_prefix)
@@ -118,6 +114,18 @@ def finalize_teardown(
         return False
 
     output.info(f"  Verified: 0 VMs remaining on OpenStack (prefix: {vm_prefix})")
+    return finalize_verified_teardown(config_name, run_id)
+
+
+def finalize_verified_teardown(config_name: str, run_id: str) -> bool:
+    """Close one resource-empty run, then remove only its SSH block.
+
+    Callers must verify every resource they own before using this epilogue.
+    Keeping record closure before SSH removal preserves both pieces of local
+    state when registry closure fails.
+    """
+    from .ssh_config import remove_ssh_config
+
     try:
         close_deployment(
             config_name,

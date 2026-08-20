@@ -337,12 +337,23 @@ class OperatorCommandTests(unittest.TestCase):
             self.assertTrue(run_dir.is_dir())
             remove_ssh.assert_not_called()
 
-            playbooks = (
-                REPOSITORY_ROOT / "deployment_engine" / "playbooks" / "decoy" / "teardown.yaml",
-                REPOSITORY_ROOT / "deployment_engine" / "playbooks" / "shared" / "teardown-all.yaml",
+            self.assertFalse(
+                (
+                    REPOSITORY_ROOT
+                    / "deployment_engine"
+                    / "playbooks"
+                    / "decoy"
+                    / "teardown.yaml"
+                ).exists()
             )
-            for playbook in playbooks:
-                self.assertNotIn("inventory.ini", playbook.read_text(encoding="utf-8"))
+            shared = (
+                REPOSITORY_ROOT
+                / "deployment_engine"
+                / "playbooks"
+                / "shared"
+                / "teardown-all.yaml"
+            )
+            self.assertNotIn("inventory.ini", shared.read_text(encoding="utf-8"))
 
     def test_vm_delete_failure_does_not_close_or_remove_the_exact_run(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -350,30 +361,40 @@ class OperatorCommandTests(unittest.TestCase):
             config_dir = deploy_dir / "decoy-controls"
             run_dir = config_dir / "runs" / CURRENT_RUN
             run_dir.mkdir(parents=True)
-            (config_dir / "hosts.ini").write_text("[sups]\n")
             sentinel = run_dir / "registry-sentinel"
             sentinel.write_text("open\n")
-            runner = mock.Mock()
-            runner.run_playbook.return_value = mock.Mock(rc=2)
+            cloud = mock.Mock()
+            cloud.server_cohort.return_value = [
+                {
+                    "id": "vm-exact",
+                    "name": "d-controls-exact-scripted",
+                    "status": "ACTIVE",
+                    "volume_ids": ["vol-exact"],
+                }
+            ]
+            cloud.server_delete_many.return_value = False
+            cloud.volume_statuses.return_value = {"vol-exact": "in-use"}
+            cloud.server_fault.return_value = None
 
             with (
-                mock.patch.object(decoy_teardown, "AnsibleRunner", return_value=runner),
-                mock.patch.object(decoy_teardown, "finalize_teardown") as finalize,
+                mock.patch.object(decoy_teardown, "OpenStack", return_value=cloud),
+                mock.patch.object(
+                    decoy_teardown, "make_vm_prefix", return_value="d-controls-exact-"
+                ),
+                mock.patch.object(
+                    decoy_teardown, "finalize_verified_teardown"
+                ) as finalize,
             ):
                 result = decoy_teardown.run_decoy_teardown(
                     config_dir, "decoy-controls", CURRENT_RUN, deploy_dir
                 )
 
-            self.assertEqual(result, 2)
+            self.assertEqual(result, 1)
             finalize.assert_not_called()
             self.assertTrue(run_dir.is_dir())
             self.assertEqual(sentinel.read_text(), "open\n")
-            expected_prefix = make_vm_prefix(
-                make_run_dep_id("decoy-controls", CURRENT_RUN)
-            )
             self.assertEqual(
-                runner.run_playbook.call_args.kwargs["extra_vars"]["vm_prefix"],
-                expected_prefix,
+                cloud.server_delete_many.call_args.args[0], ["vm-exact"]
             )
 
     def test_successful_teardown_closes_exact_record_but_preserves_run_directory(self):
