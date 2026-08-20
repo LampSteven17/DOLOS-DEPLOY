@@ -218,6 +218,8 @@ class _LineParser:
     def __init__(self, start_time: float):
         self.start_time = start_time
         self.current_task_visible = False  # is the current TASK whitelisted?
+        self.current_task_label: str | None = None
+        self.current_task_deferred = False
 
     def parse(self, line: str) -> AnsibleEvent | None:
         if not line or line.isspace():
@@ -243,7 +245,13 @@ class _LineParser:
             task_name = re.sub(r'\]\s*\**\s*$', '', stripped[6:]).strip()
             step_label = _match_step(task_name)
             self.current_task_visible = step_label is not None
+            self.current_task_label = step_label
+            self.current_task_deferred = (
+                task_name == "Reboot for NVIDIA drivers (exit code 100)"
+            )
             if step_label:
+                if self.current_task_deferred:
+                    return None
                 return AnsibleEvent(kind="task", task=step_label, elapsed=elapsed)
             return None
 
@@ -252,7 +260,12 @@ class _LineParser:
             if not self.current_task_visible:
                 return None
             host = _extract_host(stripped)
-            return AnsibleEvent(kind="host_ok", host=host, elapsed=elapsed)
+            return AnsibleEvent(
+                kind="host_ok",
+                host=host,
+                task=self.current_task_label if self.current_task_deferred else None,
+                elapsed=elapsed,
+            )
 
         # Standalone "msg" lines from debug tasks (IP display)
         msg_line_match = re.match(r'^\s*"msg"\s*:\s*"(.+)"', stripped)
@@ -376,6 +389,8 @@ def default_event_handler(event: AnsibleEvent) -> None:
     if event.kind == "task":
         output.info(f"  [{ts}]  {event.task}")
     elif event.kind == "host_ok":
+        if event.task:
+            output.info(f"  [{ts}]  {event.task}")
         extra = f" ({event.detail})" if event.detail else ""
         output.info(f"  [{ts}]    OK  {event.host}{extra}")
     elif event.kind == "host_fail":

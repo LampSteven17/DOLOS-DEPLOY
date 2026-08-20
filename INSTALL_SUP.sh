@@ -561,28 +561,31 @@ install_ollama() {
     fi
 }
 
-CUDA_INSTALLED=false
+NVIDIA_DRIVER_INSTALLED=false
 
-install_cuda() {
-    # Install NVIDIA drivers and CUDA toolkit from official repository
-    # Required for GPU-accelerated Ollama/BrowserUse/SmolAgents
-    # Ref: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/
-    # Ref: https://developer.nvidia.com/cuda-downloads
+install_nvidia_driver() {
+    # Ollama ships the GPU user-space runtime it needs. Canonical workflows do
+    # not compile CUDA code, so install the NVIDIA driver without the toolkit.
 
     # Check if GPU is present
     if ! lspci | grep -qi nvidia; then
-        log "No NVIDIA GPU detected, skipping CUDA installation"
+        log "No NVIDIA GPU detected, skipping NVIDIA driver installation"
         return 0
     fi
 
     log "NVIDIA GPU detected: $(lspci | grep -i nvidia | head -1)"
 
+    if command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null; then
+        log "NVIDIA driver is already active"
+        return 0
+    fi
+
     # Step 1: Install kernel headers and build tools (REQUIRED for DKMS)
     log "Installing kernel headers and build tools for $(uname -r)..."
     sudo apt-get install -y build-essential linux-headers-$(uname -r)
 
-    # Step 2: Setup NVIDIA CUDA repository
-    log "Setting up NVIDIA CUDA repository..."
+    # Step 2: Setup NVIDIA repository containing the pinned driver package
+    log "Setting up NVIDIA driver repository..."
     wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb
     sudo dpkg -i /tmp/cuda-keyring.deb
     rm -f /tmp/cuda-keyring.deb
@@ -592,26 +595,12 @@ install_cuda() {
     log "Installing NVIDIA driver 580..."
     sudo apt-get install -y nvidia-driver-580
 
-    # Step 4: Install CUDA toolkit 12.9
-    log "Installing CUDA toolkit 12.9..."
-    sudo apt-get install -y cuda-toolkit-12-9
-
-    # Step 5: Enable nvidia-persistenced for better GPU management
+    # Step 4: Enable nvidia-persistenced for better GPU management
     log "Enabling nvidia-persistenced..."
     sudo systemctl enable nvidia-persistenced || true
 
-    # Add CUDA to PATH for current session (use generic cuda symlink)
-    export PATH=/usr/local/cuda/bin:${PATH:-}
-    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
-
-    # Add to bashrc for future sessions
-    if ! grep -q "/usr/local/cuda/bin" ~/.bashrc; then
-        echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
-        echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
-    fi
-
-    CUDA_INSTALLED=true
-    log "NVIDIA driver 580 and CUDA toolkit 12.9 installed. Reboot required for driver to load."
+    NVIDIA_DRIVER_INSTALLED=true
+    log "NVIDIA driver 580 installed. One reboot is required for the driver to load."
 }
 
 install_firefox_deb() {
@@ -747,27 +736,16 @@ install_system_deps() {
             ;;
         browseruse)
             sudo apt-get install -y xvfb
-            # Install uv (provides uvx for browser-use)
-            if ! command -v uvx &> /dev/null; then
-                log "Installing uv (provides uvx)..."
-                curl -LsSf https://astral.sh/uv/install.sh | sh
-                export PATH="$HOME/.local/bin:$PATH"
-            fi
             ;;
         smolagents)
             sudo apt-get install -y xvfb ffmpeg
-            # Install uv (provides uvx for browser-use compatible tooling)
-            if ! command -v uvx &> /dev/null; then
-                log "Installing uv (provides uvx)..."
-                curl -LsSf https://astral.sh/uv/install.sh | sh
-                export PATH="$HOME/.local/bin:$PATH"
-            fi
             ;;
     esac
 
-    # Install CUDA if GPU is present and model requires it (for LLM acceleration)
+    # Model-backed GPU configurations require the NVIDIA driver. CPU hosts have
+    # no NVIDIA PCI device and canonical CPU controls have MODEL=none.
     if [[ "$MODEL" != "none" ]]; then
-        install_cuda
+        install_nvidia_driver
     fi
 }
 
@@ -786,8 +764,7 @@ install_python_deps() {
             pip install selenium
             ;;
         mchp)
-            pip install selenium beautifulsoup4 webdriver-manager lxml pyautogui lorem \
-                certifi chardet colorama configparser crayons idna requests urllib3
+            pip install selenium beautifulsoup4 lxml pyautogui lorem requests
             # Add LiteLLM if content augmentation is enabled
             if [[ "$CONTENT" == "llm" ]]; then
                 pip install litellm torch transformers
@@ -797,16 +774,15 @@ install_python_deps() {
             # smolagents pinned: the step-action log parser (_SMOL_ACTION_PATTERNS
             # in common/logging/llm_callbacks.py) keys on this version's tool-call
             # vocabulary. Bumping unpinned silently breaks step logging.
-            pip install 'smolagents==1.25.0' litellm torch transformers datasets numpy pandas requests markdownify duckduckgo-search ddgs yt-dlp
+            pip install 'smolagents==1.25.0' litellm requests markdownify ddgs yt-dlp
             python -c 'import markdownify, requests; from smolagents import VisitWebpageTool; VisitWebpageTool()'
             ;;
         browseruse)
             # browser-use pinned: _BU_ACTION_MAP in brains/browseruse/agent.py keys
             # on this version's action names (renamed across the 0.12.x line).
             # Bumping unpinned silently breaks step logging — confirmed 2026-05-25.
-            pip install uv 'browser-use==0.12.7' langchain-ollama playwright
-            playwright install chromium
-            playwright install-deps chromium
+            pip install 'browser-use==0.12.7' langchain-ollama playwright
+            playwright install --with-deps chromium
             ;;
     esac
 
@@ -897,8 +873,7 @@ cd "$deploy_dir"
 source venv/bin/activate
 
 # Configuration
-export PATH="\$HOME/.local/bin:/usr/local/cuda/bin:\$PATH"
-export LD_LIBRARY_PATH="/usr/local/cuda/lib64:\${LD_LIBRARY_PATH:-}"
+export PATH="\$HOME/.local/bin:\$PATH"
 export OLLAMA_MODEL="$model_name"
 export LITELLM_MODEL="ollama/$model_name"
 export PYTHONPATH="$deploy_dir/decoys:\${PYTHONPATH:-}"
@@ -1057,20 +1032,20 @@ install_agent() {
     if [[ "$STAGE" == "0" || "$STAGE" == "1" ]]; then
         log "=== Stage 1: Installing system dependencies ==="
 
-        # Install system dependencies (includes CUDA if GPU present)
+        # Install system dependencies (includes the driver on GPU hosts)
         install_system_deps
 
         # Create deployment directory
         mkdir -p "$deploy_dir/logs"
 
         # Check if reboot needed for NVIDIA driver
-        if $CUDA_INSTALLED; then
+        if $NVIDIA_DRIVER_INSTALLED; then
             if [[ "$STAGE" == "1" ]]; then
                 log "Stage 1 complete. NVIDIA drivers installed - reboot required."
                 log "After reboot, run: ./INSTALL_SUP.sh --$CONFIG_KEY --stage=2"
                 exit 100  # Special exit code: reboot needed
             else
-                log "CUDA drivers installed. Rebooting in 5 seconds..."
+                log "NVIDIA driver installed. Rebooting in 5 seconds..."
                 sleep 5
                 sudo reboot
             fi
