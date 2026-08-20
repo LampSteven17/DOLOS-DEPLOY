@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from phase_workflow.registry import ResolvedTask, WorkflowRegistry, WorkflowResu
 
 
 UTC = timezone.utc
+_LOG = logging.getLogger(__name__)
 TERMINAL_STATUSES = frozenset({"completed", "failed", "missed"})
 TERMINAL_REASONS = frozenset({
     "startup_past_due",
@@ -138,6 +140,11 @@ class DailyExecutor:
                 )
                 occurrence.handle.add_done_callback(lambda _handle: self._wake.set())
             except Exception:
+                _LOG.exception(
+                    "workflow starter failed for %s at %s",
+                    occurrence.entry.workflow,
+                    self._iso(occurrence.scheduled_utc),
+                )
                 self._terminal(
                     occurrence,
                     status="failed",
@@ -212,6 +219,11 @@ class DailyExecutor:
             try:
                 result = handle.result()
             except Exception:
+                _LOG.exception(
+                    "workflow worker failed for %s at %s",
+                    occurrence.entry.workflow,
+                    self._iso(occurrence.scheduled_utc),
+                )
                 result = WorkflowResult(completed=False)
             if result.completed:
                 self._terminal(

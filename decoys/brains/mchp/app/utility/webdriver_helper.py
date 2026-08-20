@@ -67,8 +67,14 @@ class WebDriverHelper(BaseDriverHelper):
         return self._driver
 
     def cleanup(self):
-        if self._driver:
-            self._driver.quit()
+        try:
+            if self._driver:
+                self._driver.quit()
+        finally:
+            self._driver = None
+            # BaseDriverHelper is a legacy singleton. A quit WebDriver cannot be
+            # reused by the next canonical scheduled workflow.
+            type(self)._instances.pop(type(self), None)
 
     def check_valid_driver_connection(self):
         try:

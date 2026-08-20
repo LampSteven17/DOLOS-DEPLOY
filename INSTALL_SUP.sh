@@ -797,7 +797,8 @@ install_python_deps() {
             # smolagents pinned: the step-action log parser (_SMOL_ACTION_PATTERNS
             # in common/logging/llm_callbacks.py) keys on this version's tool-call
             # vocabulary. Bumping unpinned silently breaks step logging.
-            pip install 'smolagents==1.25.0' litellm torch transformers datasets numpy pandas requests duckduckgo-search ddgs yt-dlp
+            pip install 'smolagents==1.25.0' litellm torch transformers datasets numpy pandas requests markdownify duckduckgo-search ddgs yt-dlp
+            python -c 'import markdownify, requests; from smolagents import VisitWebpageTool; VisitWebpageTool()'
             ;;
         browseruse)
             # browser-use pinned: _BU_ACTION_MAP in brains/browseruse/agent.py keys

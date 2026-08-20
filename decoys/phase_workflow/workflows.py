@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 from urllib.parse import quote_plus
+from xml.etree import ElementTree
 
 from phase_workflow.registry import ResolvedTask, WorkflowResult
 
@@ -104,6 +105,7 @@ class OpenDocumentWriter:
                 "META-INF/manifest.xml",
                 self._MANIFEST.format(media_type=media_type),
             )
+        validate_open_document(task, workspace, artifact)
         return WorkflowResult(completed=True, artifact=str(artifact))
 
     @staticmethod
@@ -169,6 +171,7 @@ class MCHPDocumentWorkflows:
             )
         finally:
             workflow.cleanup()
+        validate_open_document(task, workspace, artifact)
         return WorkflowResult(completed=True, artifact=str(artifact))
 
     @staticmethod
@@ -259,19 +262,127 @@ def _resolve_media_url(video_id: str) -> str:
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "format": "worst[ext=mp4]/worst",
     }) as downloader:
         info = downloader.extract_info(
             "https://www.youtube.com/watch?v=" + video_id,
             download=False,
         )
-    media_url = info.get("url")
-    if not media_url:
-        formats = info.get("requested_formats") or info.get("formats") or []
-        media_url = formats[-1].get("url") if formats else None
+    media_url = _select_media_url(info)
     if not media_url:
         raise RuntimeError(f"no media URL for assigned video {video_id}")
     return media_url
+
+
+def _select_media_url(info) -> str | None:
+    """Select one actually advertised HTTP media stream, without a format guess."""
+    candidates = []
+    if isinstance(info, dict):
+        candidates.append(info)
+        for key in ("requested_downloads", "requested_formats", "formats"):
+            values = info.get(key) or []
+            if isinstance(values, list):
+                candidates.extend(value for value in values if isinstance(value, dict))
+
+    def usable(candidate, *, require_audio):
+        url = candidate.get("url")
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return None
+        if candidate.get("vcodec") == "none":
+            return None
+        if require_audio and candidate.get("acodec") == "none":
+            return None
+        return url
+
+    for require_audio in (True, False):
+        for candidate in candidates:
+            url = usable(candidate, require_audio=require_audio)
+            if url:
+                return url
+    return None
+
+
+_TABLE_NS = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+_TEXT_NS = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+_COLUMN_REPEAT = f"{{{_TABLE_NS}}}number-columns-repeated"
+_ROW_REPEAT = f"{{{_TABLE_NS}}}number-rows-repeated"
+
+
+def validate_open_document(task: ResolvedTask, workspace: Path, artifact) -> None:
+    """Fail unless an assigned ODT/ODS contains the exact supplied content."""
+    expected_path = Path(workspace) / task.resource["filename"]
+    artifact_path = Path(artifact)
+    if artifact_path != expected_path:
+        raise RuntimeError(
+            f"document writer returned unexpected artifact: {artifact_path}"
+        )
+
+    kind = task.resource["kind"]
+    expected = {
+        "document": (".odt", "application/vnd.oasis.opendocument.text"),
+        "spreadsheet": (".ods", "application/vnd.oasis.opendocument.spreadsheet"),
+    }.get(kind)
+    if expected is None or artifact_path.suffix != expected[0]:
+        raise RuntimeError("assigned artifact has the wrong OpenDocument format")
+
+    try:
+        with zipfile.ZipFile(artifact_path) as archive:
+            if archive.testzip() is not None:
+                raise RuntimeError("assigned OpenDocument artifact is corrupt")
+            if archive.read("mimetype").decode("utf-8") != expected[1]:
+                raise RuntimeError("assigned OpenDocument mimetype is incorrect")
+            content = archive.read("content.xml")
+        root = ElementTree.fromstring(content)
+    except (OSError, KeyError, UnicodeDecodeError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
+        raise RuntimeError(f"invalid assigned OpenDocument artifact: {exc}") from exc
+
+    if kind == "document":
+        _validate_document_content(root, task.resource)
+    else:
+        _validate_spreadsheet_content(root, task.resource)
+
+
+def _validate_document_content(root, resource) -> None:
+    actual = []
+    for tag in (f"{{{_TEXT_NS}}}h", f"{{{_TEXT_NS}}}p"):
+        actual.extend("".join(node.itertext()).strip() for node in root.iter(tag))
+    expected = [str(resource["title"])]
+    for heading, values in resource["sections"].items():
+        expected.append(str(heading))
+        expected.extend(str(value) for value in values)
+    missing = [value for value in expected if value not in actual]
+    if missing:
+        raise RuntimeError(f"assigned ODT is missing supplied content: {missing[0]}")
+
+
+def _validate_spreadsheet_content(root, resource) -> None:
+    expected_rows = [
+        [str(value) for value in resource["columns"]],
+        *[[str(value) for value in row] for row in resource["rows"]],
+    ]
+    column_count = len(expected_rows[0])
+    tables = list(root.iter(f"{{{_TABLE_NS}}}table"))
+    if not tables:
+        raise RuntimeError("assigned ODS contains no table")
+    actual_rows = []
+    for row in tables[0].iter(f"{{{_TABLE_NS}}}table-row"):
+        values = []
+        for cell in row:
+            if cell.tag not in {
+                f"{{{_TABLE_NS}}}table-cell",
+                f"{{{_TABLE_NS}}}covered-table-cell",
+            }:
+                continue
+            value = "".join(cell.itertext()).strip()
+            repeat = int(cell.attrib.get(_COLUMN_REPEAT, "1"))
+            values.extend([value] * min(repeat, column_count - len(values)))
+            if len(values) >= column_count:
+                break
+        row_repeat = int(row.attrib.get(_ROW_REPEAT, "1"))
+        actual_rows.extend([values] * min(row_repeat, len(expected_rows) - len(actual_rows)))
+        if len(actual_rows) >= len(expected_rows):
+            break
+    if actual_rows != expected_rows:
+        raise RuntimeError("assigned ODS cells do not match supplied content")
 
 
 def _plain(value):

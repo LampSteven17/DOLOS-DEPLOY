@@ -169,9 +169,24 @@ def _log_bu_steps(logger, history) -> None:
             logger.step_start(step_name, category=category, message=str(msg)[:200])
             res = results[idx] if idx < len(results) else None
             err = getattr(res, "error", None) if res is not None else None
-            if err:
+            successful = getattr(res, "success", None) if res is not None else None
+            if res is None:
+                logger.step_error(
+                    step_name,
+                    message="action produced no result",
+                    category=category,
+                    duration_ms=dur_ms,
+                )
+            elif err:
                 logger.step_error(step_name, message=str(err)[:200],
                                   category=category, duration_ms=dur_ms)
+            elif successful is False:
+                logger.step_error(
+                    step_name,
+                    message="action returned an unsuccessful result",
+                    category=category,
+                    duration_ms=dur_ms,
+                )
             else:
                 logger.step_success(step_name, category=category, duration_ms=dur_ms)
 

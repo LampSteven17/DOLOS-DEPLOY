@@ -3,18 +3,22 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from common.logging.agent_logger import AgentLogger
 from phase_workflow.brains import (
     AssignedDocumentCreation,
+    AssignedWebResearch,
     AssignedVideoPlayback,
     FrameworkBrain,
     browseruse_runner,
@@ -38,8 +42,10 @@ from phase_workflow.workflows import (
     MCHPDocumentWorkflows,
     OpenDocumentWriter,
     SeleniumResourceWorkflows,
+    _select_media_url,
     play_video_realtime,
     structured_llm_task,
+    validate_open_document,
 )
 
 
@@ -384,6 +390,23 @@ class ExecutorTests(unittest.TestCase):
             },
         )
 
+    def test_worker_exception_traceback_is_logged_without_changing_terminal_schema(self):
+        document = self.small_plan((540, 600), (0,))
+        executor, clock, starter, events = self.make_executor(
+            document, datetime(2026, 8, 19, 9, 0, tzinfo=self.zone)
+        )
+        executor.tick()
+        starter.starts[0][2].complete(error=RuntimeError("driver exploded"))
+        clock.value = datetime(
+            2026, 8, 19, 9, 1, tzinfo=self.zone
+        ).astimezone(timezone.utc)
+        with self.assertLogs("phase_workflow.executor", level="ERROR") as captured:
+            executor.tick()
+        self.assertIn("driver exploded", "".join(captured.output))
+        self.assertIsNotNone(captured.records[0].exc_info)
+        self.assertEqual(events[0]["status"], "failed")
+        self.assertEqual(events[0]["reason"], "workflow_failed")
+
     def test_schedule_recurs_on_the_next_local_day(self):
         document = self.small_plan((540, 600), (0,))
         executor, clock, starter, events = self.make_executor(
@@ -532,6 +555,36 @@ class RegistryAndBrainTests(unittest.TestCase):
         self.assertEqual(driver.find, ("tag name", "video"))
         self.assertTrue(driver.closed)
 
+    def test_scripted_chromium_does_not_import_browseruse(self):
+        from phase_workflow import brains
+
+        class Options:
+            def __init__(self):
+                self.arguments = []
+
+            def add_argument(self, value):
+                self.arguments.append(value)
+
+        created = []
+        webdriver = SimpleNamespace(
+            ChromeOptions=Options,
+            Chrome=lambda options: created.append(options) or object(),
+        )
+        selenium = SimpleNamespace(webdriver=webdriver)
+        original_import = __import__
+
+        def isolated_import(name, *args, **kwargs):
+            if name.startswith(("browser_use", "brains.browseruse")):
+                raise AssertionError(f"unexpected BrowserUse import: {name}")
+            return original_import(name, *args, **kwargs)
+
+        with patch.dict(sys.modules, {"selenium": selenium}), patch(
+            "builtins.__import__", isolated_import
+        ):
+            brains._chromium_driver()
+        self.assertEqual(len(created), 1)
+        self.assertIn("--headless=new", created[0].arguments)
+
     def test_document_writer_uses_exact_filename_and_supplied_content(self):
         plan = load_workflow_plan(
             CONTROL_ROOT / "scripted-cpu" / "behavior.json", "scripted-cpu"
@@ -632,10 +685,12 @@ class RegistryAndBrainTests(unittest.TestCase):
             logger="logger",
         )
         registry = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp"))
-        for entry in entries:
-            task = registry.resolve(entry)
-            result = documents.create(task, Path("/tmp/day"))
-            self.assertEqual(Path(result.artifact).name, task.resource["filename"])
+        with patch("phase_workflow.workflows.validate_open_document") as validate:
+            for entry in entries:
+                task = registry.resolve(entry)
+                result = documents.create(task, Path("/tmp/day"))
+                self.assertEqual(Path(result.artifact).name, task.resource["filename"])
+        self.assertEqual(validate.call_count, 2)
         self.assertEqual(writer.calls[0][0], entries[0].resource)
         self.assertEqual(calc.calls[0][0], entries[1].resource)
         self.assertTrue(writer.cleaned)
@@ -692,6 +747,409 @@ class RegistryAndBrainTests(unittest.TestCase):
         self.assertEqual(event["details"]["status"], "completed")
 
 
+class TruthPropagationTests(unittest.TestCase):
+    @staticmethod
+    def browser_task():
+        plan = load_workflow_plan(
+            CONTROL_ROOT / "browseruse-gpu" / "behavior.json", "browseruse-gpu"
+        )
+        task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
+            plan.windows[1].sequence[6]
+        )
+        return plan, task
+
+    @staticmethod
+    def browser_api(history):
+        class BrowserSession:
+            def __init__(self, **_values):
+                pass
+
+        class Tools:
+            pass
+
+        class ActionResult:
+            pass
+
+        class Agent:
+            def __init__(self, **values):
+                self.values = values
+
+            async def run(self, max_steps):
+                return history
+
+        return Agent, BrowserSession, Tools, ActionResult
+
+    def run_browser_history(self, history):
+        plan, task = self.browser_task()
+        with patch("phase_workflow.brains._require_distribution"):
+            result = browseruse_runner(
+                task,
+                Path("/tmp/day"),
+                plan.brain_profile,
+                framework_api=self.browser_api(history),
+                llm_factory=lambda model, logger: (model, logger),
+                step_logger=lambda logger, value: None,
+                chromium_args=[],
+            )
+        return result
+
+    def test_browseruse_done_requires_explicit_success(self):
+        class FailedJudge:
+            def is_done(self):
+                return True
+
+            def is_successful(self):
+                return False
+
+        self.assertFalse(self.run_browser_history(FailedJudge()).completed)
+
+    def test_browseruse_malformed_or_failed_final_result_fails(self):
+        class NotDone:
+            def is_done(self):
+                return False
+
+            def is_successful(self):
+                return True
+
+        class Malformed:
+            def is_done(self):
+                raise ValueError("malformed action result")
+
+            def is_successful(self):
+                return True
+
+        self.assertFalse(self.run_browser_history(None).completed)
+        self.assertFalse(self.run_browser_history(NotDone()).completed)
+        self.assertFalse(self.run_browser_history(Malformed()).completed)
+
+    @staticmethod
+    def smol_task():
+        plan = load_workflow_plan(
+            CONTROL_ROOT / "smolagents-gpu" / "behavior.json", "smolagents-gpu"
+        )
+        task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
+            plan.windows[1].sequence[6]
+        )
+        return plan, task
+
+    @staticmethod
+    def smol_api(urls, visitor, final="fabricated nonempty answer"):
+        state = {"visitor_calls": [], "tool_errors": []}
+
+        class Tool:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class VisitWebpageTool(Tool):
+            inputs = {"url": {"type": "string"}}
+            output_type = "string"
+
+            def forward(self, url):
+                state["visitor_calls"].append(url)
+                return visitor(url)
+
+        class LiteLLMModel:
+            def __init__(self, **_values):
+                pass
+
+        class CodeAgent:
+            def __init__(self, **values):
+                self.tool = values["tools"][0]
+
+            def run(self, _task):
+                for url in urls:
+                    try:
+                        self.tool.forward(url)
+                    except Exception as exc:
+                        state["tool_errors"].append(str(exc))
+                return final
+
+        return (CodeAgent, LiteLLMModel, Tool, VisitWebpageTool), state
+
+    def run_smol_research(self, urls, visitor):
+        plan, task = self.smol_task()
+        api, state = self.smol_api(urls, visitor)
+        with patch("phase_workflow.brains._require_distribution"):
+            result = smolagents_runner(
+                task, Path("/tmp/day"), plan.brain_profile, framework_api=api
+            )
+        return result, task, state
+
+    def test_smol_nonempty_answer_after_tool_failure_is_not_completion(self):
+        plan, task = self.smol_task()
+        assigned = task.resource["url"]
+
+        def missing_dependency(_url):
+            raise ImportError("markdownify unavailable")
+
+        result, _task, state = self.run_smol_research(
+            [assigned], missing_dependency
+        )
+        self.assertFalse(result.completed)
+        self.assertEqual(state["visitor_calls"], [assigned])
+        self.assertIn("markdownify unavailable", state["tool_errors"][0])
+
+    def test_smol_requires_assigned_initial_and_discovered_followup(self):
+        _plan, task = self.smol_task()
+        assigned = task.resource["url"]
+        followup = "https://en.wikipedia.org/wiki/Photovoltaics"
+
+        def visit(url):
+            if url == assigned:
+                return f"Solar power [Photovoltaics]({followup})"
+            if url == followup:
+                return "Photovoltaics convert sunlight into electricity."
+            raise AssertionError(url)
+
+        result, _task, state = self.run_smol_research(
+            [assigned, followup], visit
+        )
+        self.assertTrue(result.completed)
+        self.assertEqual(state["visitor_calls"], [assigned, followup])
+
+        result, _task, state = self.run_smol_research(
+            ["https://example.com/unassigned"], visit
+        )
+        self.assertFalse(result.completed)
+        self.assertEqual(state["visitor_calls"], [])
+
+    def test_smol_missing_or_repeated_assigned_research_action_fails(self):
+        _plan, task = self.smol_task()
+        assigned = task.resource["url"]
+        followup = "https://en.wikipedia.org/wiki/Photovoltaics"
+
+        def visit(url):
+            return (
+                f"[Photovoltaics]({followup})"
+                if url == assigned else "follow-up content"
+            )
+
+        result, _task, _state = self.run_smol_research([], visit)
+        self.assertFalse(result.completed)
+        result, _task, state = self.run_smol_research(
+            [assigned, followup, followup], visit
+        )
+        self.assertFalse(result.completed)
+        self.assertEqual(state["visitor_calls"], [assigned, followup])
+        self.assertIn("repeatedly", state["tool_errors"][-1])
+
+    def test_browser_step_logger_never_marks_missing_or_failed_result_success(self):
+        browser_use = ModuleType("browser_use")
+        browser_use.Agent = object
+        browser_use.ChatOllama = object
+        browser_package = ModuleType("browser_use.browser")
+        session_module = ModuleType("browser_use.browser.session")
+        session_module.BrowserSession = object
+        modules = {
+            "browser_use": browser_use,
+            "browser_use.browser": browser_package,
+            "browser_use.browser.session": session_module,
+        }
+        with patch.dict(sys.modules, modules):
+            from brains.browseruse.agent import _log_bu_steps
+
+        class Action:
+            def model_dump(self, **_kwargs):
+                return {"play_assigned_video": {}}
+
+        class Logger:
+            def __init__(self):
+                self.successes = []
+                self.errors = []
+
+            def step_start(self, *_args, **_kwargs):
+                pass
+
+            def step_success(self, name, **_kwargs):
+                self.successes.append(name)
+
+            def step_error(self, name, message, **_kwargs):
+                self.errors.append((name, message))
+
+        for results in (
+            [],
+            [SimpleNamespace(error="playback failed", success=False)],
+            [SimpleNamespace(error=None, success=False)],
+        ):
+            logger = Logger()
+            step = SimpleNamespace(
+                model_output=SimpleNamespace(action=[Action()]),
+                result=results,
+                metadata=None,
+            )
+            _log_bu_steps(logger, SimpleNamespace(history=[step]))
+            self.assertEqual(logger.successes, [])
+            self.assertEqual(len(logger.errors), 1)
+
+
+class OpenDocumentValidationTests(unittest.TestCase):
+    @staticmethod
+    def task(sequence_index):
+        plan = load_workflow_plan(
+            CONTROL_ROOT / "scripted-cpu" / "behavior.json", "scripted-cpu"
+        )
+        return WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
+            plan.windows[0].sequence[sequence_index]
+        )
+
+    def test_exact_assigned_odt_and_ods_validate(self):
+        for index in (2, 5):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as td:
+                task = self.task(index)
+                result = OpenDocumentWriter().create(task, Path(td))
+                validate_open_document(task, Path(td), result.artifact)
+
+    def test_corrupt_incomplete_and_wrong_format_artifacts_fail(self):
+        task = self.task(5)
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            artifact = workspace / task.resource["filename"]
+            artifact.write_bytes(b"not a zip")
+            with self.assertRaisesRegex(RuntimeError, "invalid assigned"):
+                validate_open_document(task, workspace, artifact)
+
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr(
+                    "mimetype", "application/vnd.oasis.opendocument.spreadsheet"
+                )
+                archive.writestr(
+                    "content.xml",
+                    OpenDocumentWriter._content_xml(
+                        "office:spreadsheet",
+                        "<table:table table:name=\"Sheet1\">"
+                        "<table:table-row><table:table-cell>"
+                        "<text:p>AfternoonA2</text:p>"
+                        "</table:table-cell></table:table-row></table:table>",
+                    ),
+                )
+            with self.assertRaisesRegex(RuntimeError, "cells do not match"):
+                validate_open_document(task, workspace, artifact)
+
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr(
+                    "mimetype", "application/vnd.oasis.opendocument.text"
+                )
+                archive.writestr(
+                    "content.xml",
+                    OpenDocumentWriter._content_xml("office:spreadsheet", ""),
+                )
+            with self.assertRaisesRegex(RuntimeError, "mimetype"):
+                validate_open_document(task, workspace, artifact)
+
+        document_task = self.task(2)
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            artifact = workspace / document_task.resource["filename"]
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr(
+                    "mimetype", "application/vnd.oasis.opendocument.text"
+                )
+                archive.writestr(
+                    "content.xml",
+                    OpenDocumentWriter._content_xml(
+                        "office:text",
+                        f"<text:h>{document_task.resource['title']}</text:h>",
+                    ),
+                )
+            with self.assertRaisesRegex(RuntimeError, "missing supplied content"):
+                validate_open_document(document_task, workspace, artifact)
+
+
+class MCHPDriverLifecycleTests(unittest.TestCase):
+    def test_sequential_browser_workflows_receive_fresh_driver_after_cleanup(self):
+        from brains.mchp.app.utility.base_driver import Singleton
+
+        selenium = ModuleType("selenium")
+        selenium_webdriver = ModuleType("selenium.webdriver")
+        selenium.webdriver = selenium_webdriver
+        selenium_firefox = ModuleType("selenium.webdriver.firefox")
+        selenium_service = ModuleType("selenium.webdriver.firefox.service")
+        selenium_service.Service = object
+        modules = {
+            "selenium": selenium,
+            "selenium.webdriver": selenium_webdriver,
+            "selenium.webdriver.firefox": selenium_firefox,
+            "selenium.webdriver.firefox.service": selenium_service,
+        }
+        with patch.dict(sys.modules, modules):
+            from brains.mchp.app.utility.webdriver_helper import WebDriverHelper
+
+        created = []
+
+        class Link:
+            def get_attribute(self, _name):
+                return "https://example.com/follow"
+
+        class Driver:
+            def __init__(self):
+                self.urls = []
+                self.closed = False
+
+            def get(self, url):
+                self.urls.append(url)
+
+            def find_elements(self, *_args):
+                return [Link()]
+
+            def find_element(self, *_args):
+                return object()
+
+            def execute_script(self, *_args):
+                pass
+
+            def quit(self):
+                self.closed = True
+
+        def initialize(instance):
+            instance._driver = Driver()
+            created.append(instance._driver)
+
+        plan = load_workflow_plan(
+            CONTROL_ROOT / "mchp-cpu" / "behavior.json", "mchp-cpu"
+        )
+        registry = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp"))
+        web = registry.resolve(plan.windows[0].sequence[0])
+        video = registry.resolve(plan.windows[0].sequence[1])
+        Singleton._instances.pop(WebDriverHelper, None)
+        try:
+            with patch.object(WebDriverHelper, "__init__", initialize):
+                workflows = SeleniumResourceWorkflows(
+                    WebDriverHelper, sleeper=lambda _seconds: None
+                )
+                self.assertTrue(workflows.web_research(web).completed)
+                self.assertTrue(workflows.video_viewing(video).completed)
+        finally:
+            Singleton._instances.pop(WebDriverHelper, None)
+        self.assertEqual(len(created), 2)
+        self.assertIsNot(created[0], created[1])
+        self.assertTrue(all(driver.closed for driver in created))
+
+
+class VideoMechanicsTests(unittest.TestCase):
+    def test_available_ytdlp_format_is_selected_without_fixed_format_guess(self):
+        info = {
+            "formats": [
+                {"format_id": "storyboard", "url": None},
+                {
+                    "format_id": "audio",
+                    "url": "https://media.example/audio",
+                    "vcodec": "none",
+                    "acodec": "opus",
+                },
+                {
+                    "format_id": "progressive",
+                    "url": "https://media.example/assigned.mp4",
+                    "vcodec": "h264",
+                    "acodec": "aac",
+                },
+            ]
+        }
+        self.assertEqual(
+            _select_media_url(info), "https://media.example/assigned.mp4"
+        )
+        self.assertIsNone(_select_media_url({"formats": []}))
+
+
 class LLMVideoRunnerTests(unittest.TestCase):
     @staticmethod
     def video_task(config_key):
@@ -740,9 +1198,15 @@ class LLMVideoRunnerTests(unittest.TestCase):
             def is_done(self):
                 return True
 
+            def is_successful(self):
+                return True
+
         class Agent:
             def __init__(self, **values):
                 state["agent"] = values
+                state["action_timeout"] = os.environ.get(
+                    "BROWSER_USE_ACTION_TIMEOUT_S"
+                )
 
             async def run(self, max_steps):
                 state["max_steps"] = max_steps
@@ -781,7 +1245,10 @@ class LLMVideoRunnerTests(unittest.TestCase):
             def run(self, task):
                 state["task"] = task
                 if invoke:
-                    state["tool_result"] = state["agent"]["tools"][0]()
+                    try:
+                        state["tool_result"] = state["agent"]["tools"][0]()
+                    except Exception as exc:
+                        state["tool_error"] = exc
                 return "finished"
 
         return (CodeAgent, LiteLLMModel, Tool, VisitWebpageTool), state
@@ -834,6 +1301,7 @@ class LLMVideoRunnerTests(unittest.TestCase):
         self.assertEqual(set(browser_actions), {"play_assigned_video"})
         self.assertFalse(browser_state["agent"]["directly_open_url"])
         self.assertEqual(browser_state["agent"]["step_timeout"], 360)
+        self.assertEqual(os.environ["BROWSER_USE_ACTION_TIMEOUT_S"], "360")
         smol_tools = self.run_smol(True, lambda task: True)[2]["agent"]["tools"]
         self.assertEqual(len(smol_tools), 1)
         self.assertEqual(smol_tools[0].name, "play_assigned_video")
@@ -846,6 +1314,13 @@ class LLMVideoRunnerTests(unittest.TestCase):
             )
             self.assertFalse(result.completed, name)
             self.assertEqual(calls, [], name)
+
+    def test_browser_playback_uses_360_second_framework_action_timeout(self):
+        with patch.dict(os.environ, {"BROWSER_USE_ACTION_TIMEOUT_S": "180"}):
+            result, task, state = self.run_browser(True, lambda assigned: True)
+        self.assertTrue(result.completed)
+        self.assertEqual(task.resource["play_seconds"], 300)
+        self.assertEqual(state["action_timeout"], "360")
 
     def test_playback_failure_fails_both_runners_without_retry(self):
         def failing_player(calls):
@@ -1073,6 +1548,22 @@ class InstallerTests(unittest.TestCase):
         )
         for config_key in EXPECTED_CONFIGS:
             self.assertIn("--" + config_key, result.stdout)
+
+    def test_smolagents_install_includes_visit_webpage_dependency_smoke(self):
+        installer = INSTALLER.read_text(encoding="utf-8")
+        install_line = next(
+            line for line in installer.splitlines()
+            if "smolagents==1.25.0" in line and "pip install" in line
+        )
+        self.assertIn(" requests ", install_line)
+        self.assertIn(" markdownify ", install_line)
+        self.assertIn(" ddgs ", install_line)
+        self.assertIn(" yt-dlp", install_line)
+        self.assertIn(
+            "import markdownify, requests; from smolagents import "
+            "VisitWebpageTool; VisitWebpageTool()",
+            installer,
+        )
 
     def test_installed_tree_contains_runtime_contract_behavior_and_sup_command(self):
         for config_key in sorted(EXPECTED_CONFIGS):

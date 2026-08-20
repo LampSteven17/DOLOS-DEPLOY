@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Callable, Mapping, Optional
+from urllib.parse import parse_qs, quote_plus, urljoin, urlsplit, urlunsplit
 
 from phase_workflow.registry import ResolvedTask, WorkflowResult
 from phase_workflow.workflows import (
@@ -18,12 +21,21 @@ from phase_workflow.workflows import (
 )
 
 
+_SCRIPTED_CHROMIUM_ARGS = (
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-gpu",
+    "--autoplay-policy=no-user-gesture-required",
+)
+
+
 def _chromium_driver():
     from selenium import webdriver
-    from brains.browseruse.config import CHROMIUM_ARGS
 
     options = webdriver.ChromeOptions()
-    for argument in CHROMIUM_ARGS:
+    for argument in _SCRIPTED_CHROMIUM_ARGS:
         options.add_argument(argument)
     options.add_argument("--headless=new")
     return webdriver.Chrome(options=options)
@@ -164,6 +176,110 @@ class AssignedDocumentCreation:
         return f"assigned document creation failed: {self.error}"
 
 
+class AssignedWebResearch:
+    """Verify the two LLM-selected page visits required by WebResearch."""
+
+    _MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)")
+
+    def __init__(self, task: ResolvedTask, visitor: Callable[[str], str]):
+        if task.workflow != "WebResearch":
+            raise RuntimeError("assigned research requires WebResearch")
+        self.task = task
+        self._visitor = visitor
+        self.call_count = 0
+        self.succeeded = False
+        self.failed = False
+        self.error: Optional[str] = None
+        self._followup_urls: set[str] = set()
+        if task.resource["kind"] == "direct_url":
+            initial_url = task.resource["url"]
+        elif task.resource["kind"] == "search_query":
+            initial_url = "https://www.google.com/search?q=" + quote_plus(
+                task.resource["query"]
+            )
+        else:
+            raise RuntimeError("assigned research has an unsupported resource")
+        self._initial_url = self._normalize(initial_url)
+
+    @property
+    def completed(self) -> bool:
+        return self.call_count == 2 and self.succeeded and not self.failed
+
+    def invoke(self, url: str) -> str:
+        self.call_count += 1
+        if self.failed:
+            self._fail("assigned research action already failed")
+        normalized = self._normalize(url)
+        if self.call_count == 1:
+            if normalized != self._initial_url:
+                self._fail("research opened an unassigned initial resource")
+            content = self._visit(url)
+            self._followup_urls = self._links_from(content, normalized)
+            if not self._followup_urls:
+                self._fail("assigned research resource has no readable result link")
+            return content
+        if self.call_count == 2:
+            if normalized not in self._followup_urls:
+                self._fail("research opened an unassigned follow-up resource")
+            content = self._visit(url)
+            self.succeeded = True
+            return content
+        self._fail("assigned research action was invoked repeatedly")
+
+    def _visit(self, url: str) -> str:
+        try:
+            content = self._visitor(url)
+        except Exception as exc:
+            self._fail(str(exc) or type(exc).__name__)
+        if not isinstance(content, str) or not content.strip():
+            self._fail("assigned research action returned no readable content")
+        return content
+
+    def _fail(self, message: str):
+        self.failed = True
+        self.succeeded = False
+        self.error = message
+        raise RuntimeError(message)
+
+    @classmethod
+    def _links_from(cls, content: str, base_url: str) -> set[str]:
+        links = set()
+        for raw in cls._MARKDOWN_LINK.findall(content):
+            candidate = urljoin(base_url, raw.strip("<>"))
+            parts = urlsplit(candidate)
+            if parts.netloc.endswith("google.com") and parts.path == "/url":
+                redirected = parse_qs(parts.query).get("q", [])
+                if redirected:
+                    candidate = redirected[0]
+            normalized = cls._normalize(candidate)
+            if normalized != base_url:
+                links.add(normalized)
+        return links
+
+    @staticmethod
+    def _normalize(url: str) -> str:
+        if not isinstance(url, str):
+            raise RuntimeError("research URL must be a string")
+        parts = urlsplit(url)
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            raise RuntimeError("research URL must be HTTP(S) with a host")
+        return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, ""))
+
+
+def _browseruse_completed(result) -> bool:
+    """Require an explicit final and successful BrowserUse result."""
+    try:
+        return bool(
+            result
+            and callable(getattr(result, "is_done", None))
+            and callable(getattr(result, "is_successful", None))
+            and result.is_done() is True
+            and result.is_successful() is True
+        )
+    except Exception:
+        return False
+
+
 def _require_distribution(name: str, expected: str) -> None:
     try:
         installed = version(name)
@@ -190,6 +306,10 @@ def browseruse_runner(
 ) -> WorkflowResult:
     framework = profile["framework"]
     _require_distribution(framework["name"], framework["version"])
+    if task.workflow == "VideoViewing":
+        os.environ["BROWSER_USE_ACTION_TIMEOUT_S"] = str(
+            task.resource["play_seconds"] + 60
+        )
     if framework_api is None:
         from browser_use import ActionResult, Agent, Tools
         from browser_use.browser.session import BrowserSession
@@ -263,11 +383,18 @@ def browseruse_runner(
         agent = Agent(**agent_kwargs)
         result = await agent.run(max_steps=profile["max_steps"])
         step_logger(logger, result)
+        framework_completed = _browseruse_completed(result)
         if playback is not None:
-            return WorkflowResult(completed=playback.completed)
+            return WorkflowResult(
+                completed=playback.completed and framework_completed
+            )
         if document is not None:
-            return document.result
-        return WorkflowResult(completed=bool(result and result.is_done()))
+            return WorkflowResult(
+                completed=document.completed and framework_completed,
+                artifact=document.artifact
+                if document.completed and framework_completed else None,
+            )
+        return WorkflowResult(completed=framework_completed)
 
     return asyncio.run(run())
 
@@ -299,6 +426,7 @@ def smolagents_runner(
         callbacks = [make_smol_step_callback(logger)]
     playback = None
     document = None
+    research = None
     if task.workflow == "VideoViewing":
         playback = AssignedVideoPlayback(task, video_player)
 
@@ -312,7 +440,10 @@ def smolagents_runner(
             output_type = "string"
 
             def forward(self):
-                return playback.invoke()
+                message = playback.invoke()
+                if not playback.completed:
+                    raise RuntimeError(message)
+                return message
 
         tools = [PlayAssignedVideoTool()]
     elif task.workflow == "DocumentCreation":
@@ -331,11 +462,21 @@ def smolagents_runner(
             output_type = "string"
 
             def forward(self):
-                return document.invoke()
+                message = document.invoke()
+                if not document.completed:
+                    raise RuntimeError(message)
+                return message
 
         tools = [CreateAssignedDocumentTool()]
     else:
-        tools = [VisitWebpageTool()]
+        visitor = VisitWebpageTool()
+        research = AssignedWebResearch(task, visitor.forward)
+
+        class VerifiedVisitWebpageTool(VisitWebpageTool):
+            def forward(self, url):
+                return research.invoke(url)
+
+        tools = [VerifiedVisitWebpageTool()]
 
     agent = CodeAgent(
         tools=tools,
@@ -349,9 +490,7 @@ def smolagents_runner(
         return WorkflowResult(completed=playback.completed)
     if document is not None:
         return document.result
-    return WorkflowResult(
-        completed=result is not None and bool(str(result).strip())
-    )
+    return WorkflowResult(completed=research.completed)
 
 
 def build_brain(brain: str, profile: Mapping, logger=None):
