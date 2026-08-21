@@ -88,14 +88,15 @@ class DocumentEditor(BaseWorkflow):
             logger.step_start(
                 "edit_content", category="office", message="Typing assigned content"
             )
-        pyautogui.write(str(resource["title"]))
+        pyautogui.write(str(resource["title"]), interval=0.01)
         pyautogui.press("enter", presses=2)
         for heading, values in resource["sections"].items():
-            pyautogui.write(str(heading))
+            pyautogui.write(str(heading), interval=0.01)
             pyautogui.press("enter")
             for value in values:
-                pyautogui.write(str(value))
+                pyautogui.write(str(value), interval=0.01)
                 pyautogui.press("enter")
+        sleep(self.default_wait_time)
         if logger:
             logger.step_success("edit_content")
 
@@ -249,13 +250,21 @@ class DocumentEditor(BaseWorkflow):
         pyautogui.hotkey('ctrl','q') # quit
 
     def _save_assigned(self, artifact):
-        pyautogui.hotkey("ctrl", "s")
+        # Always open Save As for a new assigned document, explicitly replace
+        # the filename field, and give Writer time to flush the ODT before the
+        # process is closed and the strict validator opens it.
+        pyautogui.hotkey("ctrl", "shift", "s")
         sleep(self.default_wait_time)
-        pyautogui.write(str(artifact))
+        pyautogui.hotkey("ctrl", "a")
+        pyautogui.write(str(artifact), interval=0.01)
         pyautogui.press("enter")
         sleep(self.default_wait_time)
-        pyautogui.hotkey("alt", "y")
+        if not Path(artifact).is_file():
+            raise RuntimeError(
+                f"LibreOffice Writer did not save the assigned artifact: {artifact}"
+            )
         pyautogui.hotkey("ctrl", "q")
+        sleep(self.default_wait_time)
 
     def _write_paragraph(self):
         pyautogui.typewrite(_get_paragraph())

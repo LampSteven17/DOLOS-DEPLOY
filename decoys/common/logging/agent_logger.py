@@ -189,16 +189,18 @@ class AgentLogger:
             latest_link.unlink()
         latest_link.symlink_to(self.log_file.name)
 
-        self._file_handle = open(self.log_file, 'a')
+        # Unbuffered append writes avoid BufferedWriter reentry when SIGTERM
+        # arrives while an event is being emitted.
+        self._file_handle = open(self.log_file, 'ab', buffering=0)
 
     def _get_timestamp(self) -> str:
         """Get current ISO timestamp with microseconds."""
         return datetime.now().isoformat()
 
     def _write_event(self, event: LogEvent) -> None:
-        """Write event to log file."""
-        self._file_handle.write(event.to_json() + "\n")
-        self._file_handle.flush()
+        """Append one encoded JSON event without BufferedWriter state."""
+        payload = (event.to_json() + "\n").encode("utf-8")
+        os.write(self._file_handle.fileno(), payload)
 
     def _log(
         self,

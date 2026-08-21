@@ -179,7 +179,10 @@ class AssignedDocumentCreation:
 class AssignedWebResearch:
     """Verify the two LLM-selected page visits required by WebResearch."""
 
-    _MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)")
+    # markdownify preserves optional link titles, for example
+    # ``[Main page](/wiki/Main_Page "Visit the main page")``. Capture the URL
+    # token without requiring it to be immediately followed by ``)``.
+    _MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(\s*<?([^)\s>]+)")
 
     def __init__(self, task: ResolvedTask, visitor: Callable[[str], str]):
         if task.workflow != "WebResearch":
@@ -291,6 +294,28 @@ def _require_distribution(name: str, expected: str) -> None:
         )
 
 
+def _read_webpage(url: str) -> str:
+    """Return one assigned page as Markdown using one identifiable request."""
+    import requests
+    from markdownify import markdownify
+
+    response = requests.get(
+        url,
+        headers={"User-Agent": "RUSE phase-workflow control/1.0"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    content = markdownify(response.text).strip()
+    content = re.sub(r"\n{3,}", "\n\n", content)
+    if not content:
+        raise RuntimeError("assigned research resource returned no readable content")
+    if len(content) > 40000:
+        content = content[:40000] + (
+            "\n..._This content has been truncated to stay below 40000 characters_...\n"
+        )
+    return content
+
+
 def browseruse_runner(
     task: ResolvedTask,
     workspace: Path,
@@ -306,10 +331,6 @@ def browseruse_runner(
 ) -> WorkflowResult:
     framework = profile["framework"]
     _require_distribution(framework["name"], framework["version"])
-    if task.workflow == "VideoViewing":
-        os.environ["BROWSER_USE_ACTION_TIMEOUT_S"] = str(
-            task.resource["play_seconds"] + 60
-        )
     if framework_api is None:
         from browser_use import ActionResult, Agent, Tools
         from browser_use.browser.session import BrowserSession
@@ -328,7 +349,13 @@ def browseruse_runner(
     tools = None
     if task.workflow == "VideoViewing":
         playback = AssignedVideoPlayback(task, video_player)
-        tools = Tools()
+
+        class BoundedVideoTools(Tools):
+            async def act(self, *args, **kwargs):
+                kwargs["action_timeout"] = task.resource["play_seconds"] + 60
+                return await super().act(*args, **kwargs)
+
+        tools = BoundedVideoTools()
         for action_name in tuple(tools.registry.registry.actions):
             tools.exclude_action(action_name)
 
@@ -407,6 +434,7 @@ def smolagents_runner(
     *,
     video_player: Callable[[ResolvedTask], bool] = play_video_realtime,
     document_writer: Optional[OpenDocumentWriter] = None,
+    webpage_reader: Callable[[str], str] = _read_webpage,
     framework_api=None,
 ) -> WorkflowResult:
     framework = profile["framework"]
@@ -469,8 +497,7 @@ def smolagents_runner(
 
         tools = [CreateAssignedDocumentTool()]
     else:
-        visitor = VisitWebpageTool()
-        research = AssignedWebResearch(task, visitor.forward)
+        research = AssignedWebResearch(task, webpage_reader)
 
         class VerifiedVisitWebpageTool(VisitWebpageTool):
             def forward(self, url):
@@ -478,13 +505,20 @@ def smolagents_runner(
 
         tools = [VerifiedVisitWebpageTool()]
 
-    agent = CodeAgent(
+    agent_kwargs = dict(
         tools=tools,
         model=LiteLLMModel(model_id=f"ollama/{profile['model']['ollama']}"),
         instructions=profile["system_guidance"],
         max_steps=profile["max_steps"],
         step_callbacks=callbacks,
     )
+    if playback is not None:
+        agent_kwargs["executor_kwargs"] = {
+            "timeout_seconds": task.resource["play_seconds"] + 60,
+        }
+    if document is not None:
+        agent_kwargs["use_structured_outputs_internally"] = True
+    agent = CodeAgent(**agent_kwargs)
     result = agent.run(structured_llm_task(task))
     if playback is not None:
         return WorkflowResult(completed=playback.completed)

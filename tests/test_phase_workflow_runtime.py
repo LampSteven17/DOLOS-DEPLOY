@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ast
 import copy
+import importlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,7 @@ from phase_workflow.brains import (
     AssignedWebResearch,
     AssignedVideoPlayback,
     FrameworkBrain,
+    _read_webpage,
     browseruse_runner,
     build_brain,
     smolagents_runner,
@@ -746,6 +749,42 @@ class RegistryAndBrainTests(unittest.TestCase):
         self.assertEqual(event["workflow"], "WebResearch")
         self.assertEqual(event["details"]["status"], "completed")
 
+    def test_signal_handler_cannot_reenter_jsonl_buffer(self):
+        from common.logging import agent_logger as logger_module
+
+        with tempfile.TemporaryDirectory() as td:
+            logger = AgentLogger("scripted-cpu", log_dir=td, session_id="signal")
+            logger._session_start_time = 1.0
+            logger._orig_sigterm = signal.SIG_DFL
+            logger._orig_sigint = signal.SIG_DFL
+            original_write = os.write
+            entered = False
+
+            def interrupting_write(fd, payload):
+                nonlocal entered
+                if not entered:
+                    entered = True
+                    logger._signal_handler(signal.SIGTERM, None)
+                return original_write(fd, payload)
+
+            with patch.object(
+                logger_module.os, "write", side_effect=interrupting_write
+            ), patch.object(logger_module.os, "kill"), patch.object(
+                logger_module.signal, "signal"
+            ), patch.object(logger, "close"):
+                logger.info("write interrupted by SIGTERM")
+            logger.close()
+            events = [
+                json.loads(line)
+                for line in logger.log_file.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(
+            [event["event_type"] for event in events],
+            ["session_fail", "session_end", "info"],
+        )
+        self.assertEqual(events[0]["details"]["error"], "SIGTERM")
+
 
 class TruthPropagationTests(unittest.TestCase):
     @staticmethod
@@ -869,9 +908,18 @@ class TruthPropagationTests(unittest.TestCase):
     def run_smol_research(self, urls, visitor):
         plan, task = self.smol_task()
         api, state = self.smol_api(urls, visitor)
+
+        def reader(url):
+            state["visitor_calls"].append(url)
+            return visitor(url)
+
         with patch("phase_workflow.brains._require_distribution"):
             result = smolagents_runner(
-                task, Path("/tmp/day"), plan.brain_profile, framework_api=api
+                task,
+                Path("/tmp/day"),
+                plan.brain_profile,
+                webpage_reader=reader,
+                framework_api=api,
             )
         return result, task, state
 
@@ -896,7 +944,7 @@ class TruthPropagationTests(unittest.TestCase):
 
         def visit(url):
             if url == assigned:
-                return f"Solar power [Photovoltaics]({followup})"
+                return 'Solar power [Photovoltaics](/wiki/Photovoltaics "article")'
             if url == followup:
                 return "Photovoltaics convert sunlight into electricity."
             raise AssertionError(url)
@@ -912,6 +960,33 @@ class TruthPropagationTests(unittest.TestCase):
         )
         self.assertFalse(result.completed)
         self.assertEqual(state["visitor_calls"], [])
+
+    def test_web_reader_uses_identifiable_request_and_readable_markdown(self):
+        calls = []
+
+        class Response:
+            text = "<html>assigned</html>"
+
+            @staticmethod
+            def raise_for_status():
+                return None
+
+        requests = ModuleType("requests")
+        requests.get = lambda url, **kwargs: calls.append((url, kwargs)) or Response()
+        markdown = ModuleType("markdownify")
+        markdown.markdownify = lambda _html: (
+            '[Compiler design](/wiki/Compiler_design "relevant article")'
+        )
+        with patch.dict(
+            sys.modules, {"requests": requests, "markdownify": markdown}
+        ):
+            content = _read_webpage("https://en.wikipedia.org/wiki/Compiler")
+        self.assertIn("Compiler design", content)
+        self.assertEqual(calls[0][1]["timeout"], 20)
+        self.assertEqual(
+            calls[0][1]["headers"]["User-Agent"],
+            "RUSE phase-workflow control/1.0",
+        )
 
     def test_smol_missing_or_repeated_assigned_research_action_fails(self):
         _plan, task = self.smol_task()
@@ -1054,6 +1129,89 @@ class OpenDocumentValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing supplied content"):
                 validate_open_document(document_task, workspace, artifact)
 
+    def test_mchp_writer_ui_saves_exact_valid_assigned_odt(self):
+        task = self.task(2)
+        typed_content = []
+        save_path = []
+        state = {"saving": False, "hotkeys": []}
+
+        pyautogui = ModuleType("pyautogui")
+
+        def write(value, interval=None):
+            self.assertEqual(interval, 0.01)
+            if state["saving"]:
+                save_path.append(str(value))
+            else:
+                typed_content.append(str(value))
+
+        def hotkey(*keys):
+            state["hotkeys"].append(keys)
+            if keys == ("ctrl", "shift", "s"):
+                state["saving"] = True
+            elif keys == ("ctrl", "a") and state["saving"]:
+                save_path.clear()
+
+        def press(key, presses=1):
+            if key != "enter" or not state["saving"]:
+                return
+            artifact = Path("".join(save_path))
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            body = "".join(f"<text:p>{value}</text:p>" for value in typed_content)
+            with zipfile.ZipFile(artifact, "w") as archive:
+                archive.writestr(
+                    "mimetype", "application/vnd.oasis.opendocument.text"
+                )
+                archive.writestr(
+                    "content.xml",
+                    OpenDocumentWriter._content_xml("office:text", body),
+                )
+            state["saving"] = False
+
+        pyautogui.write = write
+        pyautogui.hotkey = hotkey
+        pyautogui.press = press
+        lorem = ModuleType("lorem")
+        lorem_text = ModuleType("lorem.text")
+        lorem_text.TextLorem = object
+        lorem.text = lorem_text
+
+        sys.modules.pop(
+            "brains.mchp.app.workflows.open_office_writer", None
+        )
+        with patch.dict(
+            sys.modules,
+            {"pyautogui": pyautogui, "lorem": lorem, "lorem.text": lorem_text},
+        ):
+            writer_module = importlib.import_module(
+                "brains.mchp.app.workflows.open_office_writer"
+            )
+
+        class Process:
+            def __init__(self):
+                self.terminated = False
+
+            def terminate(self):
+                self.terminated = True
+
+        process = Process()
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            writer_module.subprocess, "Popen", return_value=process
+        ), patch.object(writer_module, "sleep", return_value=None):
+            workspace = Path(td)
+            editor = writer_module.DocumentEditor(default_wait_time=0)
+            result = MCHPDocumentWorkflows(
+                writer_factory=lambda: editor
+            ).create(task, workspace)
+            validate_open_document(task, workspace, result.artifact)
+
+        self.assertTrue(result.completed)
+        self.assertEqual(Path(result.artifact).name, task.resource["filename"])
+        self.assertEqual(typed_content[0], task.resource["title"])
+        self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
+        self.assertIn(("ctrl", "a"), state["hotkeys"])
+        self.assertTrue(process.terminated)
+        sys.modules.pop("brains.mchp.app.workflows.open_office_writer", None)
+
 
 class MCHPDriverLifecycleTests(unittest.TestCase):
     def test_sequential_browser_workflows_receive_fresh_driver_after_cleanup(self):
@@ -1190,6 +1348,14 @@ class LLMVideoRunnerTests(unittest.TestCase):
                     return function
                 return register
 
+            async def act(self, *args, action_timeout=None, **kwargs):
+                state["action_timeout"] = action_timeout
+                action_name, action = next(
+                    iter(self.registry.registry.actions.items())
+                )
+                state["action_name"] = action_name
+                return action()
+
         class BrowserSession:
             def __init__(self, **values):
                 self.values = values
@@ -1204,18 +1370,13 @@ class LLMVideoRunnerTests(unittest.TestCase):
         class Agent:
             def __init__(self, **values):
                 state["agent"] = values
-                state["action_timeout"] = os.environ.get(
-                    "BROWSER_USE_ACTION_TIMEOUT_S"
-                )
 
             async def run(self, max_steps):
                 state["max_steps"] = max_steps
                 actions = state["agent"]["tools"].registry.registry.actions
                 state["actions"] = actions
                 if invoke:
-                    action_name, action = next(iter(actions.items()))
-                    state["action_name"] = action_name
-                    state["action_result"] = action()
+                    state["action_result"] = await state["agent"]["tools"].act()
                 return History()
 
         return (Agent, BrowserSession, Tools, ActionResult), state
@@ -1301,10 +1462,13 @@ class LLMVideoRunnerTests(unittest.TestCase):
         self.assertEqual(set(browser_actions), {"play_assigned_video"})
         self.assertFalse(browser_state["agent"]["directly_open_url"])
         self.assertEqual(browser_state["agent"]["step_timeout"], 360)
-        self.assertEqual(os.environ["BROWSER_USE_ACTION_TIMEOUT_S"], "360")
         smol_tools = self.run_smol(True, lambda task: True)[2]["agent"]["tools"]
         self.assertEqual(len(smol_tools), 1)
         self.assertEqual(smol_tools[0].name, "play_assigned_video")
+        smol_state = self.run_smol(True, lambda task: True)[2]
+        self.assertEqual(
+            smol_state["agent"]["executor_kwargs"], {"timeout_seconds": 360}
+        )
 
     def test_completion_without_playback_invocation_fails(self):
         for name, runner in (("browseruse", self.run_browser), ("smolagents", self.run_smol)):
@@ -1320,7 +1484,7 @@ class LLMVideoRunnerTests(unittest.TestCase):
             result, task, state = self.run_browser(True, lambda assigned: True)
         self.assertTrue(result.completed)
         self.assertEqual(task.resource["play_seconds"], 300)
-        self.assertEqual(state["action_timeout"], "360")
+        self.assertEqual(state["action_timeout"], 360)
 
     def test_playback_failure_fails_both_runners_without_retry(self):
         def failing_player(calls):
@@ -1430,6 +1594,7 @@ class LLMDocumentRunnerTests(unittest.TestCase):
             raw_task = (
                 state["agent"]["task"] if name == "browseruse" else state["task"]
             )
+            self.assertEqual(raw_task, structured_llm_task(task), name)
             delivered = json.loads(raw_task)
             self.assertEqual(delivered["instruction"], task.instruction, name)
             self.assertEqual(delivered["resource_id"], task.resource_id, name)
@@ -1447,6 +1612,10 @@ class LLMDocumentRunnerTests(unittest.TestCase):
         smol_tools = self.run_smol(True, self.Writer())[2]["agent"]["tools"]
         self.assertEqual(len(smol_tools), 1)
         self.assertEqual(smol_tools[0].name, "create_assigned_document")
+        self.assertEqual(smol_tools[0].inputs, {})
+        smol_agent = self.run_smol(True, self.Writer())[2]["agent"]
+        self.assertTrue(smol_agent["use_structured_outputs_internally"])
+        self.assertIsNone(smol_agent["instructions"])
 
     def test_completion_without_document_action_invocation_fails(self):
         for name, runner in (
@@ -1458,6 +1627,65 @@ class LLMDocumentRunnerTests(unittest.TestCase):
             self.assertFalse(result.completed, name)
             self.assertIsNone(result.artifact, name)
             self.assertEqual(writer.calls, [], name)
+
+    def test_smol_prose_and_malformed_code_cannot_complete_document(self):
+        plan, task = self.document_task("smolagents-gpu")
+
+        for claimed_result in (
+            "The document was created successfully.",
+            "<code >create_assigned_document()",
+        ):
+            api, state = LLMVideoRunnerTests.smol_api(False)
+            code_agent = api[0]
+            original_run = code_agent.run
+
+            def run_without_tool(instance, raw_task, result=claimed_result):
+                original_run(instance, raw_task)
+                return result
+
+            code_agent.run = run_without_tool
+            writer = self.Writer()
+            with patch("phase_workflow.brains._require_distribution"):
+                result = smolagents_runner(
+                    task,
+                    self.workspace,
+                    plan.brain_profile,
+                    document_writer=writer,
+                    framework_api=api,
+                )
+            self.assertFalse(result.completed)
+            self.assertIsNone(result.artifact)
+            self.assertEqual(writer.calls, [])
+
+    def test_smol_repeated_document_tool_call_fails(self):
+        plan, task = self.document_task("smolagents-gpu")
+        api, state = LLMVideoRunnerTests.smol_api(False)
+        code_agent = api[0]
+
+        def invoke_twice(instance, raw_task):
+            state["task"] = raw_task
+            tool = state["agent"]["tools"][0]
+            state["first"] = tool()
+            try:
+                tool()
+            except Exception as exc:
+                state["second_error"] = str(exc)
+            return "claimed completion"
+
+        code_agent.run = invoke_twice
+        writer = self.Writer()
+        with patch("phase_workflow.brains._require_distribution"):
+            result = smolagents_runner(
+                task,
+                self.workspace,
+                plan.brain_profile,
+                document_writer=writer,
+                framework_api=api,
+            )
+        self.assertFalse(result.completed)
+        self.assertIsNone(result.artifact)
+        self.assertEqual(writer.calls, [(task, self.workspace)])
+        self.assertIn("only once", state["second_error"])
 
     def test_document_writer_failure_fails_both_runners_without_retry(self):
         for name, runner in (
