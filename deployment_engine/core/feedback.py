@@ -4,12 +4,154 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 from . import output
 
 
+# Rampart and GHOSTS retain their established source tree. Canonical Decoy
+# feedback is emitted independently by PHASE under DECOY_FEEDBACK_BASE.
 FEEDBACK_BASE = Path("/mnt/AXES2U1/feedback")
+DECOY_FEEDBACK_BASE = Path("/data/axes-mirror/feedback")
+DECOY_FEEDBACK_TARGETS = (
+    "axes-fall24",
+    "axes-spring25",
+    "axes-spring26",
+    "axes-summer24",
+    "cptc11-zeektx",
+    "vt-fall21",
+    "vt-spring22",
+    "vt-summer21",
+)
+DECOY_FEEDBACK_SUP_CONFIGS = (
+    "scripted-cpu",
+    "mchp-cpu",
+    "browseruse-gpu",
+    "smolagents-gpu",
+)
+DECOY_FEEDBACK_DEPLOYMENTS = (
+    {"behavior": "scripted-cpu", "flavor": "v1.14vcpu.28g", "count": 1},
+    {"behavior": "mchp-cpu", "flavor": "v1.14vcpu.28g", "count": 1},
+    {"behavior": "browseruse-gpu", "flavor": "v100-1gpu.14vcpu.28g", "count": 1},
+    {"behavior": "smolagents-gpu", "flavor": "v100-1gpu.14vcpu.28g", "count": 1},
+)
+DECOY_GENERATION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}Z$")
+
+
+class FeedbackSourceError(RuntimeError):
+    """A selected PHASE feedback generation cannot be deployed."""
+
+
+def _is_decoy_generation_name(value: str) -> bool:
+    if not DECOY_GENERATION_RE.fullmatch(value):
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%d_%H%MZ")
+    except ValueError:
+        return False
+    return True
+
+
+def validate_decoy_feedback_generation(source_dir: Path) -> None:
+    """Validate exactly four canonical plans through the runtime loader."""
+    source_dir = Path(source_dir)
+    if not source_dir.is_dir():
+        raise FeedbackSourceError(f"feedback generation is not a directory: {source_dir}")
+    if not _is_decoy_generation_name(source_dir.name):
+        raise FeedbackSourceError(
+            f"feedback generation must match YYYY-MM-DD_HHMMZ: {source_dir}"
+        )
+
+    expected = {
+        f"{sup_config}_behavior.json" for sup_config in DECOY_FEEDBACK_SUP_CONFIGS
+    }
+    actual = {path.name for path in source_dir.glob("*_behavior.json")}
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected {', '.join(unexpected)}")
+        raise FeedbackSourceError(
+            f"feedback generation must contain exactly the four canonical "
+            f"behavior files ({'; '.join(details)}): {source_dir}"
+        )
+
+    from decoys.phase_workflow.loader import WorkflowPlanError, load_workflow_plan
+
+    for sup_config in DECOY_FEEDBACK_SUP_CONFIGS:
+        behavior_path = source_dir / f"{sup_config}_behavior.json"
+        try:
+            load_workflow_plan(behavior_path, sup_config)
+        except WorkflowPlanError as exc:
+            raise FeedbackSourceError(
+                f"invalid {sup_config} plan {behavior_path}: {exc}"
+            ) from exc
+
+
+def find_decoy_feedback_by_target(target: str, preset: str) -> Path:
+    """Select and validate one exact target's lexically newest generation."""
+    if target not in DECOY_FEEDBACK_TARGETS:
+        raise FeedbackSourceError(
+            f"unknown Decoy feedback target {target!r}; expected one of "
+            f"{', '.join(DECOY_FEEDBACK_TARGETS)}"
+        )
+    target_dir = DECOY_FEEDBACK_BASE / preset / target
+    if not target_dir.is_dir():
+        raise FeedbackSourceError(f"feedback target directory not found: {target_dir}")
+    generations = sorted(
+        path for path in target_dir.iterdir()
+        if path.is_dir() and _is_decoy_generation_name(path.name)
+    )
+    if not generations:
+        raise FeedbackSourceError(
+            f"no YYYY-MM-DD_HHMMZ generation found for target {target}: {target_dir}"
+        )
+    selected = generations[-1]
+    # Deliberately validate only the newest timestamp. An invalid newest
+    # generation is a hard failure, never an implicit rollback.
+    validate_decoy_feedback_generation(selected)
+    return selected
+
+
+def find_all_decoy_feedback_sources(preset: str) -> list[dict]:
+    """Resolve all eight required targets in deterministic target order."""
+    preset_root = DECOY_FEEDBACK_BASE / preset
+    if not preset_root.is_dir():
+        raise FeedbackSourceError(f"feedback preset directory not found: {preset_root}")
+    return [
+        {
+            "path": find_decoy_feedback_by_target(target, preset),
+            "target": target,
+            "preset": preset,
+        }
+        for target in DECOY_FEEDBACK_TARGETS
+    ]
+
+
+def decoy_feedback_source_identity(source_dir: Path) -> tuple[str, str]:
+    """Return the exact (preset, target) encoded by a generation path."""
+    source_dir = Path(source_dir)
+    validate_decoy_feedback_generation(source_dir)
+    target = source_dir.parent.name
+    preset = source_dir.parent.parent.name
+    if target not in DECOY_FEEDBACK_TARGETS:
+        raise FeedbackSourceError(
+            f"feedback source parent is not a canonical target: {source_dir.parent}"
+        )
+    if not preset:
+        raise FeedbackSourceError(f"feedback source has no preset parent: {source_dir}")
+    return preset, target
+
+
+def _decoy_preset_slug(preset: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", preset.lower()).strip("-")
+    if not slug:
+        raise FeedbackSourceError(f"invalid feedback preset name: {preset!r}")
+    return slug
 WORKFLOW_CAPABILITIES_PATH = (
     Path(__file__).resolve().parents[2]
     / "contracts"
@@ -791,78 +933,34 @@ def generate_feedback_config(
     deploy_dir: Path,
     gpu_tier: str = "v100",
 ) -> str:
-    """Generate a DECOY feedback deployment config.yaml. Returns deployment name.
-
-    gpu_tier ∈ {"v100", "rtx", "rtx-a"}. v100 (default) = B2.gemma/S2.gemma
-    on V100 with gemma4:26b. rtx / rtx-a = B2R.gemma/S2R.gemma on RTX 2080 Ti
-    (gemma4:e4b, 11 GB VRAM); the two RTX tiers target distinct physical card
-    pools (PCI alias rtx2080ti:1 vs 2080ti-rtx-a:1) so deploys can spread
-    across both when one pool is exhausted.
-    """
+    """Generate one canonical four-VM DECOY feedback configuration."""
     import yaml
 
-    if gpu_tier not in FEEDBACK_TEMPLATES_BY_TIER:
-        output.error(
-            f"ERROR: invalid gpu_tier={gpu_tier!r}; "
-            f"must be one of {sorted(FEEDBACK_TEMPLATES_BY_TIER)}"
+    if gpu_tier != "v100":
+        raise FeedbackSourceError(
+            f"canonical Decoy feedback requires V100 GPU SUPs; got {gpu_tier!r}"
         )
-        raise SystemExit(1)
-
-    if not _is_valid_feedback_source(source_dir, "decoy"):
-        output.error(
-            f"ERROR: {source_dir} is not a valid DECOY feedback source "
-            f"(no {{behavior}}/{{sup}}/behavior.json or legacy "
-            f"timing_profile.json files found)"
-        )
-        raise SystemExit(1)
-
-    target = require_manifest_training_dataset(source_dir, "decoy")
-    _experiment, dataset, preset_name = _parse_source_name(source_dir)
-
-    # Abbreviate dataset (exact match first, then longest substring match)
-    dataset_abbrev = _abbreviate_dataset(dataset)
-
-    # Scope label
-    if configs_spec == "all":
-        scope_label = "all"
-    else:
-        first = configs_spec.split(",")[0]
-        scope_label = first.replace(".json", "").split("_")[0]
-
-    preset_clean = _ns_preset_token(source_dir, preset_name)
-    # When deploying on a non-default GPU tier, suffix the deployment name so
-    # v100 + rtx deploys of the same dataset can coexist without name collision.
-    tier_suffix = "" if gpu_tier == "v100" else f"-{gpu_tier}"
-    dep_name = f"decoy-feedback-{preset_clean}-{dataset_abbrev}-{scope_label}{tier_suffix}"
+    preset, target = decoy_feedback_source_identity(source_dir)
+    dep_name = f"decoy-feedback-{_decoy_preset_slug(preset)}-{target}"
     dep_dir = deploy_dir / dep_name
     dep_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build behavior_configs field
-    if configs_spec == "all":
-        behavior_configs = "all"
-    else:
-        behavior_configs = [f.strip() for f in configs_spec.split(",")]
-
-    tier_spec = FEEDBACK_TEMPLATES_BY_TIER[gpu_tier]
     config = {
         "deployment_name": dep_name,
         "purpose": "feedback",
         "target": target,
         "capture_interface": "eno2",
         "behavior_source": str(source_dir),
-        "behavior_configs": behavior_configs,
-        "gpu_tier": gpu_tier,
-        "flavor_capacity": tier_spec["flavor_capacity"],
-        "deployments": tier_spec["template"],
+        "flavor_capacity": {
+            "v1.14vcpu.28g": 2,
+            "v100-1gpu.14vcpu.28g": 2,
+        },
+        "deployments": [dict(item) for item in DECOY_FEEDBACK_DEPLOYMENTS],
     }
 
     config_path = dep_dir / "config.yaml"
-    with open(config_path, "w") as f:
-        f.write(f"---\n")
-        f.write(f"# Auto-generated feedback deployment: {dep_name}\n")
-        f.write(f"# Feedback source: {source_dir}\n")
-        f.write(f"# Preset: {preset_name} | Dataset: {dataset} | Scope: {scope_label}\n\n")
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
 
     return dep_name
 

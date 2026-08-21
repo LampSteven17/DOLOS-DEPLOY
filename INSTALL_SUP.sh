@@ -805,7 +805,12 @@ copy_source_code() {
         cp -r "$SCRIPT_DIR/decoys/phase_workflow" "$dest_dir/decoys/"
         cp -r "$SCRIPT_DIR/contracts/phase-workflow-plan-v1" "$dest_dir/contracts/"
         mkdir -p "$dest_dir/behavioral_configurations"
-        cp "$SCRIPT_DIR/contracts/phase-workflow-plan-v1/controls/$CONFIG_KEY/behavior.json" \
+        local workflow_behavior_path="${RUSE_WORKFLOW_BEHAVIOR_PATH:-$SCRIPT_DIR/contracts/phase-workflow-plan-v1/controls/$CONFIG_KEY/behavior.json}"
+        if [[ ! -f "$workflow_behavior_path" ]]; then
+            error "Canonical workflow plan not found: $workflow_behavior_path"
+            exit 1
+        fi
+        cp "$workflow_behavior_path" \
             "$dest_dir/behavioral_configurations/behavior.json"
     fi
     touch "$dest_dir/decoys/__init__.py"

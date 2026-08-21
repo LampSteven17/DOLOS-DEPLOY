@@ -241,36 +241,36 @@ class PhaseRunRegistryTests(unittest.TestCase):
             ("feedback", "axes-summer24", "eno2"),
         )
 
-    def test_feedback_generator_copies_manifest_training_dataset_exactly(self):
+    def test_feedback_generator_uses_exact_canonical_target_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
-            source = base / "source-name-must-not-be-used"
-            (source / "B" / "B0").mkdir(parents=True)
-            (source / "B" / "B0" / "behavior.json").write_text("{}")
-            (source / "manifest.json").write_text(json.dumps({
-                "deploy_key": "decoy-controls",
-                "target": "decoy",
-                "training_dataset": "cptc11-zeektx",
-                "version_preset": "control",
-            }))
+            source = (
+                base / "colfix_v12.5.0" / "cptc11-zeektx" /
+                "2026-08-21_1832Z"
+            )
+            source.mkdir(parents=True)
+            control_root = (
+                Path(__file__).resolve().parents[1] / "contracts" /
+                "phase-workflow-plan-v1" / "controls"
+            )
+            for sup_config in (
+                "scripted-cpu", "mchp-cpu", "browseruse-gpu", "smolagents-gpu"
+            ):
+                (source / f"{sup_config}_behavior.json").write_bytes(
+                    (control_root / sup_config / "behavior.json").read_bytes()
+                )
             deploy_root = base / "deployments"
             name = generate_feedback_config(source, "all", deploy_root)
             generated = yaml.safe_load(
                 (deploy_root / name / "config.yaml").read_text()
             )
             self.assertEqual(generated["target"], "cptc11-zeektx")
-            self.assertNotEqual(generated["target"], source.name)
-            self.assertNotEqual(generated["target"], "decoy")
-
-            (source / "manifest.json").write_text(json.dumps({
-                "deploy_key": "decoy-controls",
-                "target": "decoy",
-            }))
-            with self.assertRaises(SystemExit):
-                generate_feedback_config(source, "all", deploy_root)
-            (source / "manifest.json").unlink()
-            with self.assertRaises(SystemExit):
-                generate_feedback_config(source, "all", deploy_root)
+            self.assertEqual(generated["purpose"], "feedback")
+            self.assertEqual(
+                name,
+                "decoy-feedback-colfix-v12-5-0-cptc11-zeektx",
+            )
+            self.assertFalse((source / "manifest.json").exists())
 
     def test_registry_never_uses_global_experiments_json(self):
         legacy = self.root.parent / "experiments.json"

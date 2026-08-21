@@ -23,6 +23,12 @@
     ruse_repo: "https://github.com/LampSteven17/RUSE.git"
     ruse_revision: ""
     ruse_path: "/opt/ruse"
+    canonical_workflow_configs:
+      - scripted-cpu
+      - mchp-cpu
+      - browseruse-gpu
+      - smolagents-gpu
+    staged_feedback_plan: "/tmp/ruse-{{ sup_behavior }}-behavior.json"
 
   pre_tasks:
     - name: Wait for SSH
@@ -139,10 +145,21 @@
         msg: "Rebooting for NVIDIA driver"
       when: stage1_result.rc == 100
 
+    - name: Stage assigned canonical feedback plan
+      when:
+        - purpose == 'feedback'
+        - sup_behavior in canonical_workflow_configs
+      copy:
+        src: "{{ behavior_source }}/{{ sup_behavior }}_behavior.json"
+        dest: "{{ staged_feedback_plan }}"
+        mode: '0644'
+
     - name: "Stage 2: ollama + python + services"
       shell: |
         cd {{ ruse_path }}
-        RUSE_NO_SERVICE_START=1 ./INSTALL_SUP.sh --{{ sup_behavior }} --stage=2
+        RUSE_NO_SERVICE_START=1 \
+        RUSE_WORKFLOW_BEHAVIOR_PATH="{{ staged_feedback_plan if purpose == 'feedback' and sup_behavior in canonical_workflow_configs else '' }}" \
+          ./INSTALL_SUP.sh --{{ sup_behavior }} --stage=2
       args:
         executable: /bin/bash
       async: 1800
@@ -156,6 +173,14 @@
       # place. M0 (which skips distribute and is expected to crash on Linux) gets
       # started at the tail of THIS playbook.
 
+    - name: Remove staged canonical feedback plan
+      when:
+        - purpose == 'feedback'
+        - sup_behavior in canonical_workflow_configs
+      file:
+        path: "{{ staged_feedback_plan }}"
+        state: absent
+
     - name: Assert Stage 2 succeeded
       # S3: Previously stage2_result.rc was registered but never explicitly
       # checked. Ansible defaults to failing the task on rc != 0 so the play
@@ -168,19 +193,19 @@
       when: stage2_result.rc != 0
 
     - name: Derive canonical workflow service name
-      when: sup_behavior in ['scripted-cpu', 'mchp-cpu', 'browseruse-gpu', 'smolagents-gpu']
+      when: sup_behavior in canonical_workflow_configs
       set_fact:
         canonical_sup_service: "{{ sup_behavior | lower | replace('.', '_') }}.service"
 
     - name: Start canonical workflow service after Stage 2
-      when: sup_behavior in ['scripted-cpu', 'mchp-cpu', 'browseruse-gpu', 'smolagents-gpu']
+      when: sup_behavior in canonical_workflow_configs
       systemd:
         name: "{{ canonical_sup_service }}"
         state: started
         daemon_reload: yes
 
     - name: Wait for canonical workflow service to become active
-      when: sup_behavior in ['scripted-cpu', 'mchp-cpu', 'browseruse-gpu', 'smolagents-gpu']
+      when: sup_behavior in canonical_workflow_configs
       command: "systemctl is-active {{ canonical_sup_service }}"
       register: canonical_service_probe
       changed_when: false
@@ -191,7 +216,7 @@
 
     - name: Assert canonical workflow service is active
       when:
-        - sup_behavior in ['scripted-cpu', 'mchp-cpu', 'browseruse-gpu', 'smolagents-gpu']
+        - sup_behavior in canonical_workflow_configs
         - canonical_service_probe.stdout | default('') | trim != 'active'
       fail:
         msg: >-

@@ -58,14 +58,16 @@ Feedback without --target/--source = batch every discovered dataset.
 Pass --target or --source to deploy a single dataset.
 
 examples:
-  ./deploy --decoy                          controls + ALL feedback datasets
+  ./deploy --decoy --preset colfix_v12.5.0 controls + ALL feedback targets
   ./deploy --decoy --controls               control fleet only
-  ./deploy --decoy --feedback               ALL feedback datasets (no controls)
-  ./deploy --decoy --feedback --target sum24  single dataset (no controls)
-  ./deploy --decoy --feedback --target sum24,axyear,vt50g --gpu rtx
-                                            multi-dataset batch on RTX tier
-  ./deploy --decoy --controls --feedback    controls + ALL feedback (explicit)
-  ./deploy --decoy --controls --target sum24  controls + single feedback
+  ./deploy --decoy --feedback --preset colfix_v12.5.0
+                                            all canonical feedback targets
+  ./deploy --decoy --feedback --preset colfix_v12.5.0 \
+      --target axes-summer24                 one exact target
+  ./deploy --decoy --controls --feedback --preset colfix_v12.5.0
+                                            controls + ALL feedback (explicit)
+  ./deploy --decoy --controls --preset colfix_v12.5.0 \
+      --target axes-summer24                controls + one feedback target
   ./deploy --ghosts                         controls + ALL GHOSTS feedback
   ./deploy --rampart --controls             RAMPART control fleet only""",
     )
@@ -82,32 +84,14 @@ examples:
     p.add_argument("--feedback", action="store_true", help="Deploy PHASE feedback variants")
 
     p.add_argument("--preset", type=str,
-                   help="PHASE feedback namespace {preset}_v{version} "
-                        "(e.g. std-ctrls_v7.1.2). REQUIRED whenever feedback is "
-                        "in scope (datasets live under "
-                        "/mnt/AXES2U1/feedback/{type}-controls/{preset}/). Not "
-                        "needed for --controls-only or --source (which gives a "
-                        "full path). controls/ baseline is un-namespaced.")
+                   help="PHASE feedback preset (for canonical Decoy feedback: "
+                        "/data/axes-mirror/feedback/{preset}/{target}/). Required "
+                        "for discovery; not needed with an exact --source.")
     p.add_argument("--source", type=str, help="Explicit PHASE feedback source directory (single)")
     p.add_argument("--target", type=str,
-                   help="Dataset target(s). Single (--target sum24) OR comma-"
-                        "separated list (--target sum24,axyear,vt50g) for a "
-                        "multi-dataset batch on one GPU tier.")
-    p.add_argument("--gpu", type=str, choices=["v100", "rtx", "rtx-a", "cpu"], default=None,
-                   help="GPU tier for feedback B2/S2 VMs (default: v100). "
-                        "rtx = rtx2080ti-1gpu (PCI alias rtx2080ti:1) w/ "
-                        "B2R.gemma+S2R.gemma (gemma4:e4b, fits 11GB VRAM). "
-                        "rtx-a = rtx2080ti-A-1gpu (PCI alias 2080ti-rtx-a:1) "
-                        "— same SUPs, separate physical card pool; use when "
-                        "the rtx pool is exhausted. cpu = card-free 3-VM "
-                        "(M2+B2C+S2C, gemma4:e2b) for when no GPU is available.")
-    p.add_argument("--exp1", action="store_true",
-                   help="Static tier plan exp1 (DECOY feedback only): 8 axes "
-                        "datasets on v100, vt1g+vt10g on rtx, vt50g on rtx-a; "
-                        "cptc excluded. Sized to physical card pools (19 v100 / "
-                        "4 rtx / 4 rtx-a, controls eat 2 v100 + 2 rtx-a). "
-                        "Requires --preset; conflicts with --target/--source/--gpu. "
-                        "Plan defined in core/feedback.py::TIER_PLANS.")
+                   help="One exact feedback target directory name.")
+    p.add_argument("--gpu", type=str, choices=["v100"], default=None,
+                   help="Canonical Decoy feedback GPU hardware (V100 only).")
     return p
 
 
@@ -232,10 +216,17 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _print_available_presets(deploy_type: str) -> None:
-    """List the {preset}_v{version} namespace dirs available for a deploy type
-    (excludes the un-namespaced controls/ baseline slot)."""
-    from .core.feedback import FEEDBACK_BASE, BASELINE_DATASET_SLOTS
-    root = FEEDBACK_BASE / f"{deploy_type}-controls"
+    """List available feedback preset directories for one deploy type."""
+    from .core.feedback import (
+        BASELINE_DATASET_SLOTS,
+        DECOY_FEEDBACK_BASE,
+        FEEDBACK_BASE,
+    )
+    root = (
+        DECOY_FEEDBACK_BASE
+        if deploy_type == "decoy"
+        else FEEDBACK_BASE / f"{deploy_type}-controls"
+    )
     if not root.is_dir():
         output.info(f"  (no feedback root at {root})")
         return
@@ -262,30 +253,10 @@ def _cmd_deploy(argv: list[str]) -> int:
     # means "copy *.json" (i.e. behavior.json), None means controls-only path.
     configs_spec = "all" if args.feedback else None
 
-    # --- Static tier plan (--exp1) ---
-    # A named, operator-curated dataset→tier assignment sized to the
-    # physical GPU pools. Implies feedback; per-task gpu_tier overrides
-    # the invocation-wide --gpu (which is therefore a conflict).
-    tier_plan = None
-    if args.exp1:
-        if deploy_type != "decoy":
-            output.error("ERROR: --exp1 is a DECOY tier plan (GPU tiers are decoy-specific).")
-            return 1
-        if args.target or args.source:
-            output.error("ERROR: --exp1 conflicts with --target/--source "
-                         "(the plan already names its datasets).")
-            return 1
-        if args.gpu:
-            output.error("ERROR: --exp1 conflicts with --gpu "
-                         "(the plan assigns a tier per dataset).")
-            return 1
-        from .core.feedback import TIER_PLANS
-        tier_plan = TIER_PLANS["exp1"]
-
     # --- Resolve intent: controls? feedback? ---
-    # --target / --source / --exp1 imply feedback (harmless shorthand).
+    # --target / --source imply feedback (harmless shorthand).
     explicit_feedback = (bool(configs_spec) or bool(args.source)
-                         or bool(args.target) or bool(tier_plan))
+                         or bool(args.target))
     explicit_controls = args.controls
     single_selector = args.target or args.source
 
@@ -302,20 +273,27 @@ def _cmd_deploy(argv: list[str]) -> int:
         if want_feedback and not configs_spec:
             configs_spec = "all"
 
-    # --- Validate --preset namespace (PHASE 2026-06 feedback layout) ---
-    # Feedback datasets now live under {type}-controls/{preset}/{dataset}. The
-    # namespace must be explicit (no guessing across lineages). Required whenever
-    # feedback is in scope and discovery (not an explicit --source path) is used.
+    # Require an explicit discovery namespace. Decoy uses the canonical PHASE
+    # tree; Rampart/GHOSTS retain their established per-type trees.
     if want_feedback and not args.source:
         if not args.preset:
-            output.error("ERROR: --preset is required when deploying feedback "
-                         "(PHASE feedback now lives under "
-                         f"/mnt/AXES2U1/feedback/{deploy_type}-controls/"
-                         "{preset}/{dataset}/).")
+            detail = (
+                "canonical Decoy feedback lives under "
+                "/data/axes-mirror/feedback/{preset}/{target}/"
+                "{YYYY-MM-DD_HHMMZ}/"
+                if deploy_type == "decoy"
+                else "PHASE feedback requires an explicit preset namespace"
+            )
+            output.error(
+                f"ERROR: --preset is required when deploying feedback ({detail})."
+            )
             _print_available_presets(deploy_type)
             return 1
-        from .core.feedback import FEEDBACK_BASE
-        preset_root = FEEDBACK_BASE / f"{deploy_type}-controls" / args.preset
+        from .core.feedback import DECOY_FEEDBACK_BASE, FEEDBACK_BASE
+        if deploy_type == "decoy":
+            preset_root = DECOY_FEEDBACK_BASE / args.preset
+        else:
+            preset_root = FEEDBACK_BASE / f"{deploy_type}-controls" / args.preset
         if not preset_root.is_dir():
             output.error(f"ERROR: --preset {args.preset!r} not found "
                          f"({preset_root}).")
@@ -335,7 +313,7 @@ def _cmd_deploy(argv: list[str]) -> int:
         source=args.source,
         preset=args.preset,
         deploy_dir=DEPLOY_DIR,
-        tier_plan=tier_plan,
+        tier_plan=None,
     )
     if plan is None:
         return 1

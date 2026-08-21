@@ -25,7 +25,12 @@ from pathlib import Path
 from . import output
 from .config import DeploymentConfig
 from .feedback import (
+    DECOY_FEEDBACK_DEPLOYMENTS,
+    FeedbackSourceError,
     config_vm_table_lines,
+    decoy_feedback_source_identity,
+    find_all_decoy_feedback_sources,
+    find_decoy_feedback_by_target,
     find_all_feedback_sources,
     find_feedback_by_target,
     load_manifest,
@@ -130,6 +135,11 @@ def _build_feedback_tasks(
     {type}-controls/. Ignored when an explicit `--source` path is given (it
     already encodes the namespace). Required-ness is enforced upstream in the CLI.
     """
+    if deploy_type == "decoy":
+        return _build_decoy_feedback_tasks(
+            configs_spec, target=target, source=source, preset=preset
+        )
+
     sources: list[dict] = []
     if tier_plan:
         # Static tier plan: resolve every (tier, targets) pair up front,
@@ -194,14 +204,71 @@ def _build_feedback_tasks(
     ]
 
 
+def _build_decoy_feedback_tasks(
+    configs_spec: str | None,
+    *,
+    target: str | None,
+    source: str | None,
+    preset: str | None,
+) -> list[dict] | None:
+    """Resolve canonical flat PHASE generations for Decoy only."""
+    try:
+        if source:
+            source_path = Path(source)
+            source_preset, source_target = decoy_feedback_source_identity(source_path)
+            sources = [{
+                "path": source_path,
+                "preset": source_preset,
+                "target": source_target,
+            }]
+        elif target:
+            if "," in target:
+                raise FeedbackSourceError(
+                    "canonical Decoy --target accepts one exact target"
+                )
+            if not preset:
+                raise FeedbackSourceError(
+                    "--preset is required for Decoy feedback discovery"
+                )
+            sources = [{
+                "path": find_decoy_feedback_by_target(target, preset),
+                "preset": preset,
+                "target": target,
+            }]
+        else:
+            if not preset:
+                raise FeedbackSourceError(
+                    "--preset is required for Decoy feedback discovery"
+                )
+            sources = find_all_decoy_feedback_sources(preset)
+    except FeedbackSourceError as exc:
+        output.error(f"ERROR: {exc}")
+        return None
+
+    return [
+        {
+            "label": f"decoy-feedback: {item['target']}",
+            "behavior_source": item["path"],
+            "configs_spec": configs_spec,
+            "manifest": None,
+            "is_controls": False,
+            "purpose": "feedback",
+            "target": item["target"],
+            "preset": item["preset"],
+            "deployments": [dict(dep) for dep in DECOY_FEEDBACK_DEPLOYMENTS],
+            "gpu_tier": "v100",
+        }
+        for item in sources
+    ]
+
+
 def show_plan_and_confirm(
     plan: list[dict], deploy_type: str, gpu_tier: str = "v100",
 ) -> bool:
     """Render the combined plan + ask y/N. Returns True iff the user confirms.
 
-    Fails loud (returns False) if any feedback task's manifest.target doesn't
-    match deploy_type. Skips the prompt when the plan is a single controls
-    task — there's nothing to confirm.
+    Fails loud (returns False) if a legacy Rampart/GHOSTS manifest target does
+    not match deploy_type. Skips the prompt for one controls-only task.
 
     gpu_tier only applies to DECOY feedback tasks and is rendered as a
     `tier:` line so the operator can confirm flavor + LLM model before
@@ -210,8 +277,6 @@ def show_plan_and_confirm(
     n = len(plan)
     output.banner(f"DEPLOY PLAN ({deploy_type}, {n} task{'s' if n != 1 else ''})")
     output.info("")
-
-    feedback_tier = gpu_tier if deploy_type == "decoy" else None
 
     any_mismatch = False
     for i, task in enumerate(plan, 1):
@@ -234,17 +299,28 @@ def show_plan_and_confirm(
                 for line in config_vm_table_lines(deps, indent="        "):
                     output.info(line)
         else:
-            mf = task["manifest"]
-            err = validate_manifest_target(mf, deploy_type)
-            task_tier = (task.get("gpu_tier") or feedback_tier) if deploy_type == "decoy" else None
-            for line in manifest_summary_lines(
-                task["behavior_source"], mf, indent="      ",
-                gpu_tier=task_tier,
-            ):
-                output.info(line)
-            if err:
-                output.error(f"      FAIL: {err}")
-                any_mismatch = True
+            if deploy_type == "decoy":
+                source = task["behavior_source"]
+                output.info("      purpose:     feedback")
+                output.info(f"      target:      {task['target']}")
+                output.info(f"      generation:  {source.name}")
+                output.info(f"      source:      {source}")
+                output.info("")
+                output.info("      VMs to provision (4), fixed V100 topology:")
+                for line in config_vm_table_lines(
+                    task["deployments"], indent="        "
+                ):
+                    output.info(line)
+            else:
+                mf = task["manifest"]
+                err = validate_manifest_target(mf, deploy_type)
+                for line in manifest_summary_lines(
+                    task["behavior_source"], mf, indent="      ",
+                ):
+                    output.info(line)
+                if err:
+                    output.error(f"      FAIL: {err}")
+                    any_mismatch = True
         output.info("")
 
     if any_mismatch:

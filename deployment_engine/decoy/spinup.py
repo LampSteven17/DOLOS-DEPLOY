@@ -14,7 +14,12 @@ from ..core.ansible_runner import AnsibleRunner, AnsibleEvent, default_event_han
 from ..core.config import DeploymentConfig
 from ..core.openstack import OpenStack
 from ..core.ssh_config import install_ssh_config
-from ..core.feedback import generate_feedback_config
+from ..core.feedback import (
+    DECOY_FEEDBACK_SUP_CONFIGS,
+    FeedbackSourceError,
+    generate_feedback_config,
+    validate_decoy_feedback_generation,
+)
 from ..core.revision import RevisionError, resolve_ruse_revision
 from ..core.vm_naming import make_run_dep_id, make_vm_prefix
 from ..core import run_status
@@ -50,18 +55,22 @@ def run_decoy_spinup(
     configs_spec: str | None = None,
     gpu_tier: str = "v100",
 ) -> int:
-    """Deploy DECOY SUP agents.
-
-    gpu_tier ∈ {"v100", "rtx", "rtx-a"}. v100 = default (gemma4:26b).
-    rtx / rtx-a = B2R.gemma + S2R.gemma on RTX 2080 Ti (gemma4:e4b);
-    the two RTX tiers map to distinct physical card pools.
-    """
+    """Deploy DECOY SUP agents."""
+    if behavior_source and gpu_tier != "v100":
+        output.error(
+            f"ERROR: canonical Decoy feedback requires V100; got {gpu_tier!r}"
+        )
+        return 1
     # If feedback args given but config is decoy-controls, generate feedback config
     if behavior_source and config_name == "decoy-controls":
-        config_name = generate_feedback_config(
-            Path(behavior_source), configs_spec or "all", deploy_dir,
-            gpu_tier=gpu_tier,
-        )
+        try:
+            config_name = generate_feedback_config(
+                Path(behavior_source), configs_spec or "all", deploy_dir,
+                gpu_tier=gpu_tier,
+            )
+        except FeedbackSourceError as exc:
+            output.error(f"ERROR: {exc}")
+            return 1
 
     config_dir = deploy_dir / config_name
     config_file = config_dir / "config.yaml"
@@ -121,10 +130,14 @@ def run_decoy_spinup(
         for line in src_err:
             output.error(f"  {line}")
         output.error("")
-        output.error("Every DECOY SUP must have a behavior.json. Either fix the")
-        output.error("behavior_source in config.yaml, regenerate the missing")
-        output.error("PHASE feedback files, or write the controls defaults at")
-        output.error("/data/axes-mirror/feedback/decoy-controls/controls/.")
+        if config.purpose == "feedback":
+            output.error("The selected PHASE generation must contain four valid")
+            output.error("canonical plans. Fix that exact generation; RUSE will")
+            output.error("not fall back to an older timestamp.")
+        else:
+            output.error("Every DECOY SUP must have a behavior.json. Either fix the")
+            output.error("behavior_source in config.yaml, regenerate the missing")
+            output.error("PHASE feedback files, or restore the control plan.")
         return 1
 
     # Display header
@@ -446,6 +459,25 @@ def _validate_behavior_source(
     the existing behavior_source derivation and distribution path unchanged.
     """
     errors: list[str] = []
+
+    if getattr(config, "purpose", None) == "feedback" and all(
+        dep.get("behavior") in CANONICAL_WORKFLOW_CONFIGS
+        for dep in config.deployments
+    ):
+        if not effective_source:
+            return ["canonical feedback config has no behavior_source"]
+        try:
+            validate_decoy_feedback_generation(Path(effective_source))
+        except FeedbackSourceError as exc:
+            return [str(exc)]
+        configured = tuple(dep.get("behavior") for dep in config.deployments)
+        if configured != DECOY_FEEDBACK_SUP_CONFIGS:
+            return [
+                "canonical feedback deployments must be ordered exactly as "
+                + ", ".join(DECOY_FEEDBACK_SUP_CONFIGS)
+            ]
+        return []
+
     for dep in config.deployments:
         behavior = dep.get("behavior", "")
         if behavior not in CANONICAL_WORKFLOW_CONFIGS:

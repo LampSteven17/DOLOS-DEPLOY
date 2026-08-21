@@ -143,13 +143,13 @@ class Phase4ControlCanaryTests(unittest.TestCase):
         )
         play = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))[0]
         tasks = {task["name"]: task for task in play["tasks"]}
+        self.assertEqual(tuple(play["vars"]["canonical_workflow_configs"]), CANONICAL)
         start = tasks["Start canonical workflow service after Stage 2"]
         wait = tasks["Wait for canonical workflow service to become active"]
         assertion = tasks["Assert canonical workflow service is active"]
 
-        for sup_config in CANONICAL:
-            self.assertIn(sup_config, start["when"])
-            self.assertIn(sup_config, wait["when"])
+        self.assertEqual(start["when"], "sup_behavior in canonical_workflow_configs")
+        self.assertEqual(wait["when"], "sup_behavior in canonical_workflow_configs")
         self.assertEqual(start["systemd"]["state"], "started")
         self.assertTrue(start["systemd"]["daemon_reload"])
         self.assertEqual(wait["retries"], 12)
