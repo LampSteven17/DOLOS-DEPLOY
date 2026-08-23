@@ -1,6 +1,6 @@
 """Strict runtime for the canonical PHASE workflow-plan contract."""
 
-from phase_workflow.loader import (
+from .loader import (
     WorkflowPlan,
     WorkflowPlanError,
     load_workflow_plan,

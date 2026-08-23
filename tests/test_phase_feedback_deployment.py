@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -111,6 +113,45 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
         self.assertTrue(all(len(task["deployments"]) == 4 for task in captured))
         show.assert_called_once()
         execute.assert_called_once()
+
+    def test_exact_six_target_operator_command_reaches_combined_plan_only(self):
+        requested = [
+            "axes-fall24",
+            "axes-spring25",
+            "axes-spring26",
+            "axes-summer24",
+            "cptc11-zeektx",
+            "vt-fall21",
+        ]
+        for target in requested:
+            self.generation(target)
+        captured = []
+
+        def inspect_plan(tasks, *_args, **_kwargs):
+            captured.extend(tasks)
+            return False
+
+        with (
+            self.patch_root(),
+            mock.patch.object(deployment_cli, "DEPLOY_DIR", self.deploy_root),
+            mock.patch.object(
+                plan, "show_plan_and_confirm", side_effect=inspect_plan
+            ) as show,
+            mock.patch.object(plan, "execute_plan") as execute,
+        ):
+            result = deployment_cli._cmd_deploy([
+                "--decoy",
+                "--feedback",
+                "--preset",
+                self.preset,
+                "--target",
+                *requested,
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual([task["target"] for task in captured], requested)
+        self.assertEqual(len(captured), 6)
+        show.assert_called_once()
+        execute.assert_not_called()
 
     def test_cli_single_target_still_produces_one_task(self):
         requested = "axes-summer24"
@@ -261,6 +302,30 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
             feedback.FeedbackSourceError, "invalid browseruse-gpu plan"
         ):
             feedback.validate_decoy_feedback_generation(extra)
+
+    def test_generation_validation_imports_from_repository_root_without_pythonpath(self):
+        source = self.generation("axes-summer24")
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path; "
+                    "from deployment_engine.core.feedback import "
+                    "validate_decoy_feedback_generation; "
+                    "validate_decoy_feedback_generation(Path(__import__('sys').argv[1]))"
+                ),
+                str(source),
+            ],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_loader_failure_aborts_before_provisioning_runner_exists(self):
         source = self.generation("axes-summer24")
