@@ -88,6 +88,139 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
         self.assertEqual([task["target"] for task in targeted], ["axes-summer24"])
         self.assertEqual([task["behavior_source"] for task in explicit], [source])
 
+    def test_cli_multiple_targets_preserve_order_in_one_combined_plan(self):
+        requested = ["vt-fall21", "axes-spring25", "cptc11-zeektx"]
+        for target in requested:
+            self.generation(target)
+        captured = []
+        with (
+            self.patch_root(),
+            mock.patch.object(deployment_cli, "DEPLOY_DIR", self.deploy_root),
+            mock.patch.object(plan, "show_plan_and_confirm", return_value=True) as show,
+            mock.patch.object(
+                plan, "execute_plan", side_effect=lambda tasks, *_args, **_kwargs: captured.extend(tasks) or 0
+            ) as execute,
+        ):
+            result = deployment_cli._cmd_deploy([
+                "--decoy", "--feedback", "--preset", self.preset,
+                "--target", *requested,
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual([task["target"] for task in captured], requested)
+        self.assertEqual(len(captured), 3)
+        self.assertTrue(all(len(task["deployments"]) == 4 for task in captured))
+        show.assert_called_once()
+        execute.assert_called_once()
+
+    def test_cli_single_target_still_produces_one_task(self):
+        requested = "axes-summer24"
+        self.generation(requested)
+        with (
+            self.patch_root(),
+            mock.patch.object(deployment_cli, "DEPLOY_DIR", self.deploy_root),
+            mock.patch.object(plan, "show_plan_and_confirm", return_value=True),
+            mock.patch.object(plan, "execute_plan", return_value=0) as execute,
+        ):
+            result = deployment_cli._cmd_deploy([
+                "--decoy", "--feedback", "--preset", self.preset,
+                "--target", requested,
+            ])
+        self.assertEqual(result, 0)
+        tasks = execute.call_args.args[0]
+        self.assertEqual([task["target"] for task in tasks], [requested])
+
+    def test_cli_validates_every_requested_target_before_execution(self):
+        requested = ["axes-fall24", "axes-spring25", "axes-summer24"]
+        for target in requested:
+            self.generation(target)
+        validated = []
+        original = feedback.validate_decoy_feedback_generation
+
+        def record_validation(source):
+            validated.append(Path(source).parent.name)
+            return original(source)
+
+        with (
+            self.patch_root(),
+            mock.patch.object(
+                feedback,
+                "validate_decoy_feedback_generation",
+                side_effect=record_validation,
+            ),
+            mock.patch.object(deployment_cli, "DEPLOY_DIR", self.deploy_root),
+            mock.patch.object(plan, "show_plan_and_confirm", return_value=True),
+            mock.patch.object(plan, "execute_plan", return_value=0) as execute,
+        ):
+            result = deployment_cli._cmd_deploy([
+                "--decoy", "--feedback", "--preset", self.preset,
+                "--target", *requested,
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual(validated, requested)
+        execute.assert_called_once()
+
+    def test_missing_or_invalid_requested_target_aborts_entire_batch(self):
+        self.generation("axes-fall24")
+        self.generation("axes-spring25", missing="mchp-cpu")
+        for requested in (
+            ["axes-fall24", "vt-fall21"],
+            ["axes-fall24", "axes-spring25"],
+        ):
+            with self.subTest(requested=requested):
+                with (
+                    self.patch_root(),
+                    mock.patch.object(
+                        deployment_cli, "DEPLOY_DIR", self.deploy_root
+                    ),
+                    mock.patch.object(plan, "show_plan_and_confirm") as show,
+                    mock.patch.object(plan, "execute_plan") as execute,
+                ):
+                    result = deployment_cli._cmd_deploy([
+                        "--decoy", "--feedback", "--preset", self.preset,
+                        "--target", *requested,
+                    ])
+                self.assertEqual(result, 1)
+                show.assert_not_called()
+                execute.assert_not_called()
+
+    def test_cli_rejects_comma_separated_and_duplicate_targets_before_plan(self):
+        for values, expected in (
+            (["axes-fall24,axes-spring25"], "comma-separated"),
+            (["axes-fall24", "axes-fall24"], "duplicate --target value: axes-fall24"),
+        ):
+            with self.subTest(values=values):
+                errors = []
+                with (
+                    mock.patch.object(
+                        deployment_cli.output,
+                        "error",
+                        side_effect=errors.append,
+                    ),
+                    mock.patch.object(plan, "build_deploy_plan") as build,
+                ):
+                    result = deployment_cli._cmd_deploy([
+                        "--decoy", "--feedback", "--preset", self.preset,
+                        "--target", *values,
+                    ])
+                self.assertEqual(result, 1)
+                build.assert_not_called()
+                self.assertIn(expected, "\n".join(errors))
+
+    def test_explicit_source_remains_a_single_generation(self):
+        source = self.generation("axes-summer24")
+        with (
+            mock.patch.object(deployment_cli, "DEPLOY_DIR", self.deploy_root),
+            mock.patch.object(plan, "show_plan_and_confirm", return_value=True),
+            mock.patch.object(plan, "execute_plan", return_value=0) as execute,
+        ):
+            result = deployment_cli._cmd_deploy([
+                "--decoy", "--feedback", "--source", str(source),
+            ])
+        self.assertEqual(result, 0)
+        tasks = execute.call_args.args[0]
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["behavior_source"], source)
+
     def test_newest_timestamp_selection_is_lexical_not_mtime(self):
         older = self.generation("axes-summer24", "2026-08-21_0900Z")
         newer = self.generation("axes-summer24", "2026-08-21_1832Z")

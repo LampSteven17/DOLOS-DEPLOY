@@ -45,8 +45,8 @@ def build_deploy_plan(
     want_controls: bool,
     want_feedback: bool,
     configs_spec: str | None,
-    single_selector: str | None,
-    target: str | None,
+    single_selector: str | list[str] | None,
+    target: str | list[str] | None,
     source: str | None,
     deploy_dir: Path,
     preset: str | None = None,
@@ -118,15 +118,18 @@ def _build_controls_task(deploy_type: str, deploy_dir: Path) -> dict:
 def _build_feedback_tasks(
     deploy_type: str,
     configs_spec: str | None,
-    single_selector: str | None,
-    target: str | None,
+    single_selector: str | list[str] | None,
+    target: str | list[str] | None,
     source: str | None,
     preset: str | None = None,
     tier_plan: list[tuple[str, list[str]]] | None = None,
 ) -> list[dict] | None:
     """Resolve feedback sources into tasks. Returns None on resolution failure.
 
-    `target` may be a single dataset name OR a comma-separated list
+    For canonical Decoy feedback, `target` may be an ordered list of exact
+    target names. Legacy Rampart/GHOSTS callers continue to pass one string.
+
+    Legacy `target` may be a single dataset name OR a comma-separated list
     (e.g. "axes-summer24,axes-year,vt-fall22-50gb") — each is resolved
     independently and added to the plan. Useful for batching a subset
     of feedback datasets onto a specific GPU tier in one invocation.
@@ -207,7 +210,7 @@ def _build_feedback_tasks(
 def _build_decoy_feedback_tasks(
     configs_spec: str | None,
     *,
-    target: str | None,
+    target: str | list[str] | None,
     source: str | None,
     preset: str | None,
 ) -> list[dict] | None:
@@ -222,19 +225,25 @@ def _build_decoy_feedback_tasks(
                 "target": source_target,
             }]
         elif target:
-            if "," in target:
-                raise FeedbackSourceError(
-                    "canonical Decoy --target accepts one exact target"
-                )
             if not preset:
                 raise FeedbackSourceError(
                     "--preset is required for Decoy feedback discovery"
                 )
-            sources = [{
-                "path": find_decoy_feedback_by_target(target, preset),
-                "preset": preset,
-                "target": target,
-            }]
+            targets = [target] if isinstance(target, str) else target
+            sources = []
+            for selected_target in targets:
+                if "," in selected_target:
+                    raise FeedbackSourceError(
+                        "canonical Decoy --target values must be "
+                        "space-separated"
+                    )
+                sources.append({
+                    "path": find_decoy_feedback_by_target(
+                        selected_target, preset
+                    ),
+                    "preset": preset,
+                    "target": selected_target,
+                })
         else:
             if not preset:
                 raise FeedbackSourceError(

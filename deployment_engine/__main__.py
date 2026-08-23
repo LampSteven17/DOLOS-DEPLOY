@@ -52,10 +52,11 @@ def _deploy_parser() -> argparse.ArgumentParser:
 
 scope flags:
   --controls            deploy the control fleet only
-  --feedback            deploy feedback variants (all, or --target/--source one)
+  --feedback            deploy feedback variants (all, or selected targets/source)
 
 Feedback without --target/--source = batch every discovered dataset.
-Pass --target or --source to deploy a single dataset.
+For canonical Decoy feedback, --target accepts one or more exact targets.
+Pass --source to deploy one exact generation directory.
 
 examples:
   ./deploy --decoy --preset colfix_v12.5.0 controls + ALL feedback targets
@@ -64,6 +65,8 @@ examples:
                                             all canonical feedback targets
   ./deploy --decoy --feedback --preset colfix_v12.5.0 \
       --target axes-summer24                 one exact target
+  ./deploy --decoy --feedback --preset colfix_v12.5.0 \
+      --target axes-fall24 axes-spring25     selected targets in this order
   ./deploy --decoy --controls --feedback --preset colfix_v12.5.0
                                             controls + ALL feedback (explicit)
   ./deploy --decoy --controls --preset colfix_v12.5.0 \
@@ -88,8 +91,12 @@ examples:
                         "/data/axes-mirror/feedback/{preset}/{target}/). Required "
                         "for discovery; not needed with an exact --source.")
     p.add_argument("--source", type=str, help="Explicit PHASE feedback source directory (single)")
-    p.add_argument("--target", type=str,
-                   help="One exact feedback target directory name.")
+    p.add_argument(
+        "--target",
+        type=str,
+        nargs="+",
+        help="One or more space-separated exact Decoy feedback target names.",
+    )
     p.add_argument("--gpu", type=str, choices=["v100"], default=None,
                    help="Canonical Decoy feedback GPU hardware (V100 only).")
     return p
@@ -247,6 +254,33 @@ def _cmd_deploy(argv: list[str]) -> int:
     # --- Resolve deploy type ---
     deploy_type = "rampart" if args.rampart else ("ghosts" if args.ghosts else "decoy")
 
+    # Canonical Decoy feedback accepts an ordered list of exact targets. Keep
+    # the established Rampart/GHOSTS planner contract scalar, and reject
+    # ambiguous comma-separated or repeated Decoy values before plan building.
+    target: str | list[str] | None = args.target
+    if args.target:
+        if deploy_type == "decoy":
+            for value in args.target:
+                if "," in value:
+                    output.error(
+                        f"ERROR: comma-separated --target value {value!r} is not "
+                        "supported; pass targets as separate arguments."
+                    )
+                    return 1
+            seen: set[str] = set()
+            for value in args.target:
+                if value in seen:
+                    output.error(f"ERROR: duplicate --target value: {value}")
+                    return 1
+                seen.add(value)
+        else:
+            if len(args.target) != 1:
+                output.error(
+                    f"ERROR: {deploy_type} --target accepts exactly one value."
+                )
+                return 1
+            target = args.target[0]
+
     # PHASE consolidated to a single behavior.json per SUP — there are no
     # per-config-file knobs to filter on the deploy side anymore. configs_spec
     # is plumbed through to the distribute playbook for legacy reasons; "all"
@@ -256,9 +290,9 @@ def _cmd_deploy(argv: list[str]) -> int:
     # --- Resolve intent: controls? feedback? ---
     # --target / --source imply feedback (harmless shorthand).
     explicit_feedback = (bool(configs_spec) or bool(args.source)
-                         or bool(args.target))
+                         or bool(target))
     explicit_controls = args.controls
-    single_selector = args.target or args.source
+    single_selector = target or args.source
 
     # Default (neither flag specified): deploy BOTH controls and all feedback.
     # This matches the "full experimental run" mental model and is the new
@@ -309,7 +343,7 @@ def _cmd_deploy(argv: list[str]) -> int:
         want_feedback=want_feedback,
         configs_spec=configs_spec,
         single_selector=single_selector,
-        target=args.target,
+        target=target,
         source=args.source,
         preset=args.preset,
         deploy_dir=DEPLOY_DIR,
