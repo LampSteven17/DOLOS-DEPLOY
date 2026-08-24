@@ -127,6 +127,26 @@ def neighborhood_vms(run_dir: Path) -> list[dict]:
     return vms
 
 
+def share_sidecar_vms(run_dir: Path) -> list[dict]:
+    """Return the exact fleet-local share VM with null SUP configuration."""
+    inv = run_dir / "inventory.ini"
+    if not inv.exists():
+        return []
+    vms = []
+    import re
+    for line in inv.read_text().splitlines():
+        match = re.match(
+            r"^(\S+)\s+ansible_host=(\S+).*\bshare_sidecar=true\b", line
+        )
+        if match:
+            vms.append({
+                "name": match.group(1),
+                "ip": match.group(2),
+                "sup_config": None,
+            })
+    return vms
+
+
 def infrastructure_vms_from_ssh_config(snippet_path: Path) -> list[dict]:
     """Read actual infrastructure VM names and IPs from a RUSE SSH snippet."""
     if not snippet_path.is_file():

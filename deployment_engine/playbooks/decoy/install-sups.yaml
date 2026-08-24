@@ -28,7 +28,12 @@
       - mchp-cpu
       - browseruse-gpu
       - smolagents-gpu
-    staged_feedback_plan: "/tmp/ruse-{{ sup_behavior }}-behavior.json"
+    canonical_plan_filenames:
+      scripted-cpu: scripted-v1.json
+      mchp-cpu: mchp-v1.json
+      browseruse-gpu: browseruse-v1.json
+      smolagents-gpu: smolagents-v1.json
+    staged_workflow_plan: "/tmp/ruse-{{ sup_behavior }}-plan.json"
 
   pre_tasks:
     - name: Wait for SSH
@@ -161,15 +166,15 @@
     - name: Stage assigned canonical workflow plan
       when: sup_behavior in canonical_workflow_configs
       copy:
-        src: "{{ behavior_source }}/{{ sup_behavior }}_behavior.json"
-        dest: "{{ staged_feedback_plan }}"
+        src: "{{ behavior_source }}/{{ canonical_plan_filenames[sup_behavior] }}"
+        dest: "{{ staged_workflow_plan }}"
         mode: '0644'
 
     - name: "Stage 2: ollama + python + services"
       shell: |
         cd {{ ruse_path }}
         RUSE_NO_SERVICE_START=1 \
-        RUSE_WORKFLOW_BEHAVIOR_PATH="{{ staged_feedback_plan if sup_behavior in canonical_workflow_configs else '' }}" \
+        RUSE_WORKFLOW_BEHAVIOR_PATH="{{ staged_workflow_plan if sup_behavior in canonical_workflow_configs else '' }}" \
           ./INSTALL_SUP.sh --{{ sup_behavior }} --stage=2
       args:
         executable: /bin/bash
@@ -187,7 +192,7 @@
     - name: Remove staged canonical workflow plan
       when: sup_behavior in canonical_workflow_configs
       file:
-        path: "{{ staged_feedback_plan }}"
+        path: "{{ staged_workflow_plan }}"
         state: absent
 
     - name: Assert Stage 2 succeeded

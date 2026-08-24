@@ -182,7 +182,10 @@ class DailyExecutor:
                     sequence_index=sequence_index,
                     window_end_minute=window.end_minute,
                     entry=entry,
-                    task=self.registry.resolve(entry),
+                    task=self.registry.resolve(
+                        entry,
+                        occurrence_id=f"w{window_index}-s{sequence_index}",
+                    ),
                     scheduled_local=naive,
                     scheduled_utc=scheduled_utc,
                 )
@@ -274,8 +277,9 @@ class DailyExecutor:
             "window_index": occurrence.window_index,
             "sequence_index": occurrence.sequence_index,
             "workflow": occurrence.entry.workflow,
-            "target_profile": self.plan.target_profile,
+            "resource_profile": self.plan.resource_profile,
             "brain_profile": occurrence.entry.brain_profile,
+            "resource_id": occurrence.entry.resource_id,
             "scheduled_local": occurrence.scheduled_local.isoformat(),
             "scheduled_utc": self._iso(occurrence.scheduled_utc),
             "actual_start": self._iso(occurrence.actual_start),

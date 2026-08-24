@@ -16,7 +16,6 @@ from deployment_engine import __main__ as deployment_cli
 from deployment_engine import list as deployment_list
 from deployment_engine import teardown as deployment_teardown
 from deployment_engine.core import teardown_steps
-from deployment_engine.core.feedback import find_decoy_control_generation
 from deployment_engine.core.phase_run_registry import PhaseRunRegistryError
 from deployment_engine.core.run_status import FAILED, write_run_status
 from deployment_engine.core.vm_naming import make_run_dep_id, make_vm_prefix
@@ -580,6 +579,7 @@ class OperatorCommandTests(unittest.TestCase):
 
     def test_deploy_command_builds_only_four_controls_without_provisioning(self):
         captured: dict = {}
+        selected = Path("/data/axes-mirror/controls/2026-08-24_1456Z")
 
         def refuse_execution(plan, deploy_type, config_name, deploy_dir, **kwargs):
             captured.update(plan=plan, deploy_type=deploy_type, deploy_dir=deploy_dir)
@@ -591,6 +591,10 @@ class OperatorCommandTests(unittest.TestCase):
                 "deployment_engine.core.plan.execute_plan",
                 side_effect=refuse_execution,
             ) as execute,
+            mock.patch(
+                "deployment_engine.core.plan.find_decoy_control_generation",
+                return_value=selected,
+            ),
         ):
             result = deployment_cli._cmd_deploy(["--decoy", "--controls"])
 
@@ -601,7 +605,7 @@ class OperatorCommandTests(unittest.TestCase):
         task = captured["plan"][0]
         self.assertTrue(task["is_controls"])
         self.assertEqual(
-            task["behavior_source"], find_decoy_control_generation()
+            task["behavior_source"], selected
         )
         self.assertIsNone(task["configs_spec"])
         self.assertEqual(

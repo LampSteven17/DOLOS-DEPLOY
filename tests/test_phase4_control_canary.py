@@ -18,7 +18,7 @@ from deployment_engine.decoy import spinup
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CONTROL_CONFIG = REPOSITORY_ROOT / "deployments" / "decoy-controls" / "config.yaml"
-CONTROL_ROOT = feedback.find_decoy_control_generation()
+CONTROL_ROOT = Path("/home/ubuntu/PHASE/plans/feedback-v2-rewrite/fixtures/controls")
 CANONICAL = (
     "scripted-cpu",
     "mchp-cpu",
@@ -33,8 +33,8 @@ class Phase4ControlCanaryTests(unittest.TestCase):
         generation.mkdir(parents=True)
         for sup_config in CANONICAL:
             shutil.copy2(
-                CONTROL_ROOT / f"{sup_config}_behavior.json",
-                generation / f"{sup_config}_behavior.json",
+                CONTROL_ROOT / feedback.DECOY_PLAN_FILENAMES[sup_config],
+                generation / feedback.DECOY_PLAN_FILENAMES[sup_config],
             )
         return generation
 
@@ -89,9 +89,13 @@ class Phase4ControlCanaryTests(unittest.TestCase):
 
     def test_canonical_sources_are_required_before_provisioning(self):
         config = DeploymentConfig.load(CONTROL_CONFIG)
-        self.assertEqual(
-            spinup._validate_behavior_source(str(CONTROL_ROOT), config), []
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            generation = self._generation(
+                Path(temporary), "2026-08-24_1456Z"
+            )
+            self.assertEqual(
+                spinup._validate_behavior_source(str(generation), config), []
+            )
         self.assertEqual(
             spinup._validate_behavior_source(None, config),
             ["canonical control config has no behavior_source"],
@@ -114,11 +118,11 @@ class Phase4ControlCanaryTests(unittest.TestCase):
             root = Path(temporary)
             older = self._generation(root, "2026-08-24_0900Z")
             newest = self._generation(root, "2026-08-24_1456Z")
-            (newest / "mchp-cpu_behavior.json").unlink()
+            (newest / "mchp-v1.json").unlink()
             with (
                 mock.patch.object(feedback, "DECOY_CONTROL_BASE", root),
                 self.assertRaisesRegex(
-                    feedback.FeedbackSourceError, "mchp-cpu_behavior.json"
+                    feedback.FeedbackSourceError, "mchp-v1.json"
                 ),
             ):
                 feedback.find_decoy_control_generation()
@@ -126,28 +130,28 @@ class Phase4ControlCanaryTests(unittest.TestCase):
 
     def test_invalid_control_plans_abort_before_plan_display_or_execution(self):
         def missing(path):
-            (path / "scripted-cpu_behavior.json").unlink()
+            (path / "scripted-v1.json").unlink()
 
         def extra(path):
             (path / "extra.json").write_text("{}\n")
 
         def malformed(path):
-            (path / "mchp-cpu_behavior.json").write_text("{\n")
+            (path / "mchp-v1.json").write_text("{\n")
 
         def schema_invalid(path):
-            plan_path = path / "browseruse-gpu_behavior.json"
+            plan_path = path / "browseruse-v1.json"
             document = json.loads(plan_path.read_text())
             document.pop("timezone")
             plan_path.write_text(json.dumps(document))
 
         def capability_invalid(path):
-            plan_path = path / "smolagents-gpu_behavior.json"
+            plan_path = path / "smolagents-v1.json"
             document = json.loads(plan_path.read_text())
             document["max_parallel"] = 11
             plan_path.write_text(json.dumps(document))
 
         def sup_mismatch(path):
-            plan_path = path / "scripted-cpu_behavior.json"
+            plan_path = path / "scripted-v1.json"
             document = json.loads(plan_path.read_text())
             document["sup_config"] = "mchp-cpu"
             plan_path.write_text(json.dumps(document))
@@ -256,7 +260,7 @@ class Phase4ControlCanaryTests(unittest.TestCase):
         stage = tasks["Stage assigned canonical workflow plan"]
         self.assertEqual(
             stage["copy"]["src"],
-            "{{ behavior_source }}/{{ sup_behavior }}_behavior.json",
+            "{{ behavior_source }}/{{ canonical_plan_filenames[sup_behavior] }}",
         )
         self.assertEqual(
             stage["when"], "sup_behavior in canonical_workflow_configs"
@@ -267,12 +271,12 @@ class Phase4ControlCanaryTests(unittest.TestCase):
 
         normalized = []
         for sup_config in CANONICAL:
-            path = CONTROL_ROOT / f"{sup_config}_behavior.json"
+            path = CONTROL_ROOT / feedback.DECOY_PLAN_FILENAMES[sup_config]
             load_workflow_plan(path, sup_config)
             document = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(document["sup_config"], sup_config)
             self.assertEqual(document["timezone"], "America/New_York")
-            self.assertEqual(document["target_profile"], "control-default")
+            self.assertEqual(document["resource_profile"], "controls-v2")
 
             comparable = copy.deepcopy(document)
             comparable.pop("sup_config")

@@ -1,0 +1,378 @@
+---
+- name: Configure fleet-local Samba AD and share
+  hosts: share_sidecar
+  become: yes
+  gather_facts: false
+  vars:
+    share_fqdn: share.ruse.test
+    share_domain: ruse.test
+    share_netbios_domain: RUSE
+    share_realm: RUSE.TEST
+    share_name: shared
+    share_root: /srv/ruse-share
+    share_principal: ruse-share@RUSE.TEST
+    share_service_principal: cifs/share.ruse.test@RUSE.TEST
+    feedback_profile: "{{ playbook_dir }}/../../../contracts/phase-workflow-plan-v1/resource-profiles/feedback-v2.json"
+  tasks:
+    - name: Wait for share-sidecar SSH
+      wait_for_connection:
+        delay: 5
+        timeout: 300
+
+    - name: Wait for share-sidecar cloud-init
+      command: cloud-init status --wait
+      changed_when: false
+      timeout: 300
+
+    - name: Retain OpenStack DHCP DNS forwarder before resolver changes
+      shell: >-
+        awk '/^nameserver / && $2 != "127.0.0.53" {print $2; exit}'
+        /run/systemd/resolve/resolv.conf
+      args:
+        executable: /bin/bash
+      register: openstack_dns
+      changed_when: false
+      failed_when: openstack_dns.stdout | trim == ''
+
+    - name: Stop and mask automatic APT activity on share sidecar
+      command:
+        argv:
+          - systemctl
+          - mask
+          - --now
+          - apt-daily.service
+          - apt-daily.timer
+          - apt-daily-upgrade.service
+          - apt-daily-upgrade.timer
+          - unattended-upgrades.service
+
+    - name: Install Samba AD and SMB/Kerberos packages
+      apt:
+        name: [samba, smbclient, krb5-user, dnsutils, python3]
+        state: present
+        update_cache: yes
+
+    - name: Set fixed share hostname
+      hostname:
+        name: share
+
+    - name: Stop standalone Samba units before AD provisioning
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      failed_when: false
+      loop: [smbd, nmbd, winbind, samba-ad-dc]
+
+    - name: Remove package-default Samba configuration before AD provisioning
+      file:
+        path: /etc/samba/smb.conf
+        state: absent
+
+    - name: Generate fresh fleet-local administrator password
+      set_fact:
+        share_admin_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+        share_client_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: Provision fixed Samba AD identity
+      command:
+        argv:
+          - samba-tool
+          - domain
+          - provision
+          - "--realm={{ share_realm }}"
+          - "--domain={{ share_netbios_domain }}"
+          - --server-role=dc
+          - --dns-backend=SAMBA_INTERNAL
+          - "--adminpass={{ share_admin_password }}"
+          - --host-name=share
+          - "--host-ip={{ share_ip }}"
+      args:
+        creates: /var/lib/samba/private/sam.ldb
+      no_log: true
+
+    - name: Configure retained OpenStack DNS forwarder
+      ini_file:
+        path: /etc/samba/smb.conf
+        section: global
+        option: dns forwarder
+        value: "{{ openstack_dns.stdout | trim }}"
+        no_extra_spaces: yes
+
+    - name: Configure exact shared file service
+      blockinfile:
+        path: /etc/samba/smb.conf
+        marker: "# {mark} RUSE FLEET SHARE"
+        block: |
+          [{{ share_name }}]
+              path = {{ share_root }}
+              read only = no
+              browseable = yes
+              inherit acls = yes
+
+    - name: Install seed generator
+      copy:
+        src: files/create-share-seeds.py
+        dest: /usr/local/sbin/create-ruse-share-seeds
+        mode: '0755'
+
+    - name: Install shared feedback resource profile for seed generation
+      copy:
+        src: "{{ feedback_profile }}"
+        dest: /var/lib/ruse-feedback-v2.json
+        mode: '0644'
+
+    - name: Create exact seed files and upload directories
+      command:
+        argv:
+          - /usr/local/sbin/create-ruse-share-seeds
+          - /var/lib/ruse-feedback-v2.json
+          - "{{ share_root }}"
+      args:
+        creates: "{{ share_root }}/Projects/project-status.odt"
+
+    - name: Create fixed Incoming directories for four canonical SUPs
+      file:
+        path: "{{ share_root }}/Incoming/{{ item }}"
+        state: directory
+        mode: '0777'
+      loop: [scripted-cpu, mchp-cpu, browseruse-gpu, smolagents-gpu]
+
+    - name: Start Samba AD DC
+      systemd:
+        name: samba-ad-dc
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Map share.ruse.test to the assigned OpenStack address
+      shell: |
+        set -euo pipefail
+        if ! samba-tool dns query 127.0.0.1 "{{ share_domain }}" share A \
+          -U "Administrator%{{ share_admin_password }}" >/dev/null 2>&1; then
+          samba-tool dns add 127.0.0.1 "{{ share_domain }}" share A "{{ share_ip }}" \
+            -U "Administrator%{{ share_admin_password }}"
+        fi
+      args:
+        executable: /bin/bash
+      no_log: true
+
+    - name: Create fresh fleet-local share client account
+      command:
+        argv:
+          - samba-tool
+          - user
+          - create
+          - ruse-share
+          - "{{ share_client_password }}"
+      no_log: true
+
+    - name: Register exact SMB service principal
+      command:
+        argv:
+          - samba-tool
+          - spn
+          - add
+          - cifs/share.ruse.test
+          - SHARE$
+
+    - name: Export fresh fleet-local client keytab
+      command:
+        argv:
+          - samba-tool
+          - domain
+          - exportkeytab
+          - /root/ruse-share.keytab
+          - "--principal={{ share_principal }}"
+      args:
+        creates: /root/ruse-share.keytab
+      no_log: true
+
+    - name: Read fleet keytab for in-memory distribution
+      slurp:
+        src: /root/ruse-share.keytab
+      register: share_keytab_blob
+      no_log: true
+
+    - name: Create sidecar systemd-resolved configuration directory
+      file:
+        path: /etc/systemd/resolved.conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Configure sidecar to use its authoritative Samba DNS
+      copy:
+        content: |
+          [Resolve]
+          DNS=127.0.0.1
+          Domains=~.
+        dest: /etc/systemd/resolved.conf.d/ruse-share.conf
+        mode: '0644'
+      notify: restart sidecar systemd-resolved
+
+    - name: Apply sidecar resolver configuration
+      meta: flush_handlers
+
+    - name: Verify fixed Samba identity and seeds
+      shell: |
+        set -euo pipefail
+        test "$(hostname)" = share
+        test -f "{{ share_root }}/Team/meeting-notes.odt"
+        test -f "{{ share_root }}/Operations/inventory.ods"
+        test -f "{{ share_root }}/Projects/project-status.odt"
+        samba-tool spn list 'SHARE$' | grep -F 'cifs/share.ruse.test'
+        samba-tool dns query 127.0.0.1 "{{ share_domain }}" share A \
+          -U "Administrator%{{ share_admin_password }}" | grep -F "{{ share_ip }}"
+        samba-tool dns query 127.0.0.1 "{{ share_domain }}" _kerberos._tcp SRV \
+          -U "Administrator%{{ share_admin_password }}" | grep -F 'share.ruse.test'
+        samba-tool dns query 127.0.0.1 "{{ share_domain }}" _ldap._tcp SRV \
+          -U "Administrator%{{ share_admin_password }}" | grep -F 'share.ruse.test'
+      args:
+        executable: /bin/bash
+      changed_when: false
+      no_log: true
+  handlers:
+    - name: restart sidecar systemd-resolved
+      systemd:
+        name: systemd-resolved
+        state: restarted
+
+- name: Configure the four SUP share clients
+  hosts: sup_hosts
+  become: yes
+  gather_facts: false
+  vars:
+    share_fqdn: share.ruse.test
+    share_realm: RUSE.TEST
+    share_unc: //share.ruse.test/shared
+    share_principal: ruse-share@RUSE.TEST
+    share_keytab_path: /etc/ruse/ruse-share.keytab
+  tasks:
+    - name: Stop and mask automatic APT activity before share client install
+      command:
+        argv:
+          - systemctl
+          - mask
+          - --now
+          - apt-daily.service
+          - apt-daily.timer
+          - apt-daily-upgrade.service
+          - apt-daily-upgrade.timer
+          - unattended-upgrades.service
+
+    - name: Install Kerberos and SMB client packages
+      apt:
+        name: [krb5-user, smbclient, dnsutils]
+        state: present
+        update_cache: yes
+
+    - name: Configure the fleet sidecar as persistent DNS resolver
+      file:
+        path: /etc/systemd/resolved.conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Install persistent fleet DNS resolver configuration
+      copy:
+        content: |
+          [Resolve]
+          DNS={{ share_ip }}
+          Domains=~.
+        dest: /etc/systemd/resolved.conf.d/ruse-share.conf
+        mode: '0644'
+      notify: restart systemd-resolved
+
+    - name: Configure exact fleet Kerberos realm
+      copy:
+        content: |
+          [libdefaults]
+              default_realm = {{ share_realm }}
+              dns_lookup_kdc = true
+              dns_lookup_realm = true
+              rdns = false
+          [realms]
+              {{ share_realm }} = {
+                  kdc = {{ share_fqdn }}
+              }
+          [domain_realm]
+              .ruse.test = {{ share_realm }}
+              ruse.test = {{ share_realm }}
+        dest: /etc/krb5.conf
+        mode: '0644'
+
+    - name: Create private RUSE credential directory
+      file:
+        path: /etc/ruse
+        state: directory
+        mode: '0700'
+
+    - name: Install only this fleet's in-memory keytab
+      copy:
+        content: "{{ hostvars[groups['share_sidecar'][0]].share_keytab_blob.content | b64decode }}"
+        dest: "{{ share_keytab_path }}"
+        mode: '0600'
+      no_log: true
+
+    - name: Create this SUP's private ticket-cache directory
+      file:
+        path: /run/ruse
+        state: directory
+        mode: '0700'
+
+    - name: Apply persistent DNS resolver before workflow service startup
+      meta: flush_handlers
+
+    - name: Verify local DNS Kerberos client and credential
+      shell: |
+        set -euo pipefail
+        getent hosts "{{ share_fqdn }}" | grep -F "{{ share_ip }}"
+        test -x /usr/bin/kinit
+        test -x /usr/bin/smbclient
+        test -s "{{ share_keytab_path }}"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Fleet smoke DNS and Kerberos from scripted-cpu
+      when: sup_behavior == 'scripted-cpu'
+      shell: |
+        set -euo pipefail
+        export KRB5CCNAME=FILE:/run/ruse/krb5cc_smoke
+        getent hosts "{{ share_fqdn }}" | grep -F "{{ share_ip }}"
+        kinit -kt "{{ share_keytab_path }}" "{{ share_principal }}"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Fleet smoke list and seed download from scripted-cpu
+      when: sup_behavior == 'scripted-cpu'
+      shell: |
+        set -euo pipefail
+        export KRB5CCNAME=FILE:/run/ruse/krb5cc_smoke
+        smbclient "{{ share_unc }}" --use-kerberos=required -c 'ls "Team"; get "Team/meeting-notes.odt" "/tmp/ruse-share-seed-smoke.odt"'
+        test -s /tmp/ruse-share-seed-smoke.odt
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Fleet smoke probe upload verify and remove from scripted-cpu
+      when: sup_behavior == 'scripted-cpu'
+      shell: |
+        set -euo pipefail
+        export KRB5CCNAME=FILE:/run/ruse/krb5cc_smoke
+        probe="/tmp/{{ deployment_id }}-share-probe"
+        remote="Incoming/scripted-cpu/{{ deployment_id }}-share-probe"
+        printf 'ruse-share-smoke' > "$probe"
+        smbclient "{{ share_unc }}" --use-kerberos=required -c "put \"$probe\" \"$remote\"; allinfo \"$remote\"" | grep -Ei 'size[ :=]+16'
+        smbclient "{{ share_unc }}" --use-kerberos=required -c "del \"$remote\""
+        rm -f "$probe" /tmp/ruse-share-seed-smoke.odt
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+  handlers:
+    - name: restart systemd-resolved
+      systemd:
+        name: systemd-resolved
+        state: restarted

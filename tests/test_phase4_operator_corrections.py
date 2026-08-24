@@ -88,7 +88,10 @@ class Phase4OperatorCorrectionTests(unittest.TestCase):
     def test_display_reads_the_existing_capabilities_contract(self):
         self.assertEqual(feedback.WORKFLOW_CAPABILITIES_PATH, CAPABILITIES_PATH)
         capabilities = json.loads(CAPABILITIES_PATH.read_text(encoding="utf-8"))
-        capabilities["brain_profiles"]["browseruse-gpu"]["control"]["model"][
+        profile_name = next(iter(
+            capabilities["brain_profiles"]["browseruse-gpu"]
+        ))
+        capabilities["brain_profiles"]["browseruse-gpu"][profile_name]["model"][
             "ollama"
         ] = "contract-test-model"
 
@@ -103,16 +106,20 @@ class Phase4OperatorCorrectionTests(unittest.TestCase):
         self.assertIn("contract-test-model", lines[-1])
 
     def test_controls_are_labeled_control_not_baseline(self):
-        plan = build_deploy_plan(
-            "decoy",
-            want_controls=True,
-            want_feedback=False,
-            configs_spec=None,
-            single_selector=None,
-            target=None,
-            source=None,
-            deploy_dir=REPOSITORY_ROOT / "deployments",
-        )
+        with mock.patch(
+            "deployment_engine.core.plan.find_decoy_control_generation",
+            return_value=Path("/controls/2026-08-24_1456Z"),
+        ):
+            plan = build_deploy_plan(
+                "decoy",
+                want_controls=True,
+                want_feedback=False,
+                configs_spec=None,
+                single_selector=None,
+                target=None,
+                source=None,
+                deploy_dir=REPOSITORY_ROOT / "deployments",
+            )
         self.assertEqual(plan[0]["label"], "decoy-controls (control)")
         self.assertNotIn("baseline", plan[0]["label"])
 

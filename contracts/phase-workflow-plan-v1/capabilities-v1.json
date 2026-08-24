@@ -1,14 +1,24 @@
 {
   "schema": "phase-workflow-capabilities-v1",
   "max_parallel_workflows": 10,
-  "control_instructions": {
-    "WebResearch": "Use the assigned research resource. For a search query, open one result and read it. For a direct page, read it and follow one relevant link.",
-    "VideoViewing": "Open the assigned video and play it for five minutes.",
-    "DocumentCreation": "Create and save the assigned document or spreadsheet using the provided template and sample content."
+  "instructions": {
+    "controls-v2": {
+      "WebResearch": "Use the assigned research resource. For a search query, open one result and read it. For a direct page, read it and follow one relevant link.",
+      "VideoViewing": "Open the assigned video and play it for five minutes.",
+      "DocumentCreation": "Create and save the assigned document or spreadsheet using the provided template and sample content."
+    },
+    "feedback-v2": {
+      "WebResearch": "Open the assigned page, read it, and follow one relevant link from that page.",
+      "VideoViewing": "Open the assigned video and play it for five minutes.",
+      "FileDownload": "Download the assigned file once using the bounded assigned-file action.",
+      "DocumentCreation": "Create and save the assigned document or spreadsheet using the provided template and sample content.",
+      "FileSyncUpload": "Sync one assigned local document once using the bounded assigned-upload action.",
+      "NetworkShareAccess": "Access the assigned network share once using the bounded assigned-share action."
+    }
   },
   "brain_profiles": {
     "browseruse-gpu": {
-      "control": {
+      "browseruse-v1": {
         "framework": {
           "name": "browser-use",
           "version": "0.12.7"
@@ -22,7 +32,7 @@
       }
     },
     "smolagents-gpu": {
-      "control": {
+      "smolagents-v1": {
         "framework": {
           "name": "smolagents",
           "version": "1.25.0"
@@ -36,7 +46,7 @@
       }
     },
     "mchp-cpu": {
-      "control": {
+      "mchp-v1": {
         "model": null,
         "system_guidance": null,
         "max_steps": null,
@@ -49,8 +59,18 @@
           },
           "DocumentCreation": {
             "resource_kinds": ["document", "spreadsheet"]
-          }
+          },
+          "FileDownload": {"resource_kinds": ["https_download"]},
+          "FileSyncUpload": {"resource_kinds": ["https_upload"]},
+          "NetworkShareAccess": {"resource_kinds": ["kerberos_smb_share"]}
         }
+      }
+    },
+    "scripted-cpu": {
+      "scripted-v1": {
+        "model": null,
+        "system_guidance": null,
+        "max_steps": null
       }
     }
   },
@@ -60,9 +80,12 @@
       "hardware": "cpu",
       "instruction": "forbidden",
       "workflows": {
-        "WebResearch": ["control"],
-        "VideoViewing": ["control"],
-        "DocumentCreation": ["control"]
+        "WebResearch": ["scripted-v1"],
+        "VideoViewing": ["scripted-v1"],
+        "FileDownload": ["scripted-v1"],
+        "DocumentCreation": ["scripted-v1"],
+        "FileSyncUpload": ["scripted-v1"],
+        "NetworkShareAccess": ["scripted-v1"]
       }
     },
     "mchp-cpu": {
@@ -70,9 +93,12 @@
       "hardware": "cpu",
       "instruction": "forbidden",
       "workflows": {
-        "WebResearch": ["control"],
-        "VideoViewing": ["control"],
-        "DocumentCreation": ["control"]
+        "WebResearch": ["mchp-v1"],
+        "VideoViewing": ["mchp-v1"],
+        "FileDownload": ["mchp-v1"],
+        "DocumentCreation": ["mchp-v1"],
+        "FileSyncUpload": ["mchp-v1"],
+        "NetworkShareAccess": ["mchp-v1"]
       }
     },
     "browseruse-gpu": {
@@ -80,9 +106,12 @@
       "hardware": "gpu",
       "instruction": "required",
       "workflows": {
-        "WebResearch": ["control"],
-        "VideoViewing": ["control"],
-        "DocumentCreation": ["control"]
+        "WebResearch": ["browseruse-v1"],
+        "VideoViewing": ["browseruse-v1"],
+        "FileDownload": ["browseruse-v1"],
+        "DocumentCreation": ["browseruse-v1"],
+        "FileSyncUpload": ["browseruse-v1"],
+        "NetworkShareAccess": ["browseruse-v1"]
       }
     },
     "smolagents-gpu": {
@@ -90,15 +119,21 @@
       "hardware": "gpu",
       "instruction": "required",
       "workflows": {
-        "WebResearch": ["control"],
-        "VideoViewing": ["control"],
-        "DocumentCreation": ["control"]
+        "WebResearch": ["smolagents-v1"],
+        "VideoViewing": ["smolagents-v1"],
+        "FileDownload": ["smolagents-v1"],
+        "DocumentCreation": ["smolagents-v1"],
+        "FileSyncUpload": ["smolagents-v1"],
+        "NetworkShareAccess": ["smolagents-v1"]
       }
     }
   },
-  "target_profiles": {
-    "control-default": {
-      "path": "target-profiles/control-default.json"
+  "resource_profiles": {
+    "controls-v2": {
+      "path": "resource-profiles/controls-v2.json"
+    },
+    "feedback-v2": {
+      "path": "resource-profiles/feedback-v2.json"
     }
   }
 }

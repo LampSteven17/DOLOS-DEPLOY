@@ -796,7 +796,7 @@ install_python_deps() {
     # Base deps for brain type
     case "$BRAIN" in
         scripted)
-            pip install selenium
+            pip install selenium requests
             ;;
         mchp)
             pip install selenium beautifulsoup4 lxml pyautogui lorem requests
@@ -816,7 +816,7 @@ install_python_deps() {
             # browser-use pinned: _BU_ACTION_MAP in brains/browseruse/agent.py keys
             # on this version's action names (renamed across the 0.12.x line).
             # Bumping unpinned silently breaks step logging — confirmed 2026-05-25.
-            pip install 'browser-use==0.12.7' langchain-ollama playwright
+            pip install 'browser-use==0.12.7' langchain-ollama playwright requests
             playwright install --with-deps chromium
             ;;
     esac

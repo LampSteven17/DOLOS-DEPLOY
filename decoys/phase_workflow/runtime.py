@@ -44,7 +44,7 @@ def run_workflow_runtime(config_key: str, behavior_config_dir: Optional[str]) ->
         "sup_config": plan.sup_config,
         "brain": plan.brain,
         "hardware": plan.hardware,
-        "target_profile": plan.target_profile,
+        "resource_profile": plan.resource_profile,
         "timezone": str(plan.timezone),
         "max_parallel": plan.max_parallel,
     })

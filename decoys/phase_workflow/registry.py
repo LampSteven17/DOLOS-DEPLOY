@@ -12,19 +12,24 @@ from phase_workflow.loader import PlanEntry, WorkflowPlan
 CANONICAL_HANDLERS = frozenset({
     "WebResearch",
     "VideoViewing",
+    "FileDownload",
     "DocumentCreation",
+    "FileSyncUpload",
+    "NetworkShareAccess",
 })
 
 
 @dataclass(frozen=True)
 class ResolvedTask:
     workflow: str
-    target_profile: str
+    resource_profile: str
+    sup_config: str
     brain: str
     brain_profile: str
     resource_id: str
     resource: Mapping[str, Any]
     instruction: Optional[str]
+    occurrence_id: str = "manual"
 
 
 @dataclass(frozen=True)
@@ -39,7 +44,7 @@ class Brain(Protocol):
 
 
 class WorkflowRegistry:
-    """Dispatch exactly the three currently installed canonical workflows."""
+    """Dispatch exactly the six installed canonical workflows."""
 
     def __init__(self, plan: WorkflowPlan, brain: Brain, workspace_root: Path):
         self._plan = plan
@@ -51,17 +56,21 @@ class WorkflowRegistry:
     def workflows(self) -> frozenset[str]:
         return frozenset(self._handlers)
 
-    def resolve(self, entry: PlanEntry) -> ResolvedTask:
+    def resolve(
+        self, entry: PlanEntry, *, occurrence_id: str = "manual"
+    ) -> ResolvedTask:
         if entry.workflow not in self._handlers:
             raise RuntimeError(f"unregistered canonical workflow: {entry.workflow}")
         return ResolvedTask(
             workflow=entry.workflow,
-            target_profile=self._plan.target_profile,
+            resource_profile=self._plan.resource_profile,
+            sup_config=self._plan.sup_config,
             brain=self._plan.brain,
             brain_profile=entry.brain_profile,
             resource_id=entry.resource_id,
             resource=entry.resource,
             instruction=entry.instruction,
+            occurrence_id=occurrence_id,
         )
 
     def execute(self, task: ResolvedTask, local_day: str) -> WorkflowResult:

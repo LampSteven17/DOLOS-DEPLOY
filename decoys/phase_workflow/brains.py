@@ -12,11 +12,16 @@ from urllib.parse import parse_qs, quote_plus, urljoin, urlsplit, urlunsplit
 
 from phase_workflow.registry import ResolvedTask, WorkflowResult
 from phase_workflow.workflows import (
+    DailyDocumentStore,
+    HttpsDocumentSync,
+    KerberosShareAccess,
     MCHPDocumentWorkflows,
     OpenDocumentWriter,
     SeleniumResourceWorkflows,
+    firefox_download,
     play_video_realtime,
     play_video_with_chromium,
+    stream_https_download,
     structured_llm_task,
 )
 
@@ -41,33 +46,58 @@ def _chromium_driver():
     return webdriver.Chrome(options=options)
 
 
-def _mchp_driver():
+def _mchp_driver(download_dir=None):
     from brains.mchp.app.utility.webdriver_helper import WebDriverHelper
 
-    return WebDriverHelper()
+    return WebDriverHelper(download_dir=download_dir)
 
 
 class ResourceBrain:
     """Canonical resource handlers used by Scripted and MCHP."""
 
-    def __init__(self, web: SeleniumResourceWorkflows, documents=None):
+    def __init__(
+        self,
+        web: SeleniumResourceWorkflows,
+        documents=None,
+        document_store=None,
+        downloader=None,
+        syncer=None,
+        share=None,
+    ):
         self._web = web
         self._documents = documents or OpenDocumentWriter()
+        self._document_store = document_store or DailyDocumentStore()
+        self._downloader = downloader or stream_https_download
+        self._syncer = syncer or HttpsDocumentSync(self._document_store)
+        self._share = share or KerberosShareAccess(self._document_store)
         self._handlers = {
             "WebResearch": self._web.web_research,
             "VideoViewing": self._web.video_viewing,
             "DocumentCreation": self._document,
+            "FileDownload": self._download,
+            "FileSyncUpload": self._syncer.execute,
+            "NetworkShareAccess": self._share.execute,
         }
 
     def execute(self, task: ResolvedTask, workspace: Path) -> WorkflowResult:
         if task.instruction is not None:
             raise RuntimeError(f"{task.brain} must not receive an instruction")
-        if task.workflow == "DocumentCreation":
-            return self._document(task, workspace)
+        if task.workflow in {
+            "DocumentCreation", "FileDownload", "FileSyncUpload",
+            "NetworkShareAccess",
+        }:
+            return self._handlers[task.workflow](task, workspace)
         return self._handlers[task.workflow](task)
 
     def _document(self, task: ResolvedTask, workspace: Path) -> WorkflowResult:
-        return self._documents.create(task, workspace)
+        result = self._documents.create(task, workspace)
+        if result.completed and result.artifact is not None:
+            self._document_store.register(Path(workspace).name, Path(result.artifact))
+        return result
+
+    def _download(self, task: ResolvedTask, workspace: Path) -> WorkflowResult:
+        artifact = self._downloader(task, workspace)
+        return WorkflowResult(completed=True, artifact=str(artifact))
 
 
 class FrameworkBrain:
@@ -76,13 +106,23 @@ class FrameworkBrain:
     def __init__(
         self,
         runner: Callable[[ResolvedTask, Path], WorkflowResult],
+        document_store=None,
     ):
         self._runner = runner
+        self._document_store = document_store
 
     def execute(self, task: ResolvedTask, workspace: Path) -> WorkflowResult:
         if task.instruction is None:
             raise RuntimeError(f"{task.brain} requires an instruction")
-        return self._runner(task, workspace)
+        result = self._runner(task, workspace)
+        if (
+            task.workflow == "DocumentCreation"
+            and result.completed
+            and result.artifact is not None
+            and self._document_store is not None
+        ):
+            self._document_store.register(Path(workspace).name, Path(result.artifact))
+        return result
 
 
 class AssignedVideoPlayback:
@@ -174,6 +214,92 @@ class AssignedDocumentCreation:
             self.artifact = result.artifact
             return "assigned document created"
         return f"assigned document creation failed: {self.error}"
+
+
+class AssignedFileDownload:
+    """One immutable, exact-size assigned download action."""
+
+    def __init__(self, task: ResolvedTask, workspace: Path, downloader):
+        if task.workflow != "FileDownload" or task.resource["kind"] != "https_download":
+            raise RuntimeError("assigned download requires FileDownload")
+        self.task = task
+        self.workspace = Path(workspace)
+        self._downloader = downloader
+        self.call_count = 0
+        self.succeeded = False
+        self.artifact: Optional[str] = None
+        self.error: Optional[str] = None
+
+    @property
+    def completed(self) -> bool:
+        return self.call_count == 1 and self.succeeded
+
+    @property
+    def result(self) -> WorkflowResult:
+        return WorkflowResult(
+            completed=self.completed,
+            artifact=self.artifact if self.completed else None,
+        )
+
+    def invoke(self) -> str:
+        self.call_count += 1
+        if self.call_count != 1:
+            self.error = "assigned download action may be invoked only once"
+            return self.error
+        try:
+            artifact = Path(self._downloader(self.task, self.workspace))
+            if not artifact.is_file():
+                raise RuntimeError("assigned download produced no local file")
+            if artifact.stat().st_size != self.task.resource["expected_bytes"]:
+                raise RuntimeError("assigned download produced the wrong byte size")
+        except Exception as exc:
+            self.error = str(exc) or type(exc).__name__
+            return f"assigned download failed: {self.error}"
+        self.succeeded = True
+        self.artifact = str(artifact)
+        return "assigned download completed"
+
+
+class AssignedBoundedTransfer:
+    """Exactly-once wrapper for one immutable sync or share primitive."""
+
+    def __init__(self, task: ResolvedTask, workspace: Path, executor):
+        if task.workflow not in {"FileSyncUpload", "NetworkShareAccess"}:
+            raise RuntimeError("assigned transfer requires a transfer workflow")
+        self.task = task
+        self.workspace = Path(workspace)
+        self._executor = executor
+        self.call_count = 0
+        self.succeeded = False
+        self.artifact: Optional[str] = None
+        self.error: Optional[str] = None
+
+    @property
+    def completed(self) -> bool:
+        return self.call_count == 1 and self.succeeded
+
+    @property
+    def result(self) -> WorkflowResult:
+        return WorkflowResult(
+            completed=self.completed,
+            artifact=self.artifact if self.completed else None,
+        )
+
+    def invoke(self) -> str:
+        self.call_count += 1
+        if self.call_count != 1:
+            self.error = "assigned transfer action may be invoked only once"
+            return self.error
+        try:
+            result = self._executor.execute(self.task, self.workspace)
+            if not result.completed:
+                raise RuntimeError("bounded transfer returned failure")
+        except Exception as exc:
+            self.error = str(exc) or type(exc).__name__
+            return f"assigned transfer failed: {self.error}"
+        self.succeeded = True
+        self.artifact = result.artifact
+        return "assigned transfer completed"
 
 
 class AssignedWebResearch:
@@ -324,6 +450,9 @@ def browseruse_runner(
     *,
     video_player: Callable[[ResolvedTask], bool] = play_video_with_chromium,
     document_writer: Optional[OpenDocumentWriter] = None,
+    downloader=stream_https_download,
+    syncer=None,
+    share=None,
     framework_api=None,
     llm_factory=None,
     step_logger=None,
@@ -346,6 +475,8 @@ def browseruse_runner(
 
     playback = None
     document = None
+    assigned_download = None
+    assigned_transfer = None
     tools = None
     if task.workflow == "VideoViewing":
         playback = AssignedVideoPlayback(task, video_player)
@@ -393,6 +524,62 @@ def browseruse_runner(
                 extracted_content=message,
                 error=None if document.completed else message,
             )
+    elif task.workflow == "FileDownload":
+        assigned_download = AssignedFileDownload(task, workspace, downloader)
+        tools = Tools()
+        for action_name in tuple(tools.registry.registry.actions):
+            tools.exclude_action(action_name)
+
+        @tools.action(
+            "Download the assigned file exactly once. This action accepts no URL, "
+            "filename, expected-size, or alternate-resource parameters.",
+            terminates_sequence=True,
+        )
+        def download_assigned_file():
+            message = assigned_download.invoke()
+            return ActionResult(
+                is_done=True,
+                success=assigned_download.completed,
+                extracted_content=message,
+                error=None if assigned_download.completed else message,
+            )
+    elif task.workflow in {"FileSyncUpload", "NetworkShareAccess"}:
+        executor = syncer if task.workflow == "FileSyncUpload" else share
+        if executor is None:
+            raise RuntimeError(f"missing bounded executor for {task.workflow}")
+        assigned_transfer = AssignedBoundedTransfer(task, workspace, executor)
+        tools = Tools()
+        for action_name in tuple(tools.registry.registry.actions):
+            tools.exclude_action(action_name)
+
+        if task.workflow == "FileSyncUpload":
+            @tools.action(
+                "Upload the assigned local document exactly once. This action "
+                "accepts no file, endpoint, bytes, or request parameters.",
+                terminates_sequence=True,
+            )
+            def sync_assigned_document():
+                message = assigned_transfer.invoke()
+                return ActionResult(
+                    is_done=True,
+                    success=assigned_transfer.completed,
+                    extracted_content=message,
+                    error=None if assigned_transfer.completed else message,
+                )
+        else:
+            @tools.action(
+                "Access the assigned network share exactly once. This action "
+                "accepts no share, path, credential, or command parameters.",
+                terminates_sequence=True,
+            )
+            def access_assigned_share():
+                message = assigned_transfer.invoke()
+                return ActionResult(
+                    is_done=True,
+                    success=assigned_transfer.completed,
+                    extracted_content=message,
+                    error=None if assigned_transfer.completed else message,
+                )
 
     async def run():
         agent_kwargs = dict(
@@ -407,6 +594,8 @@ def browseruse_runner(
             agent_kwargs["tools"] = tools
         if playback is not None:
             agent_kwargs["step_timeout"] = task.resource["play_seconds"] + 60
+        elif assigned_download is not None or assigned_transfer is not None:
+            agent_kwargs["step_timeout"] = 360
         agent = Agent(**agent_kwargs)
         result = await agent.run(max_steps=profile["max_steps"])
         step_logger(logger, result)
@@ -421,6 +610,18 @@ def browseruse_runner(
                 artifact=document.artifact
                 if document.completed and framework_completed else None,
             )
+        if assigned_download is not None:
+            result = assigned_download.result
+            return WorkflowResult(
+                completed=result.completed and framework_completed,
+                artifact=result.artifact if framework_completed else None,
+            )
+        if assigned_transfer is not None:
+            result = assigned_transfer.result
+            return WorkflowResult(
+                completed=result.completed and framework_completed,
+                artifact=result.artifact if framework_completed else None,
+            )
         return WorkflowResult(completed=framework_completed)
 
     return asyncio.run(run())
@@ -434,6 +635,9 @@ def smolagents_runner(
     *,
     video_player: Callable[[ResolvedTask], bool] = play_video_realtime,
     document_writer: Optional[OpenDocumentWriter] = None,
+    downloader=stream_https_download,
+    syncer=None,
+    share=None,
     webpage_reader: Callable[[str], str] = _read_webpage,
     framework_api=None,
 ) -> WorkflowResult:
@@ -455,6 +659,8 @@ def smolagents_runner(
     playback = None
     document = None
     research = None
+    assigned_download = None
+    assigned_transfer = None
     if task.workflow == "VideoViewing":
         playback = AssignedVideoPlayback(task, video_player)
 
@@ -496,7 +702,65 @@ def smolagents_runner(
                 return message
 
         tools = [CreateAssignedDocumentTool()]
-    else:
+    elif task.workflow == "FileDownload":
+        assigned_download = AssignedFileDownload(task, workspace, downloader)
+
+        class DownloadAssignedFileTool(Tool):
+            name = "download_assigned_file"
+            description = (
+                "Download the assigned file exactly once. The URL and expected "
+                "size are fixed; this tool accepts no inputs."
+            )
+            inputs = {}
+            output_type = "string"
+
+            def forward(self):
+                message = assigned_download.invoke()
+                if not assigned_download.completed:
+                    raise RuntimeError(message)
+                return message
+
+        tools = [DownloadAssignedFileTool()]
+    elif task.workflow in {"FileSyncUpload", "NetworkShareAccess"}:
+        executor = syncer if task.workflow == "FileSyncUpload" else share
+        if executor is None:
+            raise RuntimeError(f"missing bounded executor for {task.workflow}")
+        assigned_transfer = AssignedBoundedTransfer(task, workspace, executor)
+
+        if task.workflow == "FileSyncUpload":
+            class AssignedTransferTool(Tool):
+                name = "sync_assigned_document"
+                description = (
+                    "Upload the assigned local document exactly once. The file, "
+                    "endpoint, and request are fixed; this tool accepts no inputs."
+                )
+                inputs = {}
+                output_type = "string"
+
+                def forward(self):
+                    message = assigned_transfer.invoke()
+                    if not assigned_transfer.completed:
+                        raise RuntimeError(message)
+                    return message
+        else:
+            class AssignedTransferTool(Tool):
+                name = "access_assigned_share"
+                description = (
+                    "Access the assigned network share exactly once. The share, "
+                    "seed, credentials, and transfer are fixed; this tool accepts "
+                    "no inputs."
+                )
+                inputs = {}
+                output_type = "string"
+
+                def forward(self):
+                    message = assigned_transfer.invoke()
+                    if not assigned_transfer.completed:
+                        raise RuntimeError(message)
+                    return message
+
+        tools = [AssignedTransferTool()]
+    elif task.workflow == "WebResearch":
         research = AssignedWebResearch(task, webpage_reader)
 
         class VerifiedVisitWebpageTool(VisitWebpageTool):
@@ -504,6 +768,8 @@ def smolagents_runner(
                 return research.invoke(url)
 
         tools = [VerifiedVisitWebpageTool()]
+    else:
+        raise RuntimeError(f"unsupported SmolAgents workflow: {task.workflow}")
 
     agent_kwargs = dict(
         tools=tools,
@@ -516,6 +782,8 @@ def smolagents_runner(
         agent_kwargs["executor_kwargs"] = {
             "timeout_seconds": task.resource["play_seconds"] + 60,
         }
+    elif assigned_download is not None or assigned_transfer is not None:
+        agent_kwargs["executor_kwargs"] = {"timeout_seconds": 360}
     if document is not None:
         agent_kwargs["use_structured_outputs_internally"] = True
     agent = CodeAgent(**agent_kwargs)
@@ -524,16 +792,41 @@ def smolagents_runner(
         return WorkflowResult(completed=playback.completed)
     if document is not None:
         return document.result
-    return WorkflowResult(completed=research.completed)
+    if assigned_download is not None:
+        return assigned_download.result
+    if assigned_transfer is not None:
+        return assigned_transfer.result
+    return WorkflowResult(completed=bool(research and research.completed))
 
 
-def build_brain(brain: str, profile: Mapping, logger=None):
+def build_brain(
+    brain: str,
+    profile: Mapping,
+    logger=None,
+    *,
+    document_store: Optional[DailyDocumentStore] = None,
+):
+    documents = document_store or DailyDocumentStore()
+    syncer = HttpsDocumentSync(documents)
+    share = KerberosShareAccess(documents)
     if brain == "scripted":
-        return ResourceBrain(SeleniumResourceWorkflows(_chromium_driver))
+        return ResourceBrain(
+            SeleniumResourceWorkflows(_chromium_driver),
+            document_store=documents,
+            downloader=stream_https_download,
+            syncer=syncer,
+            share=share,
+        )
     if brain == "mchp":
         return ResourceBrain(
             SeleniumResourceWorkflows(_mchp_driver),
             documents=MCHPDocumentWorkflows(logger=logger),
+            document_store=documents,
+            downloader=lambda task, workspace: firefox_download(
+                task, workspace, lambda path: _mchp_driver(path)
+            ),
+            syncer=syncer,
+            share=share,
         )
     if brain == "browseruse":
         return FrameworkBrain(
@@ -543,7 +836,11 @@ def build_brain(brain: str, profile: Mapping, logger=None):
                 profile,
                 logger,
                 video_player=play_video_with_chromium,
+                downloader=stream_https_download,
+                syncer=syncer,
+                share=share,
             ),
+            document_store=documents,
         )
     if brain == "smolagents":
         return FrameworkBrain(
@@ -553,6 +850,10 @@ def build_brain(brain: str, profile: Mapping, logger=None):
                 profile,
                 logger,
                 video_player=play_video_realtime,
+                downloader=stream_https_download,
+                syncer=syncer,
+                share=share,
             ),
+            document_store=documents,
         )
     raise RuntimeError(f"unsupported canonical Brain: {brain}")

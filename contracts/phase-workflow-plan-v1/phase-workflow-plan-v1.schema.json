@@ -8,7 +8,7 @@
   "required": [
     "schema",
     "sup_config",
-    "target_profile",
+    "resource_profile",
     "timezone",
     "max_parallel",
     "schedule"
@@ -26,9 +26,10 @@
         "smolagents-gpu"
       ]
     },
-    "target_profile": {
+    "resource_profile": {
+      "description": "Shared symbolic-resource catalog used by this complete Brain plan.",
       "type": "string",
-      "minLength": 1
+      "enum": ["controls-v2", "feedback-v2"]
     },
     "timezone": {
       "description": "IANA timezone for daily recurrence. Nonexistent spring-forward starts are missed; repeated fall-back starts execute once at their first occurrence.",
@@ -112,7 +113,7 @@
           ]
         },
         "resource_id": {
-          "description": "Symbolic resource resolved by the selected RUSE target profile.",
+          "description": "Symbolic resource resolved by the selected shared resource profile.",
           "type": "string",
           "minLength": 1
         },

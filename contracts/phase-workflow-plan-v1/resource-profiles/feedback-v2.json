@@ -1,61 +1,31 @@
 {
-  "schema": "phase-target-profile-v1",
-  "id": "control-default",
+  "schema": "phase-resource-profile-v1",
+  "id": "feedback-v2",
   "resources": {
     "wikipedia_compiler": {
       "workflow": "WebResearch",
       "kind": "direct_url",
       "url": "https://en.wikipedia.org/wiki/Compiler"
     },
-    "google_climate_change_news": {
-      "workflow": "WebResearch",
-      "kind": "search_query",
-      "provider": "google",
-      "query": "climate change news"
-    },
     "wikipedia_geometry": {
       "workflow": "WebResearch",
       "kind": "direct_url",
       "url": "https://en.wikipedia.org/wiki/Geometry"
-    },
-    "google_weather_today": {
-      "workflow": "WebResearch",
-      "kind": "search_query",
-      "provider": "google",
-      "query": "weather today"
     },
     "wikipedia_deep_learning": {
       "workflow": "WebResearch",
       "kind": "direct_url",
       "url": "https://en.wikipedia.org/wiki/Deep_learning"
     },
-    "google_recipes_for_dinner": {
-      "workflow": "WebResearch",
-      "kind": "search_query",
-      "provider": "google",
-      "query": "recipes for dinner"
-    },
     "wikipedia_solar_power": {
       "workflow": "WebResearch",
       "kind": "direct_url",
       "url": "https://en.wikipedia.org/wiki/Solar_power"
     },
-    "google_renewable_energy": {
-      "workflow": "WebResearch",
-      "kind": "search_query",
-      "provider": "google",
-      "query": "renewable energy"
-    },
     "wikipedia_python": {
       "workflow": "WebResearch",
       "kind": "direct_url",
       "url": "https://en.wikipedia.org/wiki/Python_(programming_language)"
-    },
-    "google_running_shoes_review": {
-      "workflow": "WebResearch",
-      "kind": "search_query",
-      "provider": "google",
-      "query": "running shoes review"
     },
     "video_cpp_course": {
       "workflow": "VideoViewing",
@@ -217,6 +187,62 @@
         "Meetings": ["Team check-in on Wednesday", "Project review on Friday"],
         "Reminders": ["Update the task tracker", "Send the weekly summary"]
       }
+    },
+    "download_ovh_1m": {
+      "workflow": "FileDownload",
+      "kind": "https_download",
+      "url": "https://sbg.proof.ovh.net/files/1Mb.dat",
+      "expected_bytes": 1048576
+    },
+    "download_ovh_10m": {
+      "workflow": "FileDownload",
+      "kind": "https_download",
+      "url": "https://sbg.proof.ovh.net/files/10Mb.dat",
+      "expected_bytes": 10485760
+    },
+    "download_ovh_100m": {
+      "workflow": "FileDownload",
+      "kind": "https_download",
+      "url": "https://sbg.proof.ovh.net/files/100Mb.dat",
+      "expected_bytes": 104857600
+    },
+    "download_sasag_1m": {
+      "workflow": "FileDownload",
+      "kind": "https_download",
+      "url": "https://speedtest.sasag.ch/files/1M.zip",
+      "expected_bytes": 1048576
+    },
+    "download_sasag_10m": {
+      "workflow": "FileDownload",
+      "kind": "https_download",
+      "url": "https://speedtest.sasag.ch/files/10M.zip",
+      "expected_bytes": 10485760
+    },
+    "download_sasag_100m": {
+      "workflow": "FileDownload",
+      "kind": "https_download",
+      "url": "https://speedtest.sasag.ch/files/100M.zip",
+      "expected_bytes": 104857600
+    },
+    "cloudflare_upload": {
+      "workflow": "FileSyncUpload",
+      "kind": "https_upload",
+      "url": "https://speed.cloudflare.com/__up"
+    },
+    "share_team_notes": {
+      "workflow": "NetworkShareAccess",
+      "kind": "kerberos_smb_share",
+      "path": "Team/meeting-notes.odt"
+    },
+    "share_inventory": {
+      "workflow": "NetworkShareAccess",
+      "kind": "kerberos_smb_share",
+      "path": "Operations/inventory.ods"
+    },
+    "share_project_status": {
+      "workflow": "NetworkShareAccess",
+      "kind": "kerberos_smb_share",
+      "path": "Projects/project-status.odt"
     }
   }
 }

@@ -12,11 +12,12 @@ from pathlib import Path
 from ..core import output
 from ..core.ansible_runner import AnsibleRunner, AnsibleEvent, default_event_handler
 from ..core.config import DeploymentConfig
-from ..core.openstack import OpenStack
+from ..core.openstack import OpenStack, OpenStackCommandError
 from ..core.ssh_config import install_ssh_config
 from ..core.feedback import (
     DECOY_FEEDBACK_SUP_CONFIGS,
     FeedbackSourceError,
+    decoy_generation_uses_network_share,
     generate_feedback_config,
     validate_decoy_control_generation,
     validate_decoy_feedback_generation,
@@ -25,7 +26,8 @@ from ..core.revision import RevisionError, resolve_ruse_revision
 from ..core.vm_naming import make_run_dep_id, make_vm_prefix
 from ..core import run_status
 from ..core.deploy_steps import (
-    neighborhood_vms, register_phase_run, ssh_connectivity_test,
+    neighborhood_vms, register_phase_run, share_sidecar_vms,
+    ssh_connectivity_test,
 )
 from ..core.phase_run_registry import (
     PhaseRunRegistryError,
@@ -41,6 +43,12 @@ CANONICAL_WORKFLOW_CONFIGS = frozenset({
     "browseruse-gpu",
     "smolagents-gpu",
 })
+SHARE_SIDECAR_FLAVOR = "v1.small"
+SHARE_SIDECAR_SUFFIX = "share-0"
+SHARE_SIDECAR_IMAGE = "noble-amd64"
+SHARE_SIDECAR_NETWORK = "ext_net"
+SHARE_SIDECAR_KEYPAIR = "bot-desktop"
+SHARE_SIDECAR_SECURITY_GROUP = "default"
 def run_decoy_spinup(
     config_name: str,
     deploy_dir: Path,
@@ -133,6 +141,23 @@ def run_decoy_spinup(
             output.error("will not fall back to an older timestamp.")
         return 1
 
+    share_required = False
+    if (
+        effective_source
+        and config.purpose in {"control", "feedback"}
+        and all(
+            dep.get("behavior") in CANONICAL_WORKFLOW_CONFIGS
+            for dep in config.deployments
+        )
+    ):
+        try:
+            share_required = decoy_generation_uses_network_share(
+                Path(effective_source), purpose=config.purpose
+            )
+        except FeedbackSourceError as exc:
+            output.error(f"ERROR: {exc}")
+            return 1
+
     # Display header
     output.banner(f"DEPLOY: {config_name}")
     output.info(f"  VMs:       {config.brain_summary()}")
@@ -156,6 +181,14 @@ def run_decoy_spinup(
     run_status.write_run_status(run_dir, run_status.FAILED, "in_progress")
 
     runner = AnsibleRunner(deploy_dir / "logs")
+
+    share_host = None
+    if share_required:
+        try:
+            share_host = _provision_share_sidecar(dep_id, vm_prefix)
+        except OpenStackCommandError as exc:
+            output.error(f"ERROR: share sidecar provisioning failed: {exc}")
+            return 1
 
     # Phase 1: Provision
     output.info("")
@@ -189,6 +222,9 @@ def run_decoy_spinup(
         output.info("")
         output.info("WARNING: Provisioning completed with failures. Continuing install for successful VMs.")
 
+    if share_host is not None:
+        _append_share_inventory(inventory_path, share_host)
+
     # Count provisioned VMs and extract host info
     provisioned_hosts = _parse_inventory(inventory_path)
     provisioned = len(provisioned_hosts)
@@ -210,6 +246,26 @@ def run_decoy_spinup(
         output.info(f"  WARNING: SSH reachable on {ssh_ok}/{provisioned} VMs (threshold met)")
     else:
         output.info(f"  All {ssh_ok} VMs reachable via SSH")
+
+    if share_host is not None:
+        output.info("")
+        output.info("--- Configuring fleet-local Samba share ---")
+        share_result = runner.run_playbook(
+            "decoy/prepare-share.yaml",
+            inventory_path,
+            extra_vars={
+                "deployment_id": dep_id,
+                "run_dir": str(run_dir),
+                "share_ip": share_host["ip"],
+            },
+            on_event=default_event_handler,
+        )
+        if share_result.rc != 0:
+            output.error(
+                f"ABORTING: prepare-share.yaml exited rc={share_result.rc}"
+            )
+            output.error(f"  Log: {share_result.log_path}")
+            return 1
 
     # Phase 2: Install
     output.info("")
@@ -333,6 +389,7 @@ def run_decoy_spinup(
         for host in provisioned_hosts
     ]
     phase_vms.extend(neighborhood_vms(run_dir))
+    phase_vms.extend(share_sidecar_vms(run_dir))
     phase_ok = register_phase_run(config, "decoy", started_at, phase_vms)
     if not phase_ok:
         output.error("")
@@ -351,6 +408,44 @@ def run_decoy_spinup(
 
 
 # --- Helpers ---
+
+def _provision_share_sidecar(dep_id: str, vm_prefix: str) -> dict:
+    """Provision the one exact fleet-local Samba sidecar and capture its IP."""
+    vm_name = f"{vm_prefix}{SHARE_SIDECAR_SUFFIX}"
+    client = OpenStack()
+    client.create_server(
+        vm_name,
+        flavor=SHARE_SIDECAR_FLAVOR,
+        image=SHARE_SIDECAR_IMAGE,
+        network=SHARE_SIDECAR_NETWORK,
+        keypair=SHARE_SIDECAR_KEYPAIR,
+        security_group=SHARE_SIDECAR_SECURITY_GROUP,
+        deployment=dep_id,
+        boot_volume_gb=200,
+    )
+    details = client.wait_server_active(vm_name)
+    address = client.server_ipv4(details)
+    output.info(f"  Share sidecar ACTIVE: {vm_name} ({address})")
+    return {
+        "name": vm_name,
+        "ip": address,
+        "flavor": SHARE_SIDECAR_FLAVOR,
+        "sup_config": None,
+    }
+
+
+def _append_share_inventory(inventory_path: Path, share_host: dict) -> None:
+    """Record the captured sidecar in the run's existing deployment inventory."""
+    with inventory_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\n[share_sidecar]\n"
+            f"{share_host['name']} ansible_host={share_host['ip']} "
+            f"share_sidecar=true sup_flavor={share_host['flavor']}\n\n"
+            "[share_sidecar:vars]\n"
+            "ansible_user=ubuntu\n"
+            "ansible_python_interpreter=/usr/bin/python3\n"
+            "ansible_ssh_common_args=-o StrictHostKeyChecking=no\n"
+        )
 
 def _parse_ansible_recap(log_path: Path) -> tuple[set[str], set[str]]:
     """Parse PLAY RECAP from an Ansible log. Returns (failed_hosts, succeeded_hosts).

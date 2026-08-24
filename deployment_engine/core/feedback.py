@@ -31,6 +31,12 @@ DECOY_FEEDBACK_SUP_CONFIGS = (
     "browseruse-gpu",
     "smolagents-gpu",
 )
+DECOY_PLAN_FILENAMES = {
+    "scripted-cpu": "scripted-v1.json",
+    "mchp-cpu": "mchp-v1.json",
+    "browseruse-gpu": "browseruse-v1.json",
+    "smolagents-gpu": "smolagents-v1.json",
+}
 DECOY_FEEDBACK_DEPLOYMENTS = (
     {"behavior": "scripted-cpu", "flavor": "v1.14vcpu.28g", "count": 1},
     {"behavior": "mchp-cpu", "flavor": "v1.14vcpu.28g", "count": 1},
@@ -58,8 +64,7 @@ def _validate_decoy_workflow_generation(
     source_dir: Path,
     *,
     label: str,
-    reject_all_extra_files: bool,
-) -> None:
+) -> dict[str, object]:
     """Validate four canonical plans through the shared runtime loader."""
     source_dir = Path(source_dir)
     if not source_dir.is_dir():
@@ -69,16 +74,8 @@ def _validate_decoy_workflow_generation(
             f"{label} generation must match YYYY-MM-DD_HHMMZ: {source_dir}"
         )
 
-    expected = {
-        f"{sup_config}_behavior.json" for sup_config in DECOY_FEEDBACK_SUP_CONFIGS
-    }
-    if reject_all_extra_files:
-        actual = {path.name for path in source_dir.iterdir()}
-    else:
-        actual = {
-            path.name for path in source_dir.glob("*_behavior.json")
-            if path.is_file()
-        }
+    expected = set(DECOY_PLAN_FILENAMES.values())
+    actual = {path.name for path in source_dir.iterdir()}
     if actual != expected:
         missing = sorted(expected - actual)
         unexpected = sorted(actual - expected)
@@ -89,36 +86,66 @@ def _validate_decoy_workflow_generation(
             details.append(f"unexpected {', '.join(unexpected)}")
         raise FeedbackSourceError(
             f"{label} generation must contain exactly the four canonical "
-            f"behavior files ({'; '.join(details)}): {source_dir}"
+            f"versioned plan files ({'; '.join(details)}): {source_dir}"
         )
 
     from decoys.phase_workflow.loader import WorkflowPlanError, load_workflow_plan
 
-    for sup_config in DECOY_FEEDBACK_SUP_CONFIGS:
-        behavior_path = source_dir / f"{sup_config}_behavior.json"
+    plans = {}
+    expected_resource_profile = (
+        "controls-v2" if label == "control" else "feedback-v2"
+    )
+    for sup_config, filename in DECOY_PLAN_FILENAMES.items():
+        behavior_path = source_dir / filename
         try:
-            load_workflow_plan(behavior_path, sup_config)
+            plan = load_workflow_plan(behavior_path, sup_config)
         except WorkflowPlanError as exc:
             raise FeedbackSourceError(
                 f"invalid {sup_config} plan {behavior_path}: {exc}"
             ) from exc
+        if plan.resource_profile != expected_resource_profile:
+            raise FeedbackSourceError(
+                f"invalid {sup_config} plan {behavior_path}: expected "
+                f"resource_profile {expected_resource_profile!r}, got "
+                f"{plan.resource_profile!r}"
+            )
+        plans[sup_config] = plan
+    return plans
 
 
-def validate_decoy_feedback_generation(source_dir: Path) -> None:
+def validate_decoy_feedback_generation(source_dir: Path) -> dict[str, object]:
     """Validate exactly four canonical feedback plans."""
-    _validate_decoy_workflow_generation(
+    return _validate_decoy_workflow_generation(
         source_dir,
         label="feedback",
-        reject_all_extra_files=False,
     )
 
 
-def validate_decoy_control_generation(source_dir: Path) -> None:
+def validate_decoy_control_generation(source_dir: Path) -> dict[str, object]:
     """Validate an exact PHASE-generated canonical control generation."""
-    _validate_decoy_workflow_generation(
+    return _validate_decoy_workflow_generation(
         source_dir,
         label="control",
-        reject_all_extra_files=True,
+    )
+
+
+def decoy_generation_uses_network_share(
+    source_dir: Path, *, purpose: str
+) -> bool:
+    """Return whether one already-valid canonical generation needs its sidecar."""
+    if purpose == "control":
+        plans = validate_decoy_control_generation(source_dir)
+    elif purpose == "feedback":
+        plans = validate_decoy_feedback_generation(source_dir)
+    else:
+        raise FeedbackSourceError(
+            f"canonical Decoy generation has unsupported purpose: {purpose!r}"
+        )
+    return any(
+        entry.workflow == "NetworkShareAccess"
+        for plan in plans.values()
+        for window in plan.windows
+        for entry in window.sequence
     )
 
 
@@ -326,8 +353,18 @@ def _workflow_control_runtime_details(
         for word in words
     )
 
+    profile_names = {
+        profile_name
+        for allowed in configuration.get("workflows", {}).values()
+        for profile_name in allowed
+    }
+    if len(profile_names) != 1:
+        raise ValueError(f"invalid Brain profile capability for {sup_config}")
     profiles = capabilities.get("brain_profiles", {}).get(sup_config, {})
-    profile = profiles.get("control", {}) if isinstance(profiles, dict) else {}
+    profile = (
+        profiles.get(next(iter(profile_names)), {})
+        if isinstance(profiles, dict) else {}
+    )
     model = profile.get("model") if isinstance(profile, dict) else None
     if model is None:
         model_label = "—"

@@ -13,7 +13,7 @@ class WebDriverUnavailableError(Exception):
 class WebDriverHelper(BaseDriverHelper):
     """Firefox-only WebDriver helper for MCHP workflows."""
 
-    def __init__(self):
+    def __init__(self, download_dir=None):
         DRIVER_NAME = 'geckowebdriver'
         self._driver = None
 
@@ -41,6 +41,16 @@ class WebDriverHelper(BaseDriverHelper):
             # no media flows; confirmed 2026-06-04 the pref makes it play).
             self.options.set_preference("media.autoplay.default", 0)
             self.options.set_preference("media.autoplay.blocking_policy", 0)
+            if download_dir is not None:
+                download_dir = os.path.abspath(os.fspath(download_dir))
+                self.options.set_preference("browser.download.folderList", 2)
+                self.options.set_preference("browser.download.dir", download_dir)
+                self.options.set_preference("browser.download.useDownloadDir", True)
+                self.options.set_preference(
+                    "browser.helperApps.neverAsk.saveToDisk",
+                    "application/octet-stream,application/zip,application/x-zip-compressed",
+                )
+                self.options.set_preference("pdfjs.disabled", True)
 
             super().__init__(name=DRIVER_NAME)
             self._driver_path = FirefoxService(executable_path=geckodriver_path)

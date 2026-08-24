@@ -14,15 +14,18 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 from zoneinfo import ZoneInfo
 
 from common.logging.agent_logger import AgentLogger
 from phase_workflow.brains import (
     AssignedDocumentCreation,
+    AssignedBoundedTransfer,
+    AssignedFileDownload,
     AssignedWebResearch,
     AssignedVideoPlayback,
     FrameworkBrain,
+    ResourceBrain,
     _read_webpage,
     browseruse_runner,
     build_brain,
@@ -42,20 +45,30 @@ from phase_workflow.registry import (
 )
 from phase_workflow.runtime import run_workflow_runtime
 from phase_workflow.workflows import (
+    DailyDocumentStore,
+    HttpsDocumentSync,
+    KerberosShareAccess,
     MCHPDocumentWorkflows,
     OpenDocumentWriter,
     SeleniumResourceWorkflows,
     _select_media_url,
+    firefox_download,
+    stream_https_download,
     play_video_realtime,
     structured_llm_task,
     validate_open_document,
 )
-from deployment_engine.core.feedback import find_decoy_control_generation
-
-
-CONTROL_ROOT = find_decoy_control_generation()
+CONTROL_ROOT = (
+    Path("/home/ubuntu/PHASE/plans/feedback-v2-rewrite/fixtures/controls")
+)
 REPOSITORY_ROOT = CONTRACT_ROOT.parents[1]
 INSTALLER = REPOSITORY_ROOT / "INSTALL_SUP.sh"
+PLAN_FILENAMES = {
+    "scripted-cpu": "scripted-v1.json",
+    "mchp-cpu": "mchp-v1.json",
+    "browseruse-gpu": "browseruse-v1.json",
+    "smolagents-gpu": "smolagents-v1.json",
+}
 EXPECTED_CONFIGS = {
     "scripted-cpu",
     "mchp-cpu",
@@ -65,7 +78,7 @@ EXPECTED_CONFIGS = {
 EXPECTED_RESOURCES = tuple(
     entry["resource_id"]
     for window in json.loads(
-        (CONTROL_ROOT / "scripted-cpu_behavior.json").read_text(encoding="utf-8")
+        (CONTROL_ROOT / PLAN_FILENAMES["scripted-cpu"]).read_text(encoding="utf-8")
     )["schedule"]
     for entry in window["sequence"]
 )
@@ -73,8 +86,56 @@ EXPECTED_RESOURCES = tuple(
 
 def control_document(config_key="scripted-cpu"):
     return json.loads(
-        (CONTROL_ROOT / f"{config_key}_behavior.json").read_text(encoding="utf-8")
+        (CONTROL_ROOT / PLAN_FILENAMES[config_key]).read_text(encoding="utf-8")
     )
+
+
+def feedback_document(config_key="scripted-cpu"):
+    document = control_document(config_key)
+    document["resource_profile"] = "feedback-v2"
+    replacements = {
+        "WebResearch": "wikipedia_compiler",
+        "VideoViewing": "video_cpp_course",
+        "DocumentCreation": "document_team_meeting_notes",
+    }
+    instructions = json.loads(
+        (CONTRACT_ROOT / "capabilities-v1.json").read_text(encoding="utf-8")
+    )["instructions"]["feedback-v2"]
+    for window in document["schedule"]:
+        for entry in window["sequence"]:
+            entry["resource_id"] = replacements[entry["workflow"]]
+            if "instruction" in entry["brain"]:
+                entry["brain"]["instruction"] = instructions[entry["workflow"]]
+    return document
+
+
+def six_workflow_document(config_key="scripted-cpu"):
+    document = feedback_document(config_key)
+    profile = PLAN_FILENAMES[config_key][:-5]
+    instructions = json.loads(
+        (CONTRACT_ROOT / "capabilities-v1.json").read_text(encoding="utf-8")
+    )["instructions"]["feedback-v2"]
+    resources = (
+        ("WebResearch", "wikipedia_compiler"),
+        ("VideoViewing", "video_cpp_course"),
+        ("FileDownload", "download_ovh_1m"),
+        ("DocumentCreation", "document_team_meeting_notes"),
+        ("FileSyncUpload", "cloudflare_upload"),
+        ("NetworkShareAccess", "share_team_notes"),
+    )
+    sequence = []
+    for offset, (workflow, resource_id) in enumerate(resources):
+        brain = {"profile": profile}
+        if config_key in {"browseruse-gpu", "smolagents-gpu"}:
+            brain["instruction"] = instructions[workflow]
+        sequence.append({
+            "offset_minutes": offset,
+            "workflow": workflow,
+            "resource_id": resource_id,
+            "brain": brain,
+        })
+    document["schedule"] = [{"window_local": [540, 600], "sequence": sequence}]
+    return document
 
 
 def load_document(document, expected=None):
@@ -146,10 +207,59 @@ class RecordingBrain:
 
 
 class LoaderTests(unittest.TestCase):
+    def test_all_six_workflows_validate_for_all_four_versioned_brains(self):
+        expected = list(CANONICAL_HANDLERS)
+        for sup_config in PLAN_FILENAMES:
+            with self.subTest(sup_config=sup_config):
+                plan = load_document(six_workflow_document(sup_config), sup_config)
+                entries = plan.windows[0].sequence
+                self.assertEqual({entry.workflow for entry in entries}, set(expected))
+                self.assertEqual(plan.resource_profile, "feedback-v2")
+                self.assertTrue(all(
+                    entry.brain_profile == PLAN_FILENAMES[sup_config][:-5]
+                    for entry in entries
+                ))
+
+    def test_contract_assets_and_plan_names_are_versioned_only(self):
+        self.assertEqual(
+            PLAN_FILENAMES,
+            {
+                "scripted-cpu": "scripted-v1.json",
+                "mchp-cpu": "mchp-v1.json",
+                "browseruse-gpu": "browseruse-v1.json",
+                "smolagents-gpu": "smolagents-v1.json",
+            },
+        )
+        self.assertEqual(
+            {path.name for path in (CONTRACT_ROOT / "resource-profiles").iterdir()},
+            {"controls-v2.json", "feedback-v2.json"},
+        )
+        self.assertFalse((CONTRACT_ROOT / "target-profiles").exists())
+        self.assertFalse((CONTRACT_ROOT / "controls").exists())
+
+    def test_superseded_plan_fields_profiles_and_workflows_are_rejected(self):
+        mutations = []
+        old_field = control_document()
+        old_field["target_profile"] = old_field.pop("resource_profile")
+        mutations.append(old_field)
+        old_resource_profile = control_document()
+        old_resource_profile["resource_profile"] = "control-default"
+        mutations.append(old_resource_profile)
+        old_brain_profile = control_document()
+        old_brain_profile["schedule"][0]["sequence"][0]["brain"]["profile"] = "control"
+        mutations.append(old_brain_profile)
+        old_workflow = control_document()
+        old_workflow["schedule"][0]["sequence"][0]["workflow"] = "WhoisLookup"
+        mutations.append(old_workflow)
+        for document in mutations:
+            with self.subTest(document=document):
+                with self.assertRaises(WorkflowPlanError):
+                    load_document(document, "scripted-cpu")
+
     def test_four_controls_load_with_exact_shape_order_and_policy(self):
         self.assertEqual(set(CONFIGURATIONS), EXPECTED_CONFIGS)
         plans = {
-            key: load_workflow_plan(CONTROL_ROOT / f"{key}_behavior.json", key)
+            key: load_workflow_plan(CONTROL_ROOT / PLAN_FILENAMES[key], key)
             for key in EXPECTED_CONFIGS
         }
         for key, plan in plans.items():
@@ -166,7 +276,9 @@ class LoaderTests(unittest.TestCase):
                 [entry.workflow for entry in entries],
                 ["WebResearch", "VideoViewing", "DocumentCreation"],
             )
-            self.assertTrue(all(entry.brain_profile == "control" for entry in entries))
+            self.assertTrue(
+                all(entry.brain_profile == PLAN_FILENAMES[key][:-5] for entry in entries)
+            )
             with self.assertRaises(TypeError):
                 entries[0].resource["kind"] = "changed"
 
@@ -192,10 +304,6 @@ class LoaderTests(unittest.TestCase):
         resource = control_document()
         resource["schedule"][0]["sequence"][0]["resource_id"] = "unknown"
         mutations.append((resource, "scripted-cpu"))
-        for contribution in ("FileDownload", "FileSyncUpload", "NetworkShareAccess"):
-            document = control_document()
-            document["schedule"][0]["sequence"][0]["workflow"] = contribution
-            mutations.append((document, "scripted-cpu"))
         for document, expected in mutations:
             with self.subTest(expected=expected, value=document["schedule"][0]["sequence"][0]["workflow"]):
                 with tempfile.TemporaryDirectory() as td:
@@ -205,7 +313,7 @@ class LoaderTests(unittest.TestCase):
                         load_workflow_plan(path, expected)
 
     def test_behavior_is_read_once_and_invalid_plan_has_no_fallback(self):
-        path = CONTROL_ROOT / "scripted-cpu_behavior.json"
+        path = CONTROL_ROOT / PLAN_FILENAMES["scripted-cpu"]
         original = Path.read_bytes
         count = 0
 
@@ -238,7 +346,7 @@ class LoaderTests(unittest.TestCase):
         document["max_parallel"] = 2
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            (root / "target-profiles").mkdir()
+            (root / "resource-profiles").mkdir()
             schema = json.loads(
                 (CONTRACT_ROOT / "phase-workflow-plan-v1.schema.json").read_text()
             )
@@ -247,13 +355,13 @@ class LoaderTests(unittest.TestCase):
             )
             capabilities["max_parallel_workflows"] = 1
             target = json.loads(
-                (CONTRACT_ROOT / "target-profiles/control-default.json").read_text()
+                (CONTRACT_ROOT / "resource-profiles/controls-v2.json").read_text()
             )
             (root / "phase-workflow-plan-v1.schema.json").write_text(
                 json.dumps(schema)
             )
             (root / "capabilities-v1.json").write_text(json.dumps(capabilities))
-            (root / "target-profiles/control-default.json").write_text(
+            (root / "resource-profiles/controls-v2.json").write_text(
                 json.dumps(target)
             )
             behavior = root / "behavior.json"
@@ -380,8 +488,8 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             set(event),
             {
-                "window_index", "sequence_index", "workflow", "target_profile",
-                "brain_profile", "scheduled_local", "scheduled_utc",
+                "window_index", "sequence_index", "workflow", "resource_profile",
+                "brain_profile", "resource_id", "scheduled_local", "scheduled_utc",
                 "actual_start", "actual_end", "status", "reason",
             },
         )
@@ -445,8 +553,8 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             set(event),
             {
-                "window_index", "sequence_index", "workflow", "target_profile",
-                "brain_profile", "resolved_instruction", "scheduled_local",
+                "window_index", "sequence_index", "workflow", "resource_profile",
+                "brain_profile", "resource_id", "resolved_instruction", "scheduled_local",
                 "scheduled_utc", "actual_start", "actual_end", "status",
             },
         )
@@ -456,11 +564,14 @@ class RegistryAndBrainTests(unittest.TestCase):
     def test_exact_canonical_registry_and_same_resolved_task(self):
         self.assertEqual(
             CANONICAL_HANDLERS,
-            {"WebResearch", "VideoViewing", "DocumentCreation"},
+            {
+                "WebResearch", "VideoViewing", "FileDownload",
+                "DocumentCreation", "FileSyncUpload", "NetworkShareAccess",
+            },
         )
         resolved = []
         for key in ("scripted-cpu", "mchp-cpu", "browseruse-gpu", "smolagents-gpu"):
-            plan = load_workflow_plan(CONTROL_ROOT / f"{key}_behavior.json", key)
+            plan = load_workflow_plan(CONTROL_ROOT / PLAN_FILENAMES[key], key)
             brain = RecordingBrain()
             registry = WorkflowRegistry(plan, brain, Path("/tmp/workspace"))
             self.assertEqual(registry.workflows, CANONICAL_HANDLERS)
@@ -475,7 +586,7 @@ class RegistryAndBrainTests(unittest.TestCase):
 
     def test_llm_brain_receives_exact_instruction_and_resource(self):
         plan = load_workflow_plan(
-            CONTROL_ROOT / "browseruse-gpu_behavior.json", "browseruse-gpu"
+            CONTROL_ROOT / PLAN_FILENAMES["browseruse-gpu"], "browseruse-gpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[0]
@@ -498,7 +609,7 @@ class RegistryAndBrainTests(unittest.TestCase):
 
     def test_llm_video_is_dispatched_through_the_framework_runner(self):
         plan = load_workflow_plan(
-            CONTROL_ROOT / "browseruse-gpu_behavior.json", "browseruse-gpu"
+            CONTROL_ROOT / PLAN_FILENAMES["browseruse-gpu"], "browseruse-gpu"
         )
         entry = plan.windows[0].sequence[1]
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(entry)
@@ -534,7 +645,7 @@ class RegistryAndBrainTests(unittest.TestCase):
                 self.closed = True
 
         plan = load_workflow_plan(
-            CONTROL_ROOT / "scripted-cpu_behavior.json", "scripted-cpu"
+            CONTROL_ROOT / PLAN_FILENAMES["scripted-cpu"], "scripted-cpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[1]
@@ -585,7 +696,7 @@ class RegistryAndBrainTests(unittest.TestCase):
 
     def test_document_writer_uses_exact_filename_and_supplied_content(self):
         plan = load_workflow_plan(
-            CONTROL_ROOT / "scripted-cpu_behavior.json", "scripted-cpu"
+            CONTROL_ROOT / PLAN_FILENAMES["scripted-cpu"], "scripted-cpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[2]
@@ -608,7 +719,7 @@ class RegistryAndBrainTests(unittest.TestCase):
             ("smolagents-gpu", "smolagents_runner", "play_video_realtime"),
         ):
             plan = load_workflow_plan(
-                CONTROL_ROOT / f"{config_key}_behavior.json", config_key
+                CONTROL_ROOT / PLAN_FILENAMES[config_key], config_key
             )
             task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
                 plan.windows[0].sequence[1]
@@ -626,12 +737,15 @@ class RegistryAndBrainTests(unittest.TestCase):
                 plan.brain_profile,
                 None,
                 video_player=player,
+                downloader=stream_https_download,
+                syncer=ANY,
+                share=ANY,
             )
             player.assert_not_called()
 
     def test_smol_video_consumes_one_stream_at_real_time_for_300_seconds(self):
         plan = load_workflow_plan(
-            CONTROL_ROOT / "smolagents-gpu_behavior.json", "smolagents-gpu"
+            CONTROL_ROOT / PLAN_FILENAMES["smolagents-gpu"], "smolagents-gpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[1]
@@ -671,7 +785,7 @@ class RegistryAndBrainTests(unittest.TestCase):
             def cleanup(self):
                 self.cleaned = True
 
-        document = control_document("mchp-cpu")
+        document = feedback_document("mchp-cpu")
         spreadsheet = copy.deepcopy(document["schedule"][0]["sequence"][2])
         spreadsheet["offset_minutes"] = 45
         spreadsheet["resource_id"] = "spreadsheet_expense_tracker"
@@ -710,7 +824,7 @@ class RegistryAndBrainTests(unittest.TestCase):
                 )
 
         plan = load_workflow_plan(
-            CONTROL_ROOT / "mchp-cpu_behavior.json", "mchp-cpu"
+            CONTROL_ROOT / PLAN_FILENAMES["mchp-cpu"], "mchp-cpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[2]
@@ -726,6 +840,429 @@ class RegistryAndBrainTests(unittest.TestCase):
         self.assertEqual(documents.calls, [(task, Path("/tmp/day"))])
         self.assertEqual(Path(result.artifact).name, task.resource["filename"])
 
+
+class TransferWorkflowTests(unittest.TestCase):
+    @staticmethod
+    def task(sup_config, workflow, occurrence_id="w0-s0"):
+        plan = load_document(six_workflow_document(sup_config), sup_config)
+        entry = next(
+            item for item in plan.windows[0].sequence
+            if item.workflow == workflow
+        )
+        return WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
+            entry, occurrence_id=occurrence_id
+        )
+
+    def test_stream_download_is_one_exact_request_and_deletes_partial_file(self):
+        class Response:
+            def __init__(self, chunks):
+                self.chunks = chunks
+                self.closed = False
+
+            def raise_for_status(self):
+                return None
+
+            def iter_content(self, chunk_size):
+                self.chunk_size = chunk_size
+                return iter(self.chunks)
+
+            def close(self):
+                self.closed = True
+
+        class Requests:
+            def __init__(self, response):
+                self.response = response
+                self.calls = []
+
+            def get(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+                return self.response
+
+        task = self.task("scripted-cpu", "FileDownload")
+        expected = task.resource["expected_bytes"]
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            response = Response([b"x" * expected])
+            requests = Requests(response)
+            artifact = stream_https_download(task, workspace, requests)
+            self.assertEqual(artifact.stat().st_size, expected)
+            self.assertEqual(len(requests.calls), 1)
+            self.assertEqual(requests.calls[0][0], (task.resource["url"],))
+            self.assertTrue(response.closed)
+
+            partial = Response([b"x"])
+            with self.assertRaisesRegex(RuntimeError, "size mismatch"):
+                stream_https_download(task, workspace, Requests(partial))
+            self.assertFalse(any(path.stat().st_size == 1 for path in workspace.iterdir()))
+
+    def test_download_action_is_immutable_exact_size_and_exactly_once(self):
+        task = self.task("browseruse-gpu", "FileDownload")
+        calls = []
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+
+            def download(received, destination):
+                calls.append((received, destination))
+                artifact = destination / "assigned.bin"
+                artifact.write_bytes(b"x" * received.resource["expected_bytes"])
+                return artifact
+
+            action = AssignedFileDownload(task, workspace, download)
+            self.assertIn("completed", action.invoke())
+            self.assertTrue(action.result.completed)
+            self.assertIn("only once", action.invoke())
+            self.assertFalse(action.result.completed)
+            self.assertEqual(calls, [(task, workspace)])
+
+    def test_scripted_and_mchp_direct_download_dispatch_exactly_once(self):
+        class Web:
+            web_research = None
+            video_viewing = None
+
+        for sup_config in ("scripted-cpu", "mchp-cpu"):
+            with self.subTest(sup_config=sup_config), tempfile.TemporaryDirectory() as temporary:
+                task = self.task(sup_config, "FileDownload")
+                workspace = Path(temporary)
+                calls = []
+
+                def downloader(received, destination):
+                    calls.append((received, destination))
+                    artifact = destination / "assigned.bin"
+                    with artifact.open("wb") as handle:
+                        handle.truncate(received.resource["expected_bytes"])
+                    return artifact
+
+                result = ResourceBrain(Web(), downloader=downloader).execute(
+                    task, workspace
+                )
+                self.assertTrue(result.completed)
+                self.assertEqual(calls, [(task, workspace)])
+                self.assertEqual(Path(result.artifact).stat().st_size, 1048576)
+
+    def test_mchp_firefox_download_navigates_once_and_requires_exact_size(self):
+        task = self.task("mchp-cpu", "FileDownload")
+        owners = []
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+
+            class Driver:
+                def __init__(self):
+                    self.urls = []
+
+                def get(self, url):
+                    self.urls.append(url)
+                    with (workspace / "1Mb.dat").open("wb") as handle:
+                        handle.truncate(task.resource["expected_bytes"])
+
+            class Owner:
+                def __init__(self):
+                    self.driver = Driver()
+                    self.cleaned = False
+
+                def cleanup(self):
+                    self.cleaned = True
+
+            def factory(path):
+                self.assertEqual(path, workspace)
+                owner = Owner()
+                owners.append(owner)
+                return owner
+
+            artifact = firefox_download(
+                task, workspace, factory, sleeper=lambda _delay: None
+            )
+            self.assertEqual(artifact.stat().st_size, task.resource["expected_bytes"])
+            self.assertEqual(owners[0].driver.urls, [task.resource["url"]])
+            self.assertTrue(owners[0].cleaned)
+
+    def test_sync_uses_oldest_document_exact_post_and_independent_state(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def close(self):
+                pass
+
+        class Requests:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+                return Response()
+
+        store = DailyDocumentStore()
+        requests = Requests()
+        task = self.task("scripted-cpu", "FileSyncUpload")
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "2026-08-24"
+            workspace.mkdir()
+            oldest = workspace / "oldest.odt"
+            newer = workspace / "newer.ods"
+            oldest.write_bytes(b"oldest")
+            newer.write_bytes(b"newer")
+            store.register(workspace.name, oldest)
+            store.register(workspace.name, newer)
+            result = HttpsDocumentSync(store, requests).execute(task, workspace)
+            self.assertEqual(result.artifact, str(oldest))
+            self.assertEqual(requests.calls, [((task.resource["url"],), {
+                "params": {"bytes": len(b"oldest")},
+                "data": b"oldest",
+                "timeout": (20, 360),
+            })])
+            self.assertEqual(store.state(workspace.name, oldest), (True, False, set()))
+
+    def test_sync_fallback_and_failure_release_without_marking(self):
+        class Requests:
+            @staticmethod
+            def post(*_args, **_kwargs):
+                raise RuntimeError("upload failed")
+
+        store = DailyDocumentStore()
+        task = self.task("mchp-cpu", "FileSyncUpload", "w2-s4")
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "2026-08-24"
+            workspace.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "upload failed"):
+                HttpsDocumentSync(store, Requests()).execute(task, workspace)
+            fallback = workspace / "private-lorem-w2-s4.txt"
+            self.assertTrue(fallback.is_file())
+            self.assertEqual(store.state(workspace.name, fallback), (False, False, set()))
+            self.assertEqual(fallback.stat().st_mode & 0o777, 0o600)
+
+    def test_cross_channel_reservations_do_not_select_the_same_document(self):
+        store = DailyDocumentStore()
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "2026-08-24"
+            workspace.mkdir()
+            first = workspace / "first.odt"
+            second = workspace / "second.ods"
+            first.write_bytes(b"one")
+            second.write_bytes(b"two")
+            store.register(workspace.name, first)
+            store.register(workspace.name, second)
+            share = store.reserve(workspace.name, workspace, "share", "w0-s0")
+            https = store.reserve(workspace.name, workspace, "https", "w0-s1")
+            self.assertEqual((share.path, https.path), (first, second))
+
+    def test_share_is_kerberos_required_bidirectional_and_marks_after_verify(self):
+        store = DailyDocumentStore()
+        task = self.task("scripted-cpu", "NetworkShareAccess", "w1-s5")
+        calls = []
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "2026-08-24"
+            workspace.mkdir()
+            upload = workspace / "created.odt"
+            upload.write_bytes(b"payload")
+            store.register(workspace.name, upload)
+
+            def run(argv, **kwargs):
+                calls.append((argv, kwargs))
+                command = argv[-1] if argv[0] == "smbclient" else ""
+                if command.startswith('get '):
+                    local = command.rsplit(' "', 1)[1][:-1]
+                    Path(local).write_bytes(b"seed")
+                if command.startswith("allinfo"):
+                    remote = command.split('"')[1]
+                    return SimpleNamespace(stdout=f"{Path(remote).name}\nsize: 7\n")
+                return SimpleNamespace(stdout="ok\n")
+
+            result = KerberosShareAccess(
+                store, runner=run, keytab="/fleet/keytab", ccache="/run/cache"
+            ).execute(task, workspace)
+            self.assertTrue(result.completed)
+            self.assertEqual(store.state(workspace.name, upload), (False, True, set()))
+            self.assertEqual(calls[0][0], [
+                "kinit", "-c", "/run/cache", "-kt", "/fleet/keytab",
+                "ruse-share@RUSE.TEST",
+            ])
+            smb_calls = [call for call in calls if call[0][0] == "smbclient"]
+            self.assertTrue(all("--use-kerberos=required" in call[0] for call in smb_calls))
+            commands = [call[0][-1] for call in smb_calls]
+            self.assertIn('ls "Team"', commands)
+            self.assertTrue(any('get "Team/meeting-notes.odt"' in value for value in commands))
+            self.assertTrue(any(
+                "Incoming/scripted-cpu/2026-08-24/w1-s5-created.odt" in value
+                for value in commands
+            ))
+
+    def test_share_failure_releases_and_bounded_transfer_rejects_repeat(self):
+        store = DailyDocumentStore()
+        task = self.task("smolagents-gpu", "NetworkShareAccess")
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "2026-08-24"
+            workspace.mkdir()
+            local = workspace / "document.odt"
+            local.write_bytes(b"payload")
+            store.register(workspace.name, local)
+
+            def run(argv, **_kwargs):
+                command = argv[-1] if argv[0] == "smbclient" else ""
+                if command.startswith('get '):
+                    destination = command.rsplit(' "', 1)[1][:-1]
+                    Path(destination).write_bytes(b"seed")
+                return SimpleNamespace(stdout="remote verification missing\n")
+
+            executor = KerberosShareAccess(store, runner=run)
+            action = AssignedBoundedTransfer(task, workspace, executor)
+            self.assertIn("filename or byte size mismatch", action.invoke())
+            self.assertFalse(action.result.completed)
+            self.assertEqual(store.state(workspace.name, local), (False, False, set()))
+            self.assertIn("only once", action.invoke())
+
+    @staticmethod
+    def browser_api(invocations):
+        class History:
+            def is_done(self):
+                return True
+
+            def is_successful(self):
+                return True
+
+        class BrowserSession:
+            def __init__(self, **_kwargs):
+                pass
+
+        class ActionResult:
+            def __init__(self, **values):
+                self.values = values
+
+        class Tools:
+            def __init__(self):
+                self.registry = SimpleNamespace(
+                    registry=SimpleNamespace(actions={})
+                )
+
+            def exclude_action(self, name):
+                self.registry.registry.actions.pop(name, None)
+
+            def action(self, _description, **_kwargs):
+                def decorate(function):
+                    self.registry.registry.actions[function.__name__] = function
+                    return function
+                return decorate
+
+        class Agent:
+            def __init__(self, **values):
+                self.tools = values["tools"]
+
+            async def run(self, max_steps):
+                action = next(iter(self.tools.registry.registry.actions.values()))
+                for _ in range(invocations):
+                    action()
+                return History()
+
+        return Agent, BrowserSession, Tools, ActionResult
+
+    @staticmethod
+    def smol_api(invocations):
+        class Tool:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+        class VisitWebpageTool(Tool):
+            pass
+
+        class LiteLLMModel:
+            def __init__(self, **_kwargs):
+                pass
+
+        class CodeAgent:
+            def __init__(self, **values):
+                self.tool = values["tools"][0]
+
+            def run(self, _task):
+                for _ in range(invocations):
+                    try:
+                        self.tool.forward()
+                    except RuntimeError:
+                        pass
+                return "prose is not evidence"
+
+        return CodeAgent, LiteLLMModel, Tool, VisitWebpageTool
+
+    def test_llm_transfer_actions_require_exactly_one_real_invocation(self):
+        class Transfer:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, task, workspace):
+                self.calls.append((task, workspace))
+                return WorkflowResult(completed=True, artifact=str(workspace / "doc"))
+
+        for sup_config, runner, api_factory in (
+            ("browseruse-gpu", browseruse_runner, self.browser_api),
+            ("smolagents-gpu", smolagents_runner, self.smol_api),
+        ):
+            for workflow in ("FileSyncUpload", "NetworkShareAccess"):
+                for invocations, expected in ((0, False), (1, True), (2, False)):
+                    with self.subTest(
+                        sup_config=sup_config,
+                        workflow=workflow,
+                        invocations=invocations,
+                    ):
+                        plan = load_document(
+                            six_workflow_document(sup_config), sup_config
+                        )
+                        task = self.task(sup_config, workflow)
+                        transfer = Transfer()
+                        kwargs = {
+                            "syncer": transfer if workflow == "FileSyncUpload" else None,
+                            "share": transfer if workflow == "NetworkShareAccess" else None,
+                            "framework_api": api_factory(invocations),
+                        }
+                        if runner is browseruse_runner:
+                            kwargs.update({
+                                "llm_factory": lambda model, logger: model,
+                                "step_logger": lambda logger, result: None,
+                                "chromium_args": [],
+                            })
+                        with patch("phase_workflow.brains._require_distribution"):
+                            result = runner(
+                                task, Path("/tmp/day"), plan.brain_profile, **kwargs
+                            )
+                        self.assertEqual(result.completed, expected)
+                        self.assertEqual(len(transfer.calls), min(invocations, 1))
+
+    def test_llm_download_actions_require_exactly_one_exact_size_file(self):
+        for sup_config, runner, api_factory in (
+            ("browseruse-gpu", browseruse_runner, self.browser_api),
+            ("smolagents-gpu", smolagents_runner, self.smol_api),
+        ):
+            for invocations, expected in ((0, False), (1, True), (2, False)):
+                with self.subTest(sup_config=sup_config, invocations=invocations):
+                    plan = load_document(six_workflow_document(sup_config), sup_config)
+                    task = self.task(sup_config, "FileDownload")
+                    calls = []
+                    with tempfile.TemporaryDirectory() as temporary:
+                        workspace = Path(temporary)
+
+                        def downloader(received, destination):
+                            calls.append((received, destination))
+                            artifact = destination / "assigned.bin"
+                            artifact.write_bytes(
+                                b"x" * received.resource["expected_bytes"]
+                            )
+                            return artifact
+
+                        kwargs = {
+                            "downloader": downloader,
+                            "framework_api": api_factory(invocations),
+                        }
+                        if runner is browseruse_runner:
+                            kwargs.update({
+                                "llm_factory": lambda model, logger: model,
+                                "step_logger": lambda logger, result: None,
+                                "chromium_args": [],
+                            })
+                        with patch("phase_workflow.brains._require_distribution"):
+                            result = runner(
+                                task, workspace, plan.brain_profile, **kwargs
+                            )
+                    self.assertEqual(result.completed, expected)
+                    self.assertEqual(len(calls), min(invocations, 1))
+
+
     def test_terminal_event_uses_ordinary_jsonl(self):
         with tempfile.TemporaryDirectory() as td:
             logger = AgentLogger("scripted-cpu", log_dir=td, session_id="plan")
@@ -733,8 +1270,9 @@ class RegistryAndBrainTests(unittest.TestCase):
                 "window_index": 0,
                 "sequence_index": 0,
                 "workflow": "WebResearch",
-                "target_profile": "control-default",
-                "brain_profile": "control",
+                "resource_profile": "controls-v2",
+                "brain_profile": "scripted-v1",
+                "resource_id": "google_climate_change_news",
                 "scheduled_local": "2026-08-19T09:00:00",
                 "scheduled_utc": "2026-08-19T13:00:00Z",
                 "actual_start": "2026-08-19T13:00:00Z",
@@ -787,7 +1325,7 @@ class RegistryAndBrainTests(unittest.TestCase):
 class TruthPropagationTests(unittest.TestCase):
     @staticmethod
     def browser_task():
-        document = control_document("browseruse-gpu")
+        document = feedback_document("browseruse-gpu")
         document["schedule"][0]["sequence"][0][
             "resource_id"
         ] = "wikipedia_compiler"
@@ -863,7 +1401,7 @@ class TruthPropagationTests(unittest.TestCase):
 
     @staticmethod
     def smol_task():
-        document = control_document("smolagents-gpu")
+        document = feedback_document("smolagents-gpu")
         document["schedule"][0]["sequence"][0][
             "resource_id"
         ] = "wikipedia_compiler"
@@ -1062,7 +1600,7 @@ class TruthPropagationTests(unittest.TestCase):
 class OpenDocumentValidationTests(unittest.TestCase):
     @staticmethod
     def task(resource_id):
-        document = control_document("scripted-cpu")
+        document = feedback_document("scripted-cpu")
         document["schedule"][0]["sequence"][2]["resource_id"] = resource_id
         plan = load_document(document, "scripted-cpu")
         return WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
@@ -1271,7 +1809,7 @@ class MCHPDriverLifecycleTests(unittest.TestCase):
             created.append(instance._driver)
 
         plan = load_workflow_plan(
-            CONTROL_ROOT / "mchp-cpu_behavior.json", "mchp-cpu"
+            CONTROL_ROOT / PLAN_FILENAMES["mchp-cpu"], "mchp-cpu"
         )
         registry = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp"))
         web = registry.resolve(plan.windows[0].sequence[0])
@@ -1320,7 +1858,7 @@ class LLMVideoRunnerTests(unittest.TestCase):
     @staticmethod
     def video_task(config_key):
         plan = load_workflow_plan(
-            CONTROL_ROOT / f"{config_key}_behavior.json", config_key
+            CONTROL_ROOT / PLAN_FILENAMES[config_key], config_key
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[1]
@@ -1549,7 +2087,7 @@ class LLMDocumentRunnerTests(unittest.TestCase):
     @staticmethod
     def document_task(config_key):
         plan = load_workflow_plan(
-            CONTROL_ROOT / f"{config_key}_behavior.json", config_key
+            CONTROL_ROOT / PLAN_FILENAMES[config_key], config_key
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[2]
@@ -1808,7 +2346,7 @@ class InstallerTests(unittest.TestCase):
                 command = (
                     f'source "{INSTALLER}"; '
                     f'parse_config_key "{config_key}"; '
-                    f'RUSE_WORKFLOW_BEHAVIOR_PATH="{CONTROL_ROOT}/{config_key}_behavior.json"; '
+                    f'RUSE_WORKFLOW_BEHAVIOR_PATH="{CONTROL_ROOT}/{PLAN_FILENAMES[config_key]}"; '
                     "export RUSE_WORKFLOW_BEHAVIOR_PATH; "
                     'copy_source_code "$1"; create_run_script "$1"'
                 )
@@ -1831,7 +2369,7 @@ class InstallerTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     installed_behavior.read_bytes(),
-                    (CONTROL_ROOT / f"{config_key}_behavior.json").read_bytes(),
+                    (CONTROL_ROOT / PLAN_FILENAMES[config_key]).read_bytes(),
                 )
                 run_script = (destination / "run_agent.sh").read_text()
                 self.assertIn(f"python3 -m sup {config_key}", run_script)

@@ -75,11 +75,13 @@ def run_list(deploy_dir: Path) -> int:
 
             vm_summary = _get_vm_summary(run_dir, config)
             expected = _get_expected_count(run_dir, config)
-            active, bad_statuses, nbhd_status = _count_live_vms(
+            active, bad_statuses, sidecar_statuses = _count_live_vms(
                 name, rid, config, server_statuses,
             )
             active_col = f"{active}/{expected}" if expected > 0 else "?"
-            status_col = _format_status_col(bad_statuses, nbhd_status, expected, active)
+            status_col = _format_status_col(
+                bad_statuses, sidecar_statuses, expected, active
+            )
             date_col = _format_run_date(rid)
             target = f"{name}-{rid}"
 
@@ -155,7 +157,7 @@ def _count_live_vms(
     rid: str,
     config: DeploymentConfig,
     server_statuses: dict[str, str],
-) -> tuple[int, dict[str, int], str | None]:
+) -> tuple[int, dict[str, int], dict[str, str]]:
     """Inspect OpenStack VMs for this deployment.
 
     Returns:
@@ -163,31 +165,33 @@ def _count_live_vms(
             DECOY neighborhood sidecar).
         bad_statuses: {status: count} for any primary VM not in ACTIVE state
             (ERROR, SHUTOFF, BUILD, etc.) — these show as a visible problem.
-        nbhd_status: status string of the DECOY neighborhood sidecar if one
-            exists, else None. Reported separately because it's not part of
-            the SUP expected count.
+        sidecar_statuses: status by Decoy sidecar kind. Sidecars are reported
+            separately because they are not part of the SUP expected count.
     """
     prefix = _prefix_for(config, make_run_dep_id(name, rid))
     is_decoy = not config.is_rampart() and not config.is_ghosts()
     active = 0
     bad: dict[str, int] = {}
-    nbhd_status: str | None = None
+    sidecars: dict[str, str] = {}
     for vm_name, status in server_statuses.items():
         if not vm_name.startswith(prefix):
             continue
         if is_decoy and vm_name.endswith("-neighborhood-0"):
-            nbhd_status = status
+            sidecars["nbhd"] = status
+            continue
+        if is_decoy and vm_name.endswith("-share-0"):
+            sidecars["share"] = status
             continue
         if status == "ACTIVE":
             active += 1
         else:
             bad[status] = bad.get(status, 0) + 1
-    return active, bad, nbhd_status
+    return active, bad, sidecars
 
 
 def _format_status_col(
     bad_statuses: dict[str, int],
-    nbhd_status: str | None,
+    sidecar_statuses: dict[str, str],
     expected: int,
     active: int,
 ) -> str:
@@ -198,8 +202,10 @@ def _format_status_col(
     accounted = active + sum(bad_statuses.values())
     if expected > 0 and accounted < expected:
         parts.append(f"{expected - accounted} missing")
-    if nbhd_status is not None:
-        parts.append("+nbhd" if nbhd_status == "ACTIVE" else f"+nbhd:{nbhd_status}")
+    for kind in ("nbhd", "share"):
+        status = sidecar_statuses.get(kind)
+        if status is not None:
+            parts.append(f"+{kind}" if status == "ACTIVE" else f"+{kind}:{status}")
     if not parts:
         return "OK"
     return ", ".join(parts)

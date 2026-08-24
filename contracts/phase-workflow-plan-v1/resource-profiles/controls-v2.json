@@ -1,0 +1,29 @@
+{
+  "schema": "phase-resource-profile-v1",
+  "id": "controls-v2",
+  "resources": {
+    "google_climate_change_news": {
+      "workflow": "WebResearch",
+      "kind": "search_query",
+      "provider": "google",
+      "query": "climate change news"
+    },
+    "video_cpp_course": {
+      "workflow": "VideoViewing",
+      "kind": "youtube_video",
+      "video_id": "8jLOx1hD3_o",
+      "play_seconds": 300
+    },
+    "document_team_meeting_notes": {
+      "workflow": "DocumentCreation",
+      "kind": "document",
+      "filename": "team-meeting-notes.odt",
+      "title": "Weekly Team Meeting Notes",
+      "sections": {
+        "Attendees": ["Alex Morgan", "Jamie Lee", "Taylor Reed"],
+        "Updates": ["Website content review completed", "Inventory count scheduled"],
+        "Action Items": ["Jamie will prepare the draft", "Taylor will confirm the meeting room"]
+      }
+    }
+  }
+}

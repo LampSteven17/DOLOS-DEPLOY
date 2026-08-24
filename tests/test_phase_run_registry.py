@@ -15,7 +15,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from deployment_engine.core.config import DeploymentConfig
 from deployment_engine.core.feedback import (
-    find_decoy_control_generation,
+    DECOY_PLAN_FILENAMES,
     generate_feedback_config,
 )
 from deployment_engine.core.phase_run_registry import (
@@ -252,13 +252,33 @@ class PhaseRunRegistryTests(unittest.TestCase):
                 "2026-08-21_1832Z"
             )
             source.mkdir(parents=True)
-            control_root = find_decoy_control_generation()
+            control_root = Path(
+                "/home/ubuntu/PHASE/plans/feedback-v2-rewrite/fixtures/controls"
+            )
+            feedback_resources = {
+                "WebResearch": "wikipedia_compiler",
+                "VideoViewing": "video_cpp_course",
+                "DocumentCreation": "document_team_meeting_notes",
+            }
+            feedback_instructions = json.loads(
+                Path("contracts/phase-workflow-plan-v1/capabilities-v1.json")
+                .read_text()
+            )["instructions"]["feedback-v2"]
             for sup_config in (
                 "scripted-cpu", "mchp-cpu", "browseruse-gpu", "smolagents-gpu"
             ):
-                (source / f"{sup_config}_behavior.json").write_bytes(
-                    (control_root / f"{sup_config}_behavior.json").read_bytes()
-                )
+                filename = DECOY_PLAN_FILENAMES[sup_config]
+                document = json.loads((control_root / filename).read_text())
+                document["resource_profile"] = "feedback-v2"
+                for window in document["schedule"]:
+                    for occurrence in window["sequence"]:
+                        workflow = occurrence["workflow"]
+                        occurrence["resource_id"] = feedback_resources[workflow]
+                        if "instruction" in occurrence["brain"]:
+                            occurrence["brain"]["instruction"] = (
+                                feedback_instructions[workflow]
+                            )
+                (source / filename).write_text(json.dumps(document) + "\n")
             deploy_root = base / "deployments"
             name = generate_feedback_config(source, "all", deploy_root)
             generated = yaml.safe_load(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import shutil
 import subprocess
@@ -19,7 +20,9 @@ from deployment_engine.decoy import spinup
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTROL_ROOT = feedback.find_decoy_control_generation()
+CONTROL_ROOT = Path(
+    "/home/ubuntu/PHASE/plans/feedback-v2-rewrite/fixtures/controls"
+)
 CANONICAL = feedback.DECOY_FEEDBACK_SUP_CONFIGS
 TARGETS = feedback.DECOY_FEEDBACK_TARGETS
 
@@ -45,13 +48,29 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
     ) -> Path:
         generation = self.feedback_root / self.preset / target / timestamp
         generation.mkdir(parents=True, exist_ok=True)
+        feedback_resources = {
+            "WebResearch": "wikipedia_compiler",
+            "VideoViewing": "video_cpp_course",
+            "DocumentCreation": "document_team_meeting_notes",
+        }
+        feedback_instructions = json.loads(
+            feedback.WORKFLOW_CAPABILITIES_PATH.read_text()
+        )["instructions"]["feedback-v2"]
         for sup_config in CANONICAL:
             if sup_config == missing:
                 continue
-            shutil.copy2(
-                CONTROL_ROOT / f"{sup_config}_behavior.json",
-                generation / f"{sup_config}_behavior.json",
-            )
+            filename = feedback.DECOY_PLAN_FILENAMES[sup_config]
+            document = json.loads((CONTROL_ROOT / filename).read_text())
+            document["resource_profile"] = "feedback-v2"
+            for window in document["schedule"]:
+                for occurrence in window["sequence"]:
+                    workflow = occurrence["workflow"]
+                    occurrence["resource_id"] = feedback_resources[workflow]
+                    if "instruction" in occurrence["brain"]:
+                        occurrence["brain"]["instruction"] = (
+                            feedback_instructions[workflow]
+                        )
+            (generation / filename).write_text(json.dumps(document) + "\n")
         if extra:
             (generation / "legacy_behavior.json").write_text("{}\n")
         return generation
@@ -281,7 +300,7 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
             "axes-summer24", "2026-08-21_1832Z", missing="mchp-cpu"
         )
         with self.patch_root(), self.assertRaisesRegex(
-            feedback.FeedbackSourceError, "mchp-cpu_behavior.json"
+            feedback.FeedbackSourceError, "mchp-v1.json"
         ):
             feedback.find_decoy_feedback_by_target("axes-summer24", self.preset)
         self.assertTrue(newest.is_dir())
@@ -297,7 +316,7 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
             feedback.validate_decoy_feedback_generation(extra)
 
         (extra / "legacy_behavior.json").unlink()
-        (extra / "browseruse-gpu_behavior.json").write_text("{}\n")
+        (extra / "browseruse-v1.json").write_text("{}\n")
         with self.assertRaisesRegex(
             feedback.FeedbackSourceError, "invalid browseruse-gpu plan"
         ):
@@ -379,7 +398,7 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
         stage = play["tasks"][names.index("Stage assigned canonical workflow plan")]
         self.assertEqual(
             stage["copy"]["src"],
-            "{{ behavior_source }}/{{ sup_behavior }}_behavior.json",
+            "{{ behavior_source }}/{{ canonical_plan_filenames[sup_behavior] }}",
         )
         self.assertLess(
             names.index("Stage assigned canonical workflow plan"),

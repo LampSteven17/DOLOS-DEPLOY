@@ -4,15 +4,313 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import subprocess
+import threading
 import time
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
-from urllib.parse import quote_plus
+from typing import Callable, Optional
+from urllib.parse import quote_plus, urlsplit
 from xml.etree import ElementTree
 
 from phase_workflow.registry import ResolvedTask, WorkflowResult
+
+
+SHARE_FQDN = "share.ruse.test"
+SHARE_UNC = "//share.ruse.test/shared"
+SHARE_PRINCIPAL = "ruse-share@RUSE.TEST"
+SHARE_SERVICE_PRINCIPAL = "cifs/share.ruse.test@RUSE.TEST"
+SHARE_SEEDS = {
+    "share_team_notes": "Team/meeting-notes.odt",
+    "share_inventory": "Operations/inventory.ods",
+    "share_project_status": "Projects/project-status.odt",
+}
+PRIVATE_LOREM = (
+    "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod "
+    "tempor incididunt ut labore et dolore magna aliqua.\n"
+)
+
+
+@dataclass
+class _DocumentState:
+    path: Path
+    order: int
+    https_synced: bool = False
+    share_uploaded: bool = False
+    reservations: set[str] = field(default_factory=set)
+
+
+@dataclass(frozen=True)
+class DocumentReservation:
+    local_day: str
+    channel: str
+    path: Path
+
+
+class DailyDocumentStore:
+    """In-memory per-local-day document ownership and transfer state."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._days: dict[str, list[_DocumentState]] = {}
+        self._order = 0
+
+    def register(self, local_day: str, path: Path) -> None:
+        path = Path(path)
+        with self._lock:
+            records = self._days.setdefault(local_day, [])
+            if any(record.path == path for record in records):
+                return
+            self._order += 1
+            records.append(_DocumentState(path=path, order=self._order))
+
+    def reserve(
+        self, local_day: str, workspace: Path, channel: str, occurrence_id: str
+    ) -> DocumentReservation:
+        if channel not in {"https", "share"}:
+            raise RuntimeError(f"unsupported document transfer channel: {channel}")
+        with self._lock:
+            records = self._days.setdefault(local_day, [])
+            flag = "https_synced" if channel == "https" else "share_uploaded"
+            eligible = [
+                record for record in records
+                if not getattr(record, flag) and not record.reservations
+            ]
+            if eligible:
+                record = min(eligible, key=lambda item: item.order)
+            else:
+                path = Path(workspace) / f"private-lorem-{occurrence_id}.txt"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(PRIVATE_LOREM, encoding="utf-8")
+                path.chmod(0o600)
+                self._order += 1
+                record = _DocumentState(path=path, order=self._order)
+                records.append(record)
+            record.reservations.add(channel)
+            return DocumentReservation(local_day, channel, record.path)
+
+    def complete(self, reservation: DocumentReservation) -> None:
+        with self._lock:
+            record = self._find(reservation)
+            record.reservations.discard(reservation.channel)
+            if reservation.channel == "https":
+                record.https_synced = True
+            else:
+                record.share_uploaded = True
+
+    def release(self, reservation: DocumentReservation) -> None:
+        with self._lock:
+            self._find(reservation).reservations.discard(reservation.channel)
+
+    def state(self, local_day: str, path: Path) -> tuple[bool, bool, set[str]]:
+        with self._lock:
+            record = next(
+                item for item in self._days.get(local_day, [])
+                if item.path == Path(path)
+            )
+            return record.https_synced, record.share_uploaded, set(record.reservations)
+
+    def _find(self, reservation: DocumentReservation) -> _DocumentState:
+        for record in self._days.get(reservation.local_day, []):
+            if record.path == reservation.path:
+                return record
+        raise RuntimeError("reserved document is no longer in the local-day workspace")
+
+
+def stream_https_download(task: ResolvedTask, workspace: Path, requests_api=None) -> Path:
+    """Stream the one immutable HTTPS resource and require its exact size."""
+    if task.resource.get("kind") != "https_download":
+        raise RuntimeError("FileDownload requires an https_download resource")
+    url = task.resource["url"]
+    expected = task.resource["expected_bytes"]
+    name = Path(urlsplit(url).path).name or "download.bin"
+    artifact = Path(workspace) / f"{task.occurrence_id}-{name}"
+    if requests_api is None:
+        import requests as requests_api
+    response = requests_api.get(url, stream=True, timeout=(20, 360))
+    try:
+        response.raise_for_status()
+        received = 0
+        with artifact.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                handle.write(chunk)
+                received += len(chunk)
+        if received != expected or artifact.stat().st_size != expected:
+            raise RuntimeError(
+                f"assigned download size mismatch: expected {expected}, got {received}"
+            )
+    except Exception:
+        artifact.unlink(missing_ok=True)
+        raise
+    finally:
+        close = getattr(response, "close", None)
+        if close is not None:
+            close()
+    return artifact
+
+
+def firefox_download(
+    task: ResolvedTask,
+    workspace: Path,
+    driver_factory: Callable[[Path], object],
+    *,
+    sleeper: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    timeout_seconds: int = 360,
+) -> Path:
+    """Download the assigned URL once through Firefox and validate its size."""
+    if task.resource.get("kind") != "https_download":
+        raise RuntimeError("FileDownload requires an https_download resource")
+    workspace = Path(workspace)
+    before = set(workspace.iterdir())
+    owner = driver_factory(workspace)
+    driver = getattr(owner, "driver", owner)
+    deadline = monotonic() + timeout_seconds
+    try:
+        driver.get(task.resource["url"])
+        while monotonic() < deadline:
+            candidates = [
+                path for path in workspace.iterdir()
+                if path not in before and not path.name.endswith((".part", ".tmp"))
+            ]
+            if len(candidates) == 1:
+                artifact = candidates[0]
+                if artifact.stat().st_size == task.resource["expected_bytes"]:
+                    return artifact
+            sleeper(0.25)
+        raise RuntimeError("assigned Firefox download did not complete at the exact size")
+    finally:
+        cleanup = getattr(owner, "cleanup", None) or getattr(owner, "quit", None)
+        if cleanup is not None:
+            cleanup()
+
+
+class HttpsDocumentSync:
+    def __init__(self, documents: DailyDocumentStore, requests_api=None):
+        self.documents = documents
+        self.requests_api = requests_api
+
+    def execute(self, task: ResolvedTask, workspace: Path) -> WorkflowResult:
+        if (
+            task.resource.get("kind") != "https_upload"
+            or task.resource.get("url") != "https://speed.cloudflare.com/__up"
+        ):
+            raise RuntimeError("FileSyncUpload requires cloudflare_upload")
+        local_day = Path(workspace).name
+        reservation = self.documents.reserve(
+            local_day, workspace, "https", task.occurrence_id
+        )
+        try:
+            payload = reservation.path.read_bytes()
+            requests_api = self.requests_api
+            if requests_api is None:
+                import requests as requests_api
+            response = requests_api.post(
+                task.resource["url"],
+                params={"bytes": len(payload)},
+                data=payload,
+                timeout=(20, 360),
+            )
+            try:
+                response.raise_for_status()
+            finally:
+                close = getattr(response, "close", None)
+                if close is not None:
+                    close()
+            self.documents.complete(reservation)
+            return WorkflowResult(completed=True, artifact=str(reservation.path))
+        except Exception:
+            self.documents.release(reservation)
+            raise
+
+
+class KerberosShareAccess:
+    """One Kerberos-required bidirectional SMB action for the assigned seed."""
+
+    def __init__(
+        self,
+        documents: DailyDocumentStore,
+        *,
+        runner=subprocess.run,
+        keytab: Optional[str] = None,
+        ccache: Optional[str] = None,
+    ):
+        self.documents = documents
+        self.runner = runner
+        self.keytab = keytab or os.environ.get(
+            "RUSE_SHARE_KEYTAB", "/etc/ruse/ruse-share.keytab"
+        )
+        self.ccache = ccache or os.environ.get(
+            "RUSE_SHARE_CCACHE", "/run/ruse/krb5cc_ruse_share"
+        )
+
+    def execute(self, task: ResolvedTask, workspace: Path) -> WorkflowResult:
+        assigned = SHARE_SEEDS.get(task.resource_id)
+        if (
+            task.resource.get("kind") != "kerberos_smb_share"
+            or assigned is None
+            or task.resource.get("path") != assigned
+        ):
+            raise RuntimeError("NetworkShareAccess requires one fixed assigned seed")
+        workspace = Path(workspace)
+        local_day = workspace.name
+        reservation = self.documents.reserve(
+            local_day, workspace, "share", task.occurrence_id
+        )
+        downloaded = workspace / f"{task.occurrence_id}-{Path(assigned).name}"
+        remote_name = (
+            f"Incoming/{task.sup_config}/{local_day}/"
+            f"{task.occurrence_id}-{reservation.path.name}"
+        )
+        env = {**os.environ, "KRB5CCNAME": f"FILE:{self.ccache}"}
+        try:
+            self._run(["kinit", "-c", self.ccache, "-kt", self.keytab, SHARE_PRINCIPAL], env)
+            parent = str(Path(assigned).parent)
+            self._smb(f'ls "{parent}"', env)
+            self._smb(f'get "{assigned}" "{downloaded}"', env)
+            if not downloaded.is_file() or downloaded.stat().st_size <= 0:
+                raise RuntimeError("assigned share seed was not downloaded")
+            remote_directory = str(Path(remote_name).parent)
+            self._smb(
+                f'mkdir "{remote_directory}"; '
+                f'put "{reservation.path}" "{remote_name}"',
+                env,
+            )
+            verified = self._smb(f'allinfo "{remote_name}"', env)
+            expected_size = reservation.path.stat().st_size
+            if Path(remote_name).name not in verified or not _smb_size_matches(
+                verified, expected_size
+            ):
+                raise RuntimeError("remote share upload filename or byte size mismatch")
+            self.documents.complete(reservation)
+            return WorkflowResult(completed=True, artifact=str(downloaded))
+        except Exception:
+            self.documents.release(reservation)
+            raise
+
+    def _smb(self, command: str, env: dict[str, str]) -> str:
+        return self._run(
+            ["smbclient", SHARE_UNC, "--use-kerberos=required", "-c", command],
+            env,
+        )
+
+    def _run(self, argv: list[str], env: dict[str, str]) -> str:
+        completed = self.runner(
+            argv, check=True, capture_output=True, text=True, env=env
+        )
+        return completed.stdout or ""
+
+
+def _smb_size_matches(output: str, expected: int) -> bool:
+    import re
+    return any(
+        int(value) == expected
+        for value in re.findall(r"(?i)\bsize\s*[:=]\s*(\d+)", output)
+    )
 
 
 class SeleniumResourceWorkflows:

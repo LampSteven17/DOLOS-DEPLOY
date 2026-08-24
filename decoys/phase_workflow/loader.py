@@ -51,7 +51,7 @@ class WorkflowPlan:
     sup_config: str
     brain: str
     hardware: str
-    target_profile: str
+    resource_profile: str
     timezone: ZoneInfo
     max_parallel: int
     brain_profile: Mapping[str, Any]
@@ -80,14 +80,14 @@ def _freeze(value: Any) -> Any:
     return value
 
 
-def _validate_target_profile(profile: dict[str, Any], profile_id: str) -> None:
-    if profile.get("schema") != "phase-target-profile-v1":
-        raise WorkflowPlanError("unsupported target-profile schema")
+def _validate_resource_profile(profile: dict[str, Any], profile_id: str) -> None:
+    if profile.get("schema") != "phase-resource-profile-v1":
+        raise WorkflowPlanError("unsupported resource-profile schema")
     if profile.get("id") != profile_id:
-        raise WorkflowPlanError(f"target profile ID mismatch: {profile_id}")
+        raise WorkflowPlanError(f"resource profile ID mismatch: {profile_id}")
     resources = profile.get("resources")
     if not isinstance(resources, dict) or not resources:
-        raise WorkflowPlanError("target profile must contain resources")
+        raise WorkflowPlanError("resource profile must contain resources")
     for resource_id, resource in resources.items():
         if not isinstance(resource, dict):
             raise WorkflowPlanError(f"resource {resource_id} must be an object")
@@ -116,6 +116,20 @@ def _validate_target_profile(profile: dict[str, Any], profile_id: str) -> None:
                 and bool(rows)
                 and all(isinstance(row, list) and len(row) == len(columns) for row in rows)
             )
+        elif workflow == "FileDownload" and kind == "https_download":
+            valid = (
+                str(resource.get("url", "")).startswith("https://")
+                and resource.get("expected_bytes")
+                in {1048576, 10485760, 104857600}
+            )
+        elif workflow == "FileSyncUpload" and kind == "https_upload":
+            valid = resource.get("url") == "https://speed.cloudflare.com/__up"
+        elif workflow == "NetworkShareAccess" and kind == "kerberos_smb_share":
+            valid = resource.get("path") in {
+                "Team/meeting-notes.odt",
+                "Operations/inventory.ods",
+                "Projects/project-status.odt",
+            }
         else:
             valid = False
         if not valid:
@@ -160,15 +174,17 @@ def load_workflow_plan(
             f"unknown IANA timezone: {document['timezone']}"
         ) from exc
 
-    profiles = capabilities.get("target_profiles")
-    profile_id = document["target_profile"]
+    profiles = capabilities.get("resource_profiles")
+    profile_id = document["resource_profile"]
     if not isinstance(profiles, dict) or profile_id not in profiles:
-        raise WorkflowPlanError(f"unsupported target profile: {profile_id}")
+        raise WorkflowPlanError(f"unsupported resource profile: {profile_id}")
     profile_ref = profiles[profile_id]
     if not isinstance(profile_ref, dict) or set(profile_ref) != {"path"}:
-        raise WorkflowPlanError(f"invalid target profile registration: {profile_id}")
-    profile = _load_json_bytes(contract_root / profile_ref["path"], "target profile")
-    _validate_target_profile(profile, profile_id)
+        raise WorkflowPlanError(f"invalid resource profile registration: {profile_id}")
+    profile = _load_json_bytes(
+        contract_root / profile_ref["path"], "resource profile"
+    )
+    _validate_resource_profile(profile, profile_id)
     resources = profile["resources"]
 
     capability_parallel = capabilities.get("max_parallel_workflows")
@@ -238,13 +254,13 @@ def load_workflow_plan(
                 raise WorkflowPlanError(f"{workflow} requires an instruction")
             if policy == "forbidden" and instruction is not None:
                 raise WorkflowPlanError(f"{workflow} forbids an instruction")
-            if brain_profile == "control" and policy == "required":
-                expected_instruction = capabilities.get(
-                    "control_instructions", {}
+            if policy == "required":
+                expected_instruction = capabilities.get("instructions", {}).get(
+                    profile_id, {}
                 ).get(workflow)
                 if instruction != expected_instruction:
                     raise WorkflowPlanError(
-                        f"{workflow} has the wrong control instruction"
+                        f"{workflow} has the wrong instruction"
                     )
             entries.append(PlanEntry(
                 offset_minutes=raw_entry["offset_minutes"],
@@ -258,12 +274,22 @@ def load_workflow_plan(
 
     brain = configuration.get("brain")
     hardware = configuration.get("hardware")
+    selected_profiles = {
+        entry.brain_profile for window in windows for entry in window.sequence
+    }
+    if len(selected_profiles) != 1:
+        raise WorkflowPlanError("a complete Brain plan must use one Brain profile")
+    selected_profile = next(iter(selected_profiles))
     raw_profiles = capabilities.get("brain_profiles", {}).get(expected_sup_config, {})
-    raw_brain_profile = raw_profiles.get("control", {})
-    if brain in {"browseruse", "smolagents", "mchp"} and not raw_brain_profile:
+    raw_brain_profile = raw_profiles.get(selected_profile, {})
+    if not raw_brain_profile:
         raise WorkflowPlanError(
-            f"missing control Brain profile for {expected_sup_config}"
+            f"missing Brain profile {selected_profile!r} for {expected_sup_config}"
         )
+    if brain not in {"scripted", "mchp", "browseruse", "smolagents"}:
+        raise WorkflowPlanError(f"unsupported Brain capability: {brain!r}")
+    if hardware not in {"cpu", "gpu"}:
+        raise WorkflowPlanError(f"unsupported hardware capability: {hardware!r}")
     if brain == "mchp":
         kind_rules = raw_brain_profile.get("workflows", {})
         for window in windows:
@@ -273,7 +299,7 @@ def load_workflow_plan(
                 )
                 if entry.resource["kind"] not in allowed_kinds:
                     raise WorkflowPlanError(
-                        f"MCHP control does not support {entry.workflow} resource "
+                        f"MCHP does not support {entry.workflow} resource "
                         f"kind {entry.resource['kind']}"
                     )
 
@@ -282,7 +308,7 @@ def load_workflow_plan(
         sup_config=expected_sup_config,
         brain=str(brain),
         hardware=str(hardware),
-        target_profile=profile_id,
+        resource_profile=profile_id,
         timezone=timezone,
         max_parallel=document["max_parallel"],
         brain_profile=_freeze(raw_brain_profile),

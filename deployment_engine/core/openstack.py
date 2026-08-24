@@ -6,6 +6,7 @@ import json
 import re
 import shlex
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -225,6 +226,76 @@ class OpenStack:
             except json.JSONDecodeError:
                 return None
         return None
+
+    def create_server(
+        self,
+        name: str,
+        *,
+        flavor: str,
+        image: str,
+        network: str,
+        keypair: str,
+        security_group: str,
+        deployment: str,
+        boot_volume_gb: int = 200,
+    ) -> str:
+        """Create one exact server and return its OpenStack ID."""
+        result = self._run(
+            "server", "create",
+            "--flavor", flavor,
+            "--image", image,
+            "--boot-from-volume", str(boot_volume_gb),
+            "--network", network,
+            "--key-name", keypair,
+            "--security-group", security_group,
+            "--property", f"deployment={deployment}",
+            "-f", "value", "-c", "id",
+            name,
+            check=False,
+            timeout_s=120,
+        )
+        if result.returncode != 0:
+            raise OpenStackCommandError(
+                f"server create failed for {name}: "
+                f"{result.stderr.strip() or 'unknown error'}"
+            )
+        server_id = result.stdout.strip()
+        if not server_id:
+            raise OpenStackCommandError(f"server create returned no ID for {name}")
+        self.invalidate_cache()
+        return server_id
+
+    def wait_server_active(
+        self, name_or_id: str, *, attempts: int = 60, delay_s: float = 5.0
+    ) -> dict:
+        """Wait for one exact server to become ACTIVE and return its details."""
+        last_status = "UNKNOWN"
+        for _ in range(attempts):
+            details = self.server_show(name_or_id)
+            if details is not None:
+                last_status = str(
+                    details.get("status", details.get("Status", "UNKNOWN"))
+                ).upper()
+                if last_status == "ACTIVE":
+                    return details
+                if last_status == "ERROR":
+                    raise OpenStackCommandError(
+                        f"server {name_or_id} entered ERROR"
+                    )
+            time.sleep(delay_s)
+        raise OpenStackCommandError(
+            f"server {name_or_id} did not become ACTIVE (last={last_status})"
+        )
+
+    @staticmethod
+    def server_ipv4(details: dict) -> str:
+        """Extract the first assigned IPv4 address from server-show details."""
+        value = details.get("addresses", details.get("Addresses", ""))
+        for candidate in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", str(value)):
+            octets = candidate.split(".")
+            if all(0 <= int(octet) <= 255 for octet in octets):
+                return candidate
+        raise OpenStackCommandError("server show contained no assigned IPv4 address")
 
     def server_fault(
         self, server_id: str, *, timeout_s: float | None = None
