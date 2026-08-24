@@ -18,6 +18,7 @@ from ..core.feedback import (
     DECOY_FEEDBACK_SUP_CONFIGS,
     FeedbackSourceError,
     generate_feedback_config,
+    validate_decoy_control_generation,
     validate_decoy_feedback_generation,
 )
 from ..core.revision import RevisionError, resolve_ruse_revision
@@ -40,14 +41,6 @@ CANONICAL_WORKFLOW_CONFIGS = frozenset({
     "browseruse-gpu",
     "smolagents-gpu",
 })
-WORKFLOW_CONTROL_ROOT = (
-    Path(__file__).resolve().parents[2]
-    / "contracts"
-    / "phase-workflow-plan-v1"
-    / "controls"
-)
-
-
 def run_decoy_spinup(
     config_name: str,
     deploy_dir: Path,
@@ -62,7 +55,7 @@ def run_decoy_spinup(
         )
         return 1
     # If feedback args given but config is decoy-controls, generate feedback config
-    if behavior_source and config_name == "decoy-controls":
+    if behavior_source and config_name == "decoy-controls" and configs_spec:
         try:
             config_name = generate_feedback_config(
                 Path(behavior_source), configs_spec or "all", deploy_dir,
@@ -135,9 +128,9 @@ def run_decoy_spinup(
             output.error("canonical plans. Fix that exact generation; RUSE will")
             output.error("not fall back to an older timestamp.")
         else:
-            output.error("Every DECOY SUP must have a behavior.json. Either fix the")
-            output.error("behavior_source in config.yaml, regenerate the missing")
-            output.error("PHASE feedback files, or restore the control plan.")
+            output.error("The selected PHASE control generation must contain four")
+            output.error("valid canonical plans. Fix that exact generation; RUSE")
+            output.error("will not fall back to an older timestamp.")
         return 1
 
     # Display header
@@ -147,7 +140,8 @@ def run_decoy_spinup(
     output.info(f"  VM prefix: {vm_prefix}*")
     output.info(f"  RUSE ref:  {ruse_revision}")
     if behavior_source:
-        output.info(f"  Feedback:  {behavior_source}")
+        source_label = "Feedback" if config.purpose == "feedback" else "Controls"
+        output.info(f"  {source_label}:  {behavior_source}")
     output.info("")
 
     # Create run directory
@@ -454,37 +448,36 @@ def _validate_behavior_source(
 ) -> list[str]:
     """Check every behavior consumer has exactly one authoritative source.
 
-    Canonical workflow controls use their source-controlled plan, which
-    INSTALL_SUP.sh installs. Legacy and generated-feedback configurations keep
-    the existing behavior_source derivation and distribution path unchanged.
+    Canonical workflow controls and feedback use one PHASE generation selected
+    before provisioning. Legacy configurations keep their existing
+    behavior_source derivation and distribution path unchanged.
     """
     errors: list[str] = []
 
-    if getattr(config, "purpose", None) == "feedback" and all(
+    purpose = getattr(config, "purpose", None)
+    canonical_deployments = all(
         dep.get("behavior") in CANONICAL_WORKFLOW_CONFIGS
         for dep in config.deployments
-    ):
+    )
+    if purpose in {"control", "feedback"} and canonical_deployments:
         if not effective_source:
-            return ["canonical feedback config has no behavior_source"]
+            return [f"canonical {purpose} config has no behavior_source"]
         try:
-            validate_decoy_feedback_generation(Path(effective_source))
+            validator = (
+                validate_decoy_control_generation
+                if purpose == "control"
+                else validate_decoy_feedback_generation
+            )
+            validator(Path(effective_source))
         except FeedbackSourceError as exc:
             return [str(exc)]
         configured = tuple(dep.get("behavior") for dep in config.deployments)
         if configured != DECOY_FEEDBACK_SUP_CONFIGS:
             return [
-                "canonical feedback deployments must be ordered exactly as "
+                f"canonical {purpose} deployments must be ordered exactly as "
                 + ", ".join(DECOY_FEEDBACK_SUP_CONFIGS)
             ]
         return []
-
-    for dep in config.deployments:
-        behavior = dep.get("behavior", "")
-        if behavior not in CANONICAL_WORKFLOW_CONFIGS:
-            continue
-        path = WORKFLOW_CONTROL_ROOT / behavior / "behavior.json"
-        if not path.is_file():
-            errors.append(f"{behavior}: expected source-controlled plan {path}")
 
     if not _requires_legacy_behavior_distribution(config):
         return errors

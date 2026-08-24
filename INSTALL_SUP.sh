@@ -545,6 +545,34 @@ generate_config_key() {
 # Installation Functions
 # ============================================================================
 
+AUTOMATIC_APT_UNITS=(
+    apt-daily.service
+    apt-daily.timer
+    apt-daily-upgrade.service
+    apt-daily-upgrade.timer
+    unattended-upgrades.service
+)
+
+disable_automatic_apt() {
+    log "Stopping and masking automatic APT activity..."
+    sudo systemctl mask --now "${AUTOMATIC_APT_UNITS[@]}"
+}
+
+verify_automatic_apt_disabled() {
+    local unit enabled_state active_state
+
+    for unit in "${AUTOMATIC_APT_UNITS[@]}"; do
+        enabled_state=$(sudo systemctl is-enabled "$unit" 2>/dev/null || true)
+        active_state=$(sudo systemctl is-active "$unit" 2>/dev/null || true)
+        if [[ "$enabled_state" != "masked" || "$active_state" != "inactive" ]]; then
+            log_error "Automatic APT unit $unit is not safely disabled (enabled=$enabled_state, active=$active_state)"
+            return 1
+        fi
+    done
+
+    log "Automatic APT timers and services are masked and inactive"
+}
+
 install_ollama() {
     local model_name="${MODEL_NAMES[$MODEL]}"
     [[ -z "$model_name" ]] && return 0  # No model needed
@@ -805,9 +833,9 @@ copy_source_code() {
         cp -r "$SCRIPT_DIR/decoys/phase_workflow" "$dest_dir/decoys/"
         cp -r "$SCRIPT_DIR/contracts/phase-workflow-plan-v1" "$dest_dir/contracts/"
         mkdir -p "$dest_dir/behavioral_configurations"
-        local workflow_behavior_path="${RUSE_WORKFLOW_BEHAVIOR_PATH:-$SCRIPT_DIR/contracts/phase-workflow-plan-v1/controls/$CONFIG_KEY/behavior.json}"
+        local workflow_behavior_path="${RUSE_WORKFLOW_BEHAVIOR_PATH:-}"
         if [[ ! -f "$workflow_behavior_path" ]]; then
-            error "Canonical workflow plan not found: $workflow_behavior_path"
+            log_error "RUSE_WORKFLOW_BEHAVIOR_PATH must name the assigned canonical workflow plan"
             exit 1
         fi
         cp "$workflow_behavior_path" \
@@ -959,7 +987,13 @@ run_directly() {
     [[ "$CONTENT" == "llm" ]] && content_arg="llm"
 
     if is_phase_workflow_config "$CONFIG_KEY"; then
-        local behavior_dir="$SCRIPT_DIR/contracts/phase-workflow-plan-v1/controls/$CONFIG_KEY"
+        local workflow_behavior_path="${RUSE_WORKFLOW_BEHAVIOR_PATH:-}"
+        if [[ ! -f "$workflow_behavior_path" || "$(basename "$workflow_behavior_path")" != "behavior.json" ]]; then
+            log_error "Canonical runner requires RUSE_WORKFLOW_BEHAVIOR_PATH to an installed behavior.json"
+            exit 1
+        fi
+        local behavior_dir
+        behavior_dir="$(dirname "$workflow_behavior_path")"
         if [[ "$BRAIN" == "mchp" ]]; then
             exec xvfb-run -a python3 -m sup "$CONFIG_KEY" \
                 --behavior-config-dir="$behavior_dir"
@@ -1033,6 +1067,12 @@ install_agent() {
     log "  Service name: $service_name"
     [[ "$STAGE" != "0" ]] && log "  Stage: $STAGE"
 
+    if is_phase_workflow_config "$CONFIG_KEY"; then
+        # Stop any in-flight daily upgrade before the first direct installer
+        # APT command. Masking systemd units does not disable manual apt-get.
+        disable_automatic_apt
+    fi
+
     # ========== STAGE 1: System deps and drivers (pre-reboot) ==========
     if [[ "$STAGE" == "0" || "$STAGE" == "1" ]]; then
         log "=== Stage 1: Installing system dependencies ==="
@@ -1094,6 +1134,10 @@ install_agent() {
 
         # Create systemd service
         create_systemd_service "$service_name" "$deploy_dir"
+
+        if is_phase_workflow_config "$CONFIG_KEY"; then
+            verify_automatic_apt_disabled
+        fi
 
         # Start service (unless deploy flow asked us to wait — the deploy
         # ordering wants behavior.json to land via distribute-behavior-configs

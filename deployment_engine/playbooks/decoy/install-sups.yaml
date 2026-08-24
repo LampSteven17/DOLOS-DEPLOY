@@ -72,6 +72,19 @@
       timezone:
         name: America/New_York
 
+    - name: Stop and mask automatic APT activity for canonical SUPs
+      when: sup_behavior in canonical_workflow_configs
+      command:
+        argv:
+          - systemctl
+          - mask
+          - --now
+          - apt-daily.service
+          - apt-daily.timer
+          - apt-daily-upgrade.service
+          - apt-daily-upgrade.timer
+          - unattended-upgrades.service
+
     # Retry the early fetch tasks — apt mirrors and github.com both flake
     # with "unknown reason" on fresh VMs. These retries don't mask failure:
     # after N attempts the task still fails loud and spinup.py aborts.
@@ -145,10 +158,8 @@
         msg: "Rebooting for NVIDIA driver"
       when: stage1_result.rc == 100
 
-    - name: Stage assigned canonical feedback plan
-      when:
-        - purpose == 'feedback'
-        - sup_behavior in canonical_workflow_configs
+    - name: Stage assigned canonical workflow plan
+      when: sup_behavior in canonical_workflow_configs
       copy:
         src: "{{ behavior_source }}/{{ sup_behavior }}_behavior.json"
         dest: "{{ staged_feedback_plan }}"
@@ -158,7 +169,7 @@
       shell: |
         cd {{ ruse_path }}
         RUSE_NO_SERVICE_START=1 \
-        RUSE_WORKFLOW_BEHAVIOR_PATH="{{ staged_feedback_plan if purpose == 'feedback' and sup_behavior in canonical_workflow_configs else '' }}" \
+        RUSE_WORKFLOW_BEHAVIOR_PATH="{{ staged_feedback_plan if sup_behavior in canonical_workflow_configs else '' }}" \
           ./INSTALL_SUP.sh --{{ sup_behavior }} --stage=2
       args:
         executable: /bin/bash
@@ -173,10 +184,8 @@
       # place. M0 (which skips distribute and is expected to crash on Linux) gets
       # started at the tail of THIS playbook.
 
-    - name: Remove staged canonical feedback plan
-      when:
-        - purpose == 'feedback'
-        - sup_behavior in canonical_workflow_configs
+    - name: Remove staged canonical workflow plan
+      when: sup_behavior in canonical_workflow_configs
       file:
         path: "{{ staged_feedback_plan }}"
         state: absent
@@ -196,6 +205,28 @@
       when: sup_behavior in canonical_workflow_configs
       set_fact:
         canonical_sup_service: "{{ sup_behavior | lower | replace('.', '_') }}.service"
+
+    - name: Verify automatic APT activity is disabled before service startup
+      when: sup_behavior in canonical_workflow_configs
+      shell: |
+        set -euo pipefail
+        for unit in \
+          apt-daily.service \
+          apt-daily.timer \
+          apt-daily-upgrade.service \
+          apt-daily-upgrade.timer \
+          unattended-upgrades.service
+        do
+          enabled_state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
+          active_state=$(systemctl is-active "$unit" 2>/dev/null || true)
+          if [[ "$enabled_state" != masked || "$active_state" != inactive ]]; then
+            echo "$unit is not safely disabled: enabled=$enabled_state active=$active_state" >&2
+            exit 1
+          fi
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
 
     - name: Start canonical workflow service after Stage 2
       when: sup_behavior in canonical_workflow_configs

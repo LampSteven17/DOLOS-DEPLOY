@@ -14,7 +14,10 @@ import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
 from deployment_engine.core.config import DeploymentConfig
-from deployment_engine.core.feedback import generate_feedback_config
+from deployment_engine.core.feedback import (
+    find_decoy_control_generation,
+    generate_feedback_config,
+)
 from deployment_engine.core.phase_run_registry import (
     CONTRACT_PATH,
     PhaseRunRegistryError,
@@ -249,15 +252,12 @@ class PhaseRunRegistryTests(unittest.TestCase):
                 "2026-08-21_1832Z"
             )
             source.mkdir(parents=True)
-            control_root = (
-                Path(__file__).resolve().parents[1] / "contracts" /
-                "phase-workflow-plan-v1" / "controls"
-            )
+            control_root = find_decoy_control_generation()
             for sup_config in (
                 "scripted-cpu", "mchp-cpu", "browseruse-gpu", "smolagents-gpu"
             ):
                 (source / f"{sup_config}_behavior.json").write_bytes(
-                    (control_root / sup_config / "behavior.json").read_bytes()
+                    (control_root / f"{sup_config}_behavior.json").read_bytes()
                 )
             deploy_root = base / "deployments"
             name = generate_feedback_config(source, "all", deploy_root)

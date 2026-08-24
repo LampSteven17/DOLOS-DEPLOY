@@ -50,9 +50,10 @@ from phase_workflow.workflows import (
     structured_llm_task,
     validate_open_document,
 )
+from deployment_engine.core.feedback import find_decoy_control_generation
 
 
-CONTROL_ROOT = CONTRACT_ROOT / "controls"
+CONTROL_ROOT = find_decoy_control_generation()
 REPOSITORY_ROOT = CONTRACT_ROOT.parents[1]
 INSTALLER = REPOSITORY_ROOT / "INSTALL_SUP.sh"
 EXPECTED_CONFIGS = {
@@ -63,23 +64,12 @@ EXPECTED_CONFIGS = {
 }
 EXPECTED_RESOURCES = (
     "wikipedia_compiler", "video_cpp_course", "document_team_meeting_notes",
-    "google_climate_change_news", "video_ai_mistake",
-    "spreadsheet_expense_tracker", "wikipedia_geometry", "video_vpn_dragnet",
-    "document_project_status", "google_weather_today", "video_cronie_jobs",
-    "spreadsheet_inventory_tracker", "wikipedia_deep_learning",
-    "video_wrote_book", "document_training_outline",
-    "google_recipes_for_dinner", "video_ps5_linux",
-    "spreadsheet_work_schedule", "wikipedia_solar_power",
-    "video_python_beginner", "document_incident_summary",
-    "google_renewable_energy", "video_embedded_player",
-    "spreadsheet_task_tracker", "wikipedia_python", "video_epic_sax",
-    "document_weekly_planning", "google_running_shoes_review",
 )
 
 
 def control_document(config_key="scripted-cpu"):
     return json.loads(
-        (CONTROL_ROOT / config_key / "behavior.json").read_text(encoding="utf-8")
+        (CONTROL_ROOT / f"{config_key}_behavior.json").read_text(encoding="utf-8")
     )
 
 
@@ -155,7 +145,7 @@ class LoaderTests(unittest.TestCase):
     def test_four_controls_load_with_exact_shape_order_and_policy(self):
         self.assertEqual(set(CONFIGURATIONS), EXPECTED_CONFIGS)
         plans = {
-            key: load_workflow_plan(CONTROL_ROOT / key / "behavior.json", key)
+            key: load_workflow_plan(CONTROL_ROOT / f"{key}_behavior.json", key)
             for key in EXPECTED_CONFIGS
         }
         for key, plan in plans.items():
@@ -164,14 +154,13 @@ class LoaderTests(unittest.TestCase):
             self.assertEqual(plan.max_parallel, 1)
             self.assertEqual(
                 [(window.start_minute, window.end_minute) for window in plan.windows],
-                [(540, 720), (780, 1020)],
+                [(540, 600)],
             )
             entries = [entry for window in plan.windows for entry in window.sequence]
             self.assertEqual(tuple(entry.resource_id for entry in entries), EXPECTED_RESOURCES)
             self.assertEqual(
                 [entry.workflow for entry in entries],
-                [["WebResearch", "VideoViewing", "DocumentCreation"][i % 3]
-                 for i in range(28)],
+                ["WebResearch", "VideoViewing", "DocumentCreation"],
             )
             self.assertTrue(all(entry.brain_profile == "control" for entry in entries))
             with self.assertRaises(TypeError):
@@ -212,7 +201,7 @@ class LoaderTests(unittest.TestCase):
                         load_workflow_plan(path, expected)
 
     def test_behavior_is_read_once_and_invalid_plan_has_no_fallback(self):
-        path = CONTROL_ROOT / "scripted-cpu" / "behavior.json"
+        path = CONTROL_ROOT / "scripted-cpu_behavior.json"
         original = Path.read_bytes
         count = 0
 
@@ -467,7 +456,7 @@ class RegistryAndBrainTests(unittest.TestCase):
         )
         resolved = []
         for key in ("scripted-cpu", "mchp-cpu", "browseruse-gpu", "smolagents-gpu"):
-            plan = load_workflow_plan(CONTROL_ROOT / key / "behavior.json", key)
+            plan = load_workflow_plan(CONTROL_ROOT / f"{key}_behavior.json", key)
             brain = RecordingBrain()
             registry = WorkflowRegistry(plan, brain, Path("/tmp/workspace"))
             self.assertEqual(registry.workflows, CANONICAL_HANDLERS)
@@ -480,7 +469,7 @@ class RegistryAndBrainTests(unittest.TestCase):
 
     def test_llm_brain_receives_exact_instruction_and_resource(self):
         plan = load_workflow_plan(
-            CONTROL_ROOT / "browseruse-gpu" / "behavior.json", "browseruse-gpu"
+            CONTROL_ROOT / "browseruse-gpu_behavior.json", "browseruse-gpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[0]
@@ -503,7 +492,7 @@ class RegistryAndBrainTests(unittest.TestCase):
 
     def test_llm_video_is_dispatched_through_the_framework_runner(self):
         plan = load_workflow_plan(
-            CONTROL_ROOT / "browseruse-gpu" / "behavior.json", "browseruse-gpu"
+            CONTROL_ROOT / "browseruse-gpu_behavior.json", "browseruse-gpu"
         )
         entry = plan.windows[0].sequence[1]
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(entry)
@@ -539,7 +528,7 @@ class RegistryAndBrainTests(unittest.TestCase):
                 self.closed = True
 
         plan = load_workflow_plan(
-            CONTROL_ROOT / "scripted-cpu" / "behavior.json", "scripted-cpu"
+            CONTROL_ROOT / "scripted-cpu_behavior.json", "scripted-cpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[1]
@@ -590,7 +579,7 @@ class RegistryAndBrainTests(unittest.TestCase):
 
     def test_document_writer_uses_exact_filename_and_supplied_content(self):
         plan = load_workflow_plan(
-            CONTROL_ROOT / "scripted-cpu" / "behavior.json", "scripted-cpu"
+            CONTROL_ROOT / "scripted-cpu_behavior.json", "scripted-cpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[2]
@@ -613,7 +602,7 @@ class RegistryAndBrainTests(unittest.TestCase):
             ("smolagents-gpu", "smolagents_runner", "play_video_realtime"),
         ):
             plan = load_workflow_plan(
-                CONTROL_ROOT / config_key / "behavior.json", config_key
+                CONTROL_ROOT / f"{config_key}_behavior.json", config_key
             )
             task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
                 plan.windows[0].sequence[1]
@@ -636,7 +625,7 @@ class RegistryAndBrainTests(unittest.TestCase):
 
     def test_smol_video_consumes_one_stream_at_real_time_for_300_seconds(self):
         plan = load_workflow_plan(
-            CONTROL_ROOT / "smolagents-gpu" / "behavior.json", "smolagents-gpu"
+            CONTROL_ROOT / "smolagents-gpu_behavior.json", "smolagents-gpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[1]
@@ -676,10 +665,13 @@ class RegistryAndBrainTests(unittest.TestCase):
             def cleanup(self):
                 self.cleaned = True
 
-        plan = load_workflow_plan(
-            CONTROL_ROOT / "mchp-cpu" / "behavior.json", "mchp-cpu"
-        )
-        entries = [plan.windows[0].sequence[2], plan.windows[0].sequence[5]]
+        document = control_document("mchp-cpu")
+        spreadsheet = copy.deepcopy(document["schedule"][0]["sequence"][2])
+        spreadsheet["offset_minutes"] = 45
+        spreadsheet["resource_id"] = "spreadsheet_expense_tracker"
+        document["schedule"][0]["sequence"].append(spreadsheet)
+        plan = load_document(document, "mchp-cpu")
+        entries = [plan.windows[0].sequence[2], plan.windows[0].sequence[3]]
         writer = MCHPWorkflow("document")
         calc = MCHPWorkflow("spreadsheet")
         documents = MCHPDocumentWorkflows(
@@ -712,7 +704,7 @@ class RegistryAndBrainTests(unittest.TestCase):
                 )
 
         plan = load_workflow_plan(
-            CONTROL_ROOT / "mchp-cpu" / "behavior.json", "mchp-cpu"
+            CONTROL_ROOT / "mchp-cpu_behavior.json", "mchp-cpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[2]
@@ -790,10 +782,10 @@ class TruthPropagationTests(unittest.TestCase):
     @staticmethod
     def browser_task():
         plan = load_workflow_plan(
-            CONTROL_ROOT / "browseruse-gpu" / "behavior.json", "browseruse-gpu"
+            CONTROL_ROOT / "browseruse-gpu_behavior.json", "browseruse-gpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
-            plan.windows[1].sequence[6]
+            plan.windows[0].sequence[0]
         )
         return plan, task
 
@@ -864,10 +856,10 @@ class TruthPropagationTests(unittest.TestCase):
     @staticmethod
     def smol_task():
         plan = load_workflow_plan(
-            CONTROL_ROOT / "smolagents-gpu" / "behavior.json", "smolagents-gpu"
+            CONTROL_ROOT / "smolagents-gpu_behavior.json", "smolagents-gpu"
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
-            plan.windows[1].sequence[6]
+            plan.windows[0].sequence[0]
         )
         return plan, task
 
@@ -1059,23 +1051,29 @@ class TruthPropagationTests(unittest.TestCase):
 
 class OpenDocumentValidationTests(unittest.TestCase):
     @staticmethod
-    def task(sequence_index):
-        plan = load_workflow_plan(
-            CONTROL_ROOT / "scripted-cpu" / "behavior.json", "scripted-cpu"
-        )
+    def task(resource_id):
+        document = control_document("scripted-cpu")
+        document["schedule"][0]["sequence"][2]["resource_id"] = resource_id
+        plan = load_document(document, "scripted-cpu")
         return WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
-            plan.windows[0].sequence[sequence_index]
+            plan.windows[0].sequence[2]
         )
 
     def test_exact_assigned_odt_and_ods_validate(self):
-        for index in (2, 5):
-            with self.subTest(index=index), tempfile.TemporaryDirectory() as td:
-                task = self.task(index)
+        for resource_id in (
+            "document_team_meeting_notes",
+            "spreadsheet_expense_tracker",
+        ):
+            with (
+                self.subTest(resource_id=resource_id),
+                tempfile.TemporaryDirectory() as td,
+            ):
+                task = self.task(resource_id)
                 result = OpenDocumentWriter().create(task, Path(td))
                 validate_open_document(task, Path(td), result.artifact)
 
     def test_corrupt_incomplete_and_wrong_format_artifacts_fail(self):
-        task = self.task(5)
+        task = self.task("spreadsheet_expense_tracker")
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             artifact = workspace / task.resource["filename"]
@@ -1111,7 +1109,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "mimetype"):
                 validate_open_document(task, workspace, artifact)
 
-        document_task = self.task(2)
+        document_task = self.task("document_team_meeting_notes")
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td)
             artifact = workspace / document_task.resource["filename"]
@@ -1130,7 +1128,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
                 validate_open_document(document_task, workspace, artifact)
 
     def test_mchp_writer_ui_saves_exact_valid_assigned_odt(self):
-        task = self.task(2)
+        task = self.task("document_team_meeting_notes")
         typed_content = []
         save_path = []
         state = {"saving": False, "hotkeys": []}
@@ -1263,7 +1261,7 @@ class MCHPDriverLifecycleTests(unittest.TestCase):
             created.append(instance._driver)
 
         plan = load_workflow_plan(
-            CONTROL_ROOT / "mchp-cpu" / "behavior.json", "mchp-cpu"
+            CONTROL_ROOT / "mchp-cpu_behavior.json", "mchp-cpu"
         )
         registry = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp"))
         web = registry.resolve(plan.windows[0].sequence[0])
@@ -1312,7 +1310,7 @@ class LLMVideoRunnerTests(unittest.TestCase):
     @staticmethod
     def video_task(config_key):
         plan = load_workflow_plan(
-            CONTROL_ROOT / config_key / "behavior.json", config_key
+            CONTROL_ROOT / f"{config_key}_behavior.json", config_key
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[1]
@@ -1541,7 +1539,7 @@ class LLMDocumentRunnerTests(unittest.TestCase):
     @staticmethod
     def document_task(config_key):
         plan = load_workflow_plan(
-            CONTROL_ROOT / config_key / "behavior.json", config_key
+            CONTROL_ROOT / f"{config_key}_behavior.json", config_key
         )
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[2]
@@ -1800,6 +1798,8 @@ class InstallerTests(unittest.TestCase):
                 command = (
                     f'source "{INSTALLER}"; '
                     f'parse_config_key "{config_key}"; '
+                    f'RUSE_WORKFLOW_BEHAVIOR_PATH="{CONTROL_ROOT}/{config_key}_behavior.json"; '
+                    "export RUSE_WORKFLOW_BEHAVIOR_PATH; "
                     'copy_source_code "$1"; create_run_script "$1"'
                 )
                 subprocess.run(
@@ -1813,12 +1813,15 @@ class InstallerTests(unittest.TestCase):
                 self.assertTrue(
                     (destination / "contracts/phase-workflow-plan-v1").is_dir()
                 )
+                self.assertFalse(
+                    (destination / "contracts/phase-workflow-plan-v1/controls").exists()
+                )
                 installed_behavior = (
                     destination / "behavioral_configurations/behavior.json"
                 )
                 self.assertEqual(
                     installed_behavior.read_bytes(),
-                    (CONTROL_ROOT / config_key / "behavior.json").read_bytes(),
+                    (CONTROL_ROOT / f"{config_key}_behavior.json").read_bytes(),
                 )
                 run_script = (destination / "run_agent.sh").read_text()
                 self.assertIn(f"python3 -m sup {config_key}", run_script)

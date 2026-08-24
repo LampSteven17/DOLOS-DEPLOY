@@ -16,6 +16,7 @@ from deployment_engine import __main__ as deployment_cli
 from deployment_engine import list as deployment_list
 from deployment_engine import teardown as deployment_teardown
 from deployment_engine.core import teardown_steps
+from deployment_engine.core.feedback import find_decoy_control_generation
 from deployment_engine.core.phase_run_registry import PhaseRunRegistryError
 from deployment_engine.core.run_status import FAILED, write_run_status
 from deployment_engine.core.vm_naming import make_run_dep_id, make_vm_prefix
@@ -599,7 +600,9 @@ class OperatorCommandTests(unittest.TestCase):
         self.assertEqual(len(captured["plan"]), 1)
         task = captured["plan"][0]
         self.assertTrue(task["is_controls"])
-        self.assertIsNone(task["behavior_source"])
+        self.assertEqual(
+            task["behavior_source"], find_decoy_control_generation()
+        )
         self.assertIsNone(task["configs_spec"])
         self.assertEqual(
             [(item["behavior"], item["flavor"], item["count"]) for item in task["deployments"]],

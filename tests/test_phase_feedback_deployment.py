@@ -19,7 +19,7 @@ from deployment_engine.decoy import spinup
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTROL_ROOT = ROOT / "contracts" / "phase-workflow-plan-v1" / "controls"
+CONTROL_ROOT = feedback.find_decoy_control_generation()
 CANONICAL = feedback.DECOY_FEEDBACK_SUP_CONFIGS
 TARGETS = feedback.DECOY_FEEDBACK_TARGETS
 
@@ -49,7 +49,7 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
             if sup_config == missing:
                 continue
             shutil.copy2(
-                CONTROL_ROOT / sup_config / "behavior.json",
+                CONTROL_ROOT / f"{sup_config}_behavior.json",
                 generation / f"{sup_config}_behavior.json",
             )
         if extra:
@@ -376,25 +376,22 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
             (ROOT / "deployment_engine/playbooks/decoy/install-sups.yaml").read_text()
         )[0]
         names = [task["name"] for task in play["tasks"]]
-        stage = play["tasks"][names.index("Stage assigned canonical feedback plan")]
+        stage = play["tasks"][names.index("Stage assigned canonical workflow plan")]
         self.assertEqual(
             stage["copy"]["src"],
             "{{ behavior_source }}/{{ sup_behavior }}_behavior.json",
         )
         self.assertLess(
-            names.index("Stage assigned canonical feedback plan"),
+            names.index("Stage assigned canonical workflow plan"),
             names.index("Stage 2: ollama + python + services"),
         )
         self.assertLess(
-            names.index("Remove staged canonical feedback plan"),
+            names.index("Remove staged canonical workflow plan"),
             names.index("Start canonical workflow service after Stage 2"),
         )
         installer = (ROOT / "INSTALL_SUP.sh").read_text()
         self.assertIn("RUSE_WORKFLOW_BEHAVIOR_PATH", installer)
-        self.assertIn(
-            "contracts/phase-workflow-plan-v1/controls/$CONFIG_KEY/behavior.json",
-            installer,
-        )
+        self.assertNotIn("phase-workflow-plan-v1/controls", installer)
         self.assertEqual(
             installer.count(
                 '"$dest_dir/behavioral_configurations/behavior.json"'

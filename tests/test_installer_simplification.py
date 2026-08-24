@@ -106,6 +106,90 @@ class InstallerSimplificationTests(unittest.TestCase):
         for forbidden in ("timing.json", "install-timing", "provisioning-cache"):
             self.assertNotIn(forbidden, self.source)
 
+    def test_canonical_installs_disable_automatic_apt_before_manual_apt(self):
+        units = (
+            "apt-daily.service",
+            "apt-daily.timer",
+            "apt-daily-upgrade.service",
+            "apt-daily-upgrade.timer",
+            "unattended-upgrades.service",
+        )
+        play = yaml.safe_load(INSTALL_PLAYBOOK.read_text(encoding="utf-8"))[0]
+        tasks = play["tasks"]
+        names = [task["name"] for task in tasks]
+        disable = tasks[names.index(
+            "Stop and mask automatic APT activity for canonical SUPs"
+        )]
+        self.assertEqual(
+            disable["when"], "sup_behavior in canonical_workflow_configs"
+        )
+        self.assertEqual(disable["command"]["argv"][:3], [
+            "systemctl", "mask", "--now",
+        ])
+        self.assertEqual(tuple(disable["command"]["argv"][3:]), units)
+        self.assertLess(
+            names.index("Stop and mask automatic APT activity for canonical SUPs"),
+            names.index("Update apt cache"),
+        )
+
+        install_agent = self.source.index("install_agent() {")
+        disable_call = self.source.index(
+            "        disable_automatic_apt", install_agent
+        )
+        first_manual_apt = self.source.index(
+            "        install_system_deps", install_agent
+        )
+        self.assertLess(disable_call, first_manual_apt)
+
+    def test_manual_apt_remains_and_automatic_apt_is_verified_before_start(self):
+        for command in (
+            "sudo apt-get update -y",
+            "sudo apt-get install -y python3-pip",
+            'sudo systemctl mask --now "${AUTOMATIC_APT_UNITS[@]}"',
+        ):
+            self.assertIn(command, self.source)
+
+        play = yaml.safe_load(INSTALL_PLAYBOOK.read_text(encoding="utf-8"))[0]
+        tasks = play["tasks"]
+        names = [task["name"] for task in tasks]
+        verify_name = (
+            "Verify automatic APT activity is disabled before service startup"
+        )
+        verify = tasks[names.index(verify_name)]
+        self.assertEqual(
+            verify["when"], "sup_behavior in canonical_workflow_configs"
+        )
+        self.assertIn('"$enabled_state" != masked', verify["shell"])
+        self.assertIn('"$active_state" != inactive', verify["shell"])
+        self.assertLess(
+            names.index(verify_name),
+            names.index("Start canonical workflow service after Stage 2"),
+        )
+
+        install_agent = self.source.index("install_agent() {")
+        verify_call = self.source.index(
+            "            verify_automatic_apt_disabled", install_agent
+        )
+        service_start = self.source.index(
+            '            sudo systemctl start "${service_name}.service"',
+            install_agent,
+        )
+        self.assertLess(verify_call, service_start)
+
+    def test_all_four_canonical_paths_share_apt_suppression(self):
+        play = yaml.safe_load(INSTALL_PLAYBOOK.read_text(encoding="utf-8"))[0]
+        self.assertEqual(
+            tuple(play["vars"]["canonical_workflow_configs"]),
+            (
+                "scripted-cpu",
+                "mchp-cpu",
+                "browseruse-gpu",
+                "smolagents-gpu",
+            ),
+        )
+        for config in play["vars"]["canonical_workflow_configs"]:
+            self.assertIn(f'["{config}"]=', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

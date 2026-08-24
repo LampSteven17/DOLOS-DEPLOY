@@ -14,6 +14,7 @@ from . import output
 # feedback is emitted independently by PHASE under DECOY_FEEDBACK_BASE.
 FEEDBACK_BASE = Path("/mnt/AXES2U1/feedback")
 DECOY_FEEDBACK_BASE = Path("/data/axes-mirror/feedback")
+DECOY_CONTROL_BASE = Path("/data/axes-mirror/controls")
 DECOY_FEEDBACK_TARGETS = (
     "axes-fall24",
     "axes-spring25",
@@ -53,20 +54,31 @@ def _is_decoy_generation_name(value: str) -> bool:
     return True
 
 
-def validate_decoy_feedback_generation(source_dir: Path) -> None:
-    """Validate exactly four canonical plans through the runtime loader."""
+def _validate_decoy_workflow_generation(
+    source_dir: Path,
+    *,
+    label: str,
+    reject_all_extra_files: bool,
+) -> None:
+    """Validate four canonical plans through the shared runtime loader."""
     source_dir = Path(source_dir)
     if not source_dir.is_dir():
-        raise FeedbackSourceError(f"feedback generation is not a directory: {source_dir}")
+        raise FeedbackSourceError(f"{label} generation is not a directory: {source_dir}")
     if not _is_decoy_generation_name(source_dir.name):
         raise FeedbackSourceError(
-            f"feedback generation must match YYYY-MM-DD_HHMMZ: {source_dir}"
+            f"{label} generation must match YYYY-MM-DD_HHMMZ: {source_dir}"
         )
 
     expected = {
         f"{sup_config}_behavior.json" for sup_config in DECOY_FEEDBACK_SUP_CONFIGS
     }
-    actual = {path.name for path in source_dir.glob("*_behavior.json")}
+    if reject_all_extra_files:
+        actual = {path.name for path in source_dir.iterdir()}
+    else:
+        actual = {
+            path.name for path in source_dir.glob("*_behavior.json")
+            if path.is_file()
+        }
     if actual != expected:
         missing = sorted(expected - actual)
         unexpected = sorted(actual - expected)
@@ -76,7 +88,7 @@ def validate_decoy_feedback_generation(source_dir: Path) -> None:
         if unexpected:
             details.append(f"unexpected {', '.join(unexpected)}")
         raise FeedbackSourceError(
-            f"feedback generation must contain exactly the four canonical "
+            f"{label} generation must contain exactly the four canonical "
             f"behavior files ({'; '.join(details)}): {source_dir}"
         )
 
@@ -90,6 +102,43 @@ def validate_decoy_feedback_generation(source_dir: Path) -> None:
             raise FeedbackSourceError(
                 f"invalid {sup_config} plan {behavior_path}: {exc}"
             ) from exc
+
+
+def validate_decoy_feedback_generation(source_dir: Path) -> None:
+    """Validate exactly four canonical feedback plans."""
+    _validate_decoy_workflow_generation(
+        source_dir,
+        label="feedback",
+        reject_all_extra_files=False,
+    )
+
+
+def validate_decoy_control_generation(source_dir: Path) -> None:
+    """Validate an exact PHASE-generated canonical control generation."""
+    _validate_decoy_workflow_generation(
+        source_dir,
+        label="control",
+        reject_all_extra_files=True,
+    )
+
+
+def find_decoy_control_generation() -> Path:
+    """Select and validate the newest calendar-valid control generation."""
+    if not DECOY_CONTROL_BASE.is_dir():
+        raise FeedbackSourceError(
+            f"control generation root not found: {DECOY_CONTROL_BASE}"
+        )
+    generations = sorted(
+        path for path in DECOY_CONTROL_BASE.iterdir()
+        if path.is_dir() and _is_decoy_generation_name(path.name)
+    )
+    if not generations:
+        raise FeedbackSourceError(
+            f"no YYYY-MM-DD_HHMMZ control generation found: {DECOY_CONTROL_BASE}"
+        )
+    selected = generations[-1]
+    validate_decoy_control_generation(selected)
+    return selected
 
 
 def find_decoy_feedback_by_target(target: str, preset: str) -> Path:

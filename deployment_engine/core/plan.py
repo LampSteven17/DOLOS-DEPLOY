@@ -29,6 +29,7 @@ from .feedback import (
     FeedbackSourceError,
     config_vm_table_lines,
     decoy_feedback_source_identity,
+    find_decoy_control_generation,
     find_all_decoy_feedback_sources,
     find_decoy_feedback_by_target,
     find_all_feedback_sources,
@@ -66,7 +67,11 @@ def build_deploy_plan(
     plan: list[dict] = []
 
     if want_controls:
-        plan.append(_build_controls_task(deploy_type, deploy_dir))
+        try:
+            plan.append(_build_controls_task(deploy_type, deploy_dir))
+        except FeedbackSourceError as exc:
+            output.error(f"ERROR: {exc}")
+            return None
 
     if want_feedback:
         feedback_tasks = _build_feedback_tasks(
@@ -81,15 +86,13 @@ def build_deploy_plan(
 
 
 def _build_controls_task(deploy_type: str, deploy_dir: Path) -> dict:
-    """Build the controls task. Reads behavior_source from the deployment's
-    config.yaml. Fails loud — no silent try/except fallback.
-
-    Post 2026-05-08 the controls/ slot is PHASE-emitted with its own
-    manifest.json + per-SUP behavior.json. If the config or manifest is
-    missing, that's a setup bug and we surface it; we don't paper over it.
-    """
+    """Build one controls task, resolving Decoy plans directly from PHASE."""
     controls_cfg_path = deploy_dir / f"{deploy_type}-controls" / "config.yaml"
     if not controls_cfg_path.exists():
+        if deploy_type == "decoy":
+            raise FeedbackSourceError(
+                f"control deployment config not found: {controls_cfg_path}"
+            )
         # No config means controls aren't set up for this type — render
         # the legacy line and let the spinup decide what to do. This is
         # the only "soft" case: a fresh repo without a controls config
@@ -104,12 +107,17 @@ def _build_controls_task(deploy_type: str, deploy_dir: Path) -> dict:
         }
 
     cfg = DeploymentConfig.load(controls_cfg_path)  # raises on parse errors — fail loud
-    src = Path(cfg.behavior_source) if cfg.behavior_source else None
+    if deploy_type == "decoy":
+        src = find_decoy_control_generation()
+        manifest = None
+    else:
+        src = Path(cfg.behavior_source) if cfg.behavior_source else None
+        manifest = load_manifest(src) if src else None
     return {
         "label": f"{deploy_type}-controls (control)",
         "behavior_source": src,
         "configs_spec": None,
-        "manifest": load_manifest(src) if src else None,
+        "manifest": manifest,
         "is_controls": True,
         "deployments": cfg.deployments,
     }
@@ -293,7 +301,11 @@ def show_plan_and_confirm(
         if task["is_controls"]:
             src = task.get("behavior_source")
             mf = task.get("manifest")
-            if src is None:
+            if deploy_type == "decoy":
+                output.info("      purpose:     control")
+                output.info(f"      generation:  {src.name}")
+                output.info(f"      source:      {src}")
+            elif src is None:
                 output.info("      (control — no PHASE feedback)")
             else:
                 for line in manifest_summary_lines(src, mf, indent="      "):
@@ -370,14 +382,10 @@ def execute_plan(
     for i, task in enumerate(plan, 1):
         output.info("")
         output.info(f"[{i}/{len(plan)}] Deploying {task['label']}...")
-        # Controls runs deploy under their own config name ({type}-controls),
-        # not a derived feedback-style dir. The controls config.yaml already
-        # declares behavior_source, so spinup picks it up at load time —
-        # passing it again here would route through generate_feedback_config
-        # and create a parallel `decoy-feedback-stdctrls-contro-all/` dir
-        # with the verbose name + duplicated state. is_controls=True signals
-        # spinup to skip that branch.
-        if task["is_controls"]:
+        # Decoy controls pass their selected PHASE generation to the fixed
+        # decoy-controls deployment. Other systems retain their established
+        # config.yaml-owned controls source behavior.
+        if task["is_controls"] and deploy_type != "decoy":
             spinup_source: str | None = None
         else:
             src = task["behavior_source"]
