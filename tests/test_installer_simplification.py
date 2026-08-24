@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import time
 import unittest
 from pathlib import Path
@@ -159,8 +160,13 @@ class InstallerSimplificationTests(unittest.TestCase):
         self.assertEqual(
             verify["when"], "sup_behavior in canonical_workflow_configs"
         )
-        self.assertIn('"$enabled_state" != masked', verify["shell"])
-        self.assertIn('"$active_state" != inactive', verify["shell"])
+        self.assertIn(
+            '"$enabled_state" == masked', verify["shell"]
+        )
+        self.assertIn(
+            '"$active_state" == inactive || "$active_state" == failed',
+            verify["shell"],
+        )
         self.assertLess(
             names.index(verify_name),
             names.index("Start canonical workflow service after Stage 2"),
@@ -175,6 +181,69 @@ class InstallerSimplificationTests(unittest.TestCase):
             install_agent,
         )
         self.assertLess(verify_call, service_start)
+
+    def test_automatic_apt_safety_state_matrix_matches_installer_and_playbook(self):
+        play = yaml.safe_load(INSTALL_PLAYBOOK.read_text(encoding="utf-8"))[0]
+        verify = next(
+            task for task in play["tasks"]
+            if task["name"] == (
+                "Verify automatic APT activity is disabled before service startup"
+            )
+        )
+        playbook_wrapper = (
+            'fixture_enabled="$1"\n'
+            'fixture_active="$2"\n'
+            'systemctl() {\n'
+            '  if [[ "$1" == is-enabled ]]; then printf "%s\\n" "$fixture_enabled"; return 0; fi\n'
+            '  if [[ "$1" == is-active ]]; then printf "%s\\n" "$fixture_active"; return 0; fi\n'
+            '  return 2\n'
+            '}\n'
+            + verify["shell"]
+        )
+
+        for enabled_state, active_state, expected_safe in (
+            ("masked", "inactive", True),
+            ("masked", "failed", True),
+            ("masked", "active", False),
+            ("enabled", "inactive", False),
+        ):
+            with self.subTest(
+                enabled=enabled_state,
+                active=active_state,
+            ):
+                installer_result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        (
+                            'source "$1"; '
+                            'automatic_apt_unit_is_safe "$2" "$3"'
+                        ),
+                        "apt-safety-test",
+                        str(INSTALLER),
+                        enabled_state,
+                        active_state,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                playbook_result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        playbook_wrapper,
+                        "apt-safety-test",
+                        enabled_state,
+                        active_state,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                expected_code = 0 if expected_safe else 1
+                self.assertEqual(installer_result.returncode, expected_code)
+                self.assertEqual(playbook_result.returncode, expected_code)
 
     def test_all_four_canonical_paths_share_apt_suppression(self):
         play = yaml.safe_load(INSTALL_PLAYBOOK.read_text(encoding="utf-8"))[0]

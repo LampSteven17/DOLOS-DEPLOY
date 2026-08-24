@@ -210,6 +210,12 @@
       when: sup_behavior in canonical_workflow_configs
       shell: |
         set -euo pipefail
+        automatic_apt_unit_is_safe() {
+          local enabled_state="$1"
+          local active_state="$2"
+          [[ "$enabled_state" == masked && \
+            ( "$active_state" == inactive || "$active_state" == failed ) ]]
+        }
         for unit in \
           apt-daily.service \
           apt-daily.timer \
@@ -219,7 +225,7 @@
         do
           enabled_state=$(systemctl is-enabled "$unit" 2>/dev/null || true)
           active_state=$(systemctl is-active "$unit" 2>/dev/null || true)
-          if [[ "$enabled_state" != masked || "$active_state" != inactive ]]; then
+          if ! automatic_apt_unit_is_safe "$enabled_state" "$active_state"; then
             echo "$unit is not safely disabled: enabled=$enabled_state active=$active_state" >&2
             exit 1
           fi

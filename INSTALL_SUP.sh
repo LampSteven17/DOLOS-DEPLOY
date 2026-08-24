@@ -558,19 +558,26 @@ disable_automatic_apt() {
     sudo systemctl mask --now "${AUTOMATIC_APT_UNITS[@]}"
 }
 
+automatic_apt_unit_is_safe() {
+    local enabled_state="$1"
+    local active_state="$2"
+    [[ "$enabled_state" == "masked" && \
+        ( "$active_state" == "inactive" || "$active_state" == "failed" ) ]]
+}
+
 verify_automatic_apt_disabled() {
     local unit enabled_state active_state
 
     for unit in "${AUTOMATIC_APT_UNITS[@]}"; do
         enabled_state=$(sudo systemctl is-enabled "$unit" 2>/dev/null || true)
         active_state=$(sudo systemctl is-active "$unit" 2>/dev/null || true)
-        if [[ "$enabled_state" != "masked" || "$active_state" != "inactive" ]]; then
+        if ! automatic_apt_unit_is_safe "$enabled_state" "$active_state"; then
             log_error "Automatic APT unit $unit is not safely disabled (enabled=$enabled_state, active=$active_state)"
             return 1
         fi
     done
 
-    log "Automatic APT timers and services are masked and inactive"
+    log "Automatic APT timers and services are masked and unable to run"
 }
 
 install_ollama() {

@@ -62,8 +62,12 @@ EXPECTED_CONFIGS = {
     "browseruse-gpu",
     "smolagents-gpu",
 }
-EXPECTED_RESOURCES = (
-    "wikipedia_compiler", "video_cpp_course", "document_team_meeting_notes",
+EXPECTED_RESOURCES = tuple(
+    entry["resource_id"]
+    for window in json.loads(
+        (CONTROL_ROOT / "scripted-cpu_behavior.json").read_text(encoding="utf-8")
+    )["schedule"]
+    for entry in window["sequence"]
 )
 
 
@@ -461,7 +465,9 @@ class RegistryAndBrainTests(unittest.TestCase):
             registry = WorkflowRegistry(plan, brain, Path("/tmp/workspace"))
             self.assertEqual(registry.workflows, CANONICAL_HANDLERS)
             resolved.append(registry.resolve(plan.windows[0].sequence[0]))
-        self.assertTrue(all(task.resource_id == "wikipedia_compiler" for task in resolved))
+        self.assertTrue(
+            all(task.resource_id == EXPECTED_RESOURCES[0] for task in resolved)
+        )
         self.assertTrue(all(dict(task.resource) == dict(resolved[0].resource) for task in resolved))
         self.assertIsNone(resolved[0].instruction)
         self.assertIsNone(resolved[1].instruction)
@@ -488,7 +494,7 @@ class RegistryAndBrainTests(unittest.TestCase):
             received[0][0].instruction,
             plan.windows[0].sequence[0].instruction,
         )
-        self.assertEqual(received[0][0].resource_id, "wikipedia_compiler")
+        self.assertEqual(received[0][0].resource_id, EXPECTED_RESOURCES[0])
 
     def test_llm_video_is_dispatched_through_the_framework_runner(self):
         plan = load_workflow_plan(
@@ -781,9 +787,11 @@ class RegistryAndBrainTests(unittest.TestCase):
 class TruthPropagationTests(unittest.TestCase):
     @staticmethod
     def browser_task():
-        plan = load_workflow_plan(
-            CONTROL_ROOT / "browseruse-gpu_behavior.json", "browseruse-gpu"
-        )
+        document = control_document("browseruse-gpu")
+        document["schedule"][0]["sequence"][0][
+            "resource_id"
+        ] = "wikipedia_compiler"
+        plan = load_document(document, "browseruse-gpu")
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[0]
         )
@@ -855,9 +863,11 @@ class TruthPropagationTests(unittest.TestCase):
 
     @staticmethod
     def smol_task():
-        plan = load_workflow_plan(
-            CONTROL_ROOT / "smolagents-gpu_behavior.json", "smolagents-gpu"
-        )
+        document = control_document("smolagents-gpu")
+        document["schedule"][0]["sequence"][0][
+            "resource_id"
+        ] = "wikipedia_compiler"
+        plan = load_document(document, "smolagents-gpu")
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[0]
         )
