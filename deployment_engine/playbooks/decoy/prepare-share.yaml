@@ -320,6 +320,10 @@
     share_unc: //share.ruse.test/shared
     share_principal: ruse-share@RUSE.TEST
     share_keytab_path: /etc/ruse/ruse-share.keytab
+    share_smoke_ccache: /run/ruse/krb5cc_smoke
+    share_smoke_seed: /tmp/ruse-share-seed-smoke.odt
+    share_smoke_probe: "/tmp/{{ deployment_id }}-share-probe"
+    share_smoke_remote: "Incoming/scripted-cpu/{{ deployment_id }}-share-probe"
   tasks:
     - name: Stop and mask automatic APT activity before share client install
       command:
@@ -406,42 +410,109 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Fleet smoke DNS and Kerberos from scripted-cpu
+    - name: Verify fleet-local share from scripted-cpu
       when: sup_behavior == 'scripted-cpu'
-      shell: |
-        set -euo pipefail
-        export KRB5CCNAME=FILE:/run/ruse/krb5cc_smoke
-        getent hosts "{{ share_fqdn }}" | grep -F "{{ share_ip }}"
-        kinit -kt "{{ share_keytab_path }}" "{{ share_principal }}"
-      args:
-        executable: /bin/bash
-      changed_when: false
+      block:
+        - name: Resolve share DNS
+          shell: |
+            set -euo pipefail
+            timeout --signal=TERM --kill-after=3s 30s \
+              getent hosts "{{ share_fqdn }}" | grep -F "{{ share_ip }}"
+          args:
+            executable: /bin/bash
+          changed_when: false
+          timeout: 35
 
-    - name: Fleet smoke list and seed download from scripted-cpu
-      when: sup_behavior == 'scripted-cpu'
-      shell: |
-        set -euo pipefail
-        export KRB5CCNAME=FILE:/run/ruse/krb5cc_smoke
-        smbclient "{{ share_unc }}" --use-kerberos=required -c 'ls "Team"; get "Team/meeting-notes.odt" "/tmp/ruse-share-seed-smoke.odt"'
-        test -s /tmp/ruse-share-seed-smoke.odt
-      args:
-        executable: /bin/bash
-      changed_when: false
+        - name: Acquire Kerberos ticket
+          shell: |
+            set -euo pipefail
+            export KRB5CCNAME=FILE:{{ share_smoke_ccache }}
+            timeout --signal=TERM --kill-after=3s 30s \
+              kinit -kt "{{ share_keytab_path }}" "{{ share_principal }}"
+          args:
+            executable: /bin/bash
+          changed_when: false
+          timeout: 35
 
-    - name: Fleet smoke probe upload verify and remove from scripted-cpu
-      when: sup_behavior == 'scripted-cpu'
-      shell: |
-        set -euo pipefail
-        export KRB5CCNAME=FILE:/run/ruse/krb5cc_smoke
-        probe="/tmp/{{ deployment_id }}-share-probe"
-        remote="Incoming/scripted-cpu/{{ deployment_id }}-share-probe"
-        printf 'ruse-share-smoke' > "$probe"
-        smbclient "{{ share_unc }}" --use-kerberos=required -c "put \"$probe\" \"$remote\"; allinfo \"$remote\"" | grep -Ei 'size[ :=]+16'
-        smbclient "{{ share_unc }}" --use-kerberos=required -c "del \"$remote\""
-        rm -f "$probe" /tmp/ruse-share-seed-smoke.odt
-      args:
-        executable: /bin/bash
-      changed_when: false
+        - name: List assigned SMB directory
+          shell: |
+            set -euo pipefail
+            export KRB5CCNAME=FILE:{{ share_smoke_ccache }}
+            timeout --signal=TERM --kill-after=3s 30s \
+              smbclient "{{ share_unc }}" --use-kerberos=required --no-pass \
+              -c 'ls "Team"'
+          args:
+            executable: /bin/bash
+          changed_when: false
+          timeout: 35
+
+        - name: Download assigned seed
+          shell: |
+            set -euo pipefail
+            export KRB5CCNAME=FILE:{{ share_smoke_ccache }}
+            timeout --signal=TERM --kill-after=3s 30s \
+              smbclient "{{ share_unc }}" --use-kerberos=required --no-pass \
+              -c 'get "Team/meeting-notes.odt" "{{ share_smoke_seed }}"'
+          args:
+            executable: /bin/bash
+          changed_when: false
+          timeout: 35
+
+        - name: Verify downloaded seed
+          command:
+            argv: [test, -s, "{{ share_smoke_seed }}"]
+          changed_when: false
+          timeout: 35
+
+        - name: Upload smoke probe
+          shell: |
+            set -euo pipefail
+            export KRB5CCNAME=FILE:{{ share_smoke_ccache }}
+            printf 'ruse-share-smoke' > "{{ share_smoke_probe }}"
+            timeout --signal=TERM --kill-after=3s 30s \
+              smbclient "{{ share_unc }}" --use-kerberos=required --no-pass \
+              -c 'put "{{ share_smoke_probe }}" "{{ share_smoke_remote }}"'
+          args:
+            executable: /bin/bash
+          register: share_probe_upload
+          changed_when: false
+          timeout: 35
+
+        - name: Verify uploaded probe size
+          shell: |
+            set -euo pipefail
+            export KRB5CCNAME=FILE:{{ share_smoke_ccache }}
+            timeout --signal=TERM --kill-after=3s 30s \
+              smbclient "{{ share_unc }}" --use-kerberos=required --no-pass \
+              -c 'allinfo "{{ share_smoke_remote }}"' | grep -Ei 'size[ :=]+16'
+          args:
+            executable: /bin/bash
+          changed_when: false
+          timeout: 35
+      always:
+        - name: Clean smoke probes after verification
+          block:
+            - name: Remove remote smoke probe
+              when: share_probe_upload is defined
+              shell: |
+                set -euo pipefail
+                export KRB5CCNAME=FILE:{{ share_smoke_ccache }}
+                timeout --signal=TERM --kill-after=3s 30s \
+                  smbclient "{{ share_unc }}" --use-kerberos=required --no-pass \
+                  -c 'del "{{ share_smoke_remote }}"'
+              args:
+                executable: /bin/bash
+              changed_when: false
+              timeout: 35
+          always:
+            - name: Remove local smoke files
+              file:
+                path: "{{ item }}"
+                state: absent
+              loop:
+                - "{{ share_smoke_seed }}"
+                - "{{ share_smoke_probe }}"
+                - "{{ share_smoke_ccache }}"
 
   handlers:
     - name: restart systemd-resolved

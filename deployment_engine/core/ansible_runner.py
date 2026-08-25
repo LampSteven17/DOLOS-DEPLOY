@@ -53,6 +53,22 @@ _STEP_TASKS = {
     "Reboot for NVIDIA drivers (exit code 100)": "Rebooting VM for NVIDIA drivers",
     "Stage 2: ollama + python + services": "Running INSTALL_SUP.sh stage 2 (ollama + services)",
     "Check SUP service status":   "Verifying SUP service is running",
+    # prepare-share.yaml
+    "Wait for share-sidecar SSH": "Connecting to fleet share sidecar",
+    "Install Samba AD and SMB/Kerberos packages": "Installing Samba AD dependencies",
+    "Provision fixed Samba AD identity": "Provisioning fleet Samba domain",
+    "Start Samba AD DC": "Starting Samba AD domain controller",
+    "Wait for authoritative Samba DNS": "Waiting for authoritative Samba DNS",
+    "Install Kerberos and SMB client packages": "Installing fleet SMB clients",
+    "Resolve share DNS": "Resolving fleet share DNS",
+    "Acquire Kerberos ticket": "Acquiring fleet Kerberos ticket",
+    "List assigned SMB directory": "Listing assigned SMB directory",
+    "Download assigned seed": "Downloading assigned SMB seed",
+    "Verify downloaded seed": "Verifying downloaded SMB seed",
+    "Upload smoke probe": "Uploading SMB smoke probe",
+    "Verify uploaded probe size": "Verifying SMB smoke probe",
+    "Remove remote smoke probe": "Removing remote SMB smoke probe",
+    "Remove local smoke files": "Removing local SMB smoke files",
     # distribute-behavior-configs.yaml — only show the actual copy
     "Copy configs to SUP":        "Copying behavioral configs",
     # teardown.yaml / teardown-all.yaml
@@ -275,8 +291,15 @@ class _LineParser:
                 return AnsibleEvent(kind="host_ok", host=msg_val, elapsed=elapsed)
             return None
 
-        # ok: — skip (changed: is the real signal, msg lines handle debug output)
+        # Show an unchanged success for visible verification tasks. Most
+        # prepare-share smoke checks deliberately use changed_when: false.
         if stripped.startswith("ok:"):
+            if self.current_task_visible:
+                return AnsibleEvent(
+                    kind="host_ok",
+                    host=_extract_host(stripped),
+                    elapsed=elapsed,
+                )
             return None
 
         # fatal: / UNREACHABLE — always show

@@ -66,7 +66,7 @@ class WorkflowRegistry:
             resource_profile=self._plan.resource_profile,
             sup_config=self._plan.sup_config,
             brain=self._plan.brain,
-            brain_profile=entry.brain_profile,
+            brain_profile=self._plan.brain_profile_id,
             resource_id=entry.resource_id,
             resource=entry.resource,
             instruction=entry.instruction,

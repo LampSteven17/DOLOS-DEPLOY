@@ -22,6 +22,9 @@ SHARE_FQDN = "share.ruse.test"
 SHARE_UNC = "//share.ruse.test/shared"
 SHARE_PRINCIPAL = "ruse-share@RUSE.TEST"
 SHARE_SERVICE_PRINCIPAL = "cifs/share.ruse.test@RUSE.TEST"
+BOUNDED_NETWORK_COMMAND = (
+    "timeout", "--signal=TERM", "--kill-after=3s", "30s",
+)
 SHARE_SEEDS = {
     "share_team_notes": "Team/meeting-notes.odt",
     "share_inventory": "Operations/inventory.ods",
@@ -268,7 +271,11 @@ class KerberosShareAccess:
         )
         env = {**os.environ, "KRB5CCNAME": f"FILE:{self.ccache}"}
         try:
-            self._run(["kinit", "-c", self.ccache, "-kt", self.keytab, SHARE_PRINCIPAL], env)
+            self._run([
+                *BOUNDED_NETWORK_COMMAND,
+                "kinit", "-c", self.ccache, "-kt", self.keytab,
+                SHARE_PRINCIPAL,
+            ], env)
             parent = str(Path(assigned).parent)
             self._smb(f'ls "{parent}"', env)
             self._smb(f'get "{assigned}" "{downloaded}"', env)
@@ -294,7 +301,11 @@ class KerberosShareAccess:
 
     def _smb(self, command: str, env: dict[str, str]) -> str:
         return self._run(
-            ["smbclient", SHARE_UNC, "--use-kerberos=required", "-c", command],
+            [
+                *BOUNDED_NETWORK_COMMAND,
+                "smbclient", SHARE_UNC,
+                "--use-kerberos=required", "--no-pass", "-c", command,
+            ],
             env,
         )
 

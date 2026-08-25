@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ import yaml
 
 from deployment_engine import list as list_command
 from deployment_engine.core import feedback
+from deployment_engine.core.ansible_runner import _LineParser, _STEP_TASKS
 from deployment_engine.core.config import DeploymentConfig
 from deployment_engine.core.deploy_steps import share_sidecar_vms
 from deployment_engine.core.vm_naming import make_run_dep_id, make_vm_prefix
@@ -43,15 +45,13 @@ def write_generation(root: Path, *, include_share: bool) -> Path:
         for window in document["schedule"]:
             for entry in window["sequence"]:
                 entry["resource_id"] = replacements[entry["workflow"]]
-                if "instruction" in entry["brain"]:
-                    entry["brain"]["instruction"] = instructions[entry["workflow"]]
+                if "instruction" in entry:
+                    entry["instruction"] = instructions[entry["workflow"]]
         if include_share and sup_config == "scripted-cpu":
-            brain = {"profile": "scripted-v1"}
             document["schedule"][0]["sequence"].append({
                 "offset_minutes": 45,
                 "workflow": "NetworkShareAccess",
                 "resource_id": "share_team_notes",
-                "brain": brain,
             })
         (generation / filename).write_text(json.dumps(document) + "\n")
     return generation
@@ -62,6 +62,19 @@ class ShareSidecarTests(unittest.TestCase):
     def sidecar_tasks():
         play = yaml.safe_load(SHARE_PLAYBOOK.read_text())[0]
         return play["tasks"], {task["name"]: task for task in play["tasks"]}
+
+    @staticmethod
+    def client_tasks():
+        play = yaml.safe_load(SHARE_PLAYBOOK.read_text())[1]
+
+        def flatten(tasks):
+            for task in tasks:
+                yield task
+                for section in ("block", "rescue", "always"):
+                    yield from flatten(task.get(section, []))
+
+        tasks = list(flatten(play["tasks"]))
+        return tasks, {task["name"]: task for task in tasks}
 
     def test_sidecar_is_conditional_on_validated_network_share_plan(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -279,6 +292,108 @@ class ShareSidecarTests(unittest.TestCase):
         self.assertNotIn("args", export_keytab)
         self.assertTrue(export_keytab["no_log"])
 
+    def test_smoke_network_operations_are_separate_bounded_and_noninteractive(self):
+        tasks, by_name = self.client_tasks()
+        names = [task["name"] for task in tasks]
+        expected = [
+            "Resolve share DNS",
+            "Acquire Kerberos ticket",
+            "List assigned SMB directory",
+            "Download assigned seed",
+            "Verify downloaded seed",
+            "Upload smoke probe",
+            "Verify uploaded probe size",
+            "Remove remote smoke probe",
+            "Remove local smoke files",
+        ]
+        self.assertEqual(
+            [name for name in names if name in expected], expected
+        )
+
+        network_tasks = [
+            "Resolve share DNS",
+            "Acquire Kerberos ticket",
+            "List assigned SMB directory",
+            "Download assigned seed",
+            "Upload smoke probe",
+            "Verify uploaded probe size",
+            "Remove remote smoke probe",
+        ]
+        for name in network_tasks:
+            with self.subTest(name=name):
+                task = by_name[name]
+                self.assertEqual(task["timeout"], 35)
+                self.assertIn(
+                    "timeout --signal=TERM --kill-after=3s 30s",
+                    task["shell"],
+                )
+                self.assertNotIn("no_log", task)
+
+        for name in (
+            "List assigned SMB directory",
+            "Download assigned seed",
+            "Upload smoke probe",
+            "Verify uploaded probe size",
+            "Remove remote smoke probe",
+        ):
+            command = by_name[name]["shell"]
+            self.assertIn("--use-kerberos=required --no-pass", command)
+
+        kerberos = by_name["Acquire Kerberos ticket"]["shell"]
+        self.assertIn('kinit -kt "{{ share_keytab_path }}"', kerberos)
+
+    def test_smoke_cleanup_is_an_always_block_after_failure(self):
+        play = yaml.safe_load(SHARE_PLAYBOOK.read_text())[1]
+        verification = next(
+            task for task in play["tasks"]
+            if task["name"] == "Verify fleet-local share from scripted-cpu"
+        )
+        self.assertEqual(
+            [task["name"] for task in verification["always"]],
+            ["Clean smoke probes after verification"],
+        )
+        cleanup = verification["always"][0]
+        self.assertEqual(
+            cleanup["block"][0]["when"],
+            "share_probe_upload is defined",
+        )
+        self.assertEqual(
+            cleanup["always"][0]["file"]["state"], "absent"
+        )
+        self.assertNotIn("rescue", verification)
+
+    def test_prepare_share_steps_are_visible_with_host_results_and_failures(self):
+        visible_names = (
+            "Start Samba AD DC",
+            "Wait for authoritative Samba DNS",
+            "Resolve share DNS",
+            "Acquire Kerberos ticket",
+            "List assigned SMB directory",
+            "Download assigned seed",
+            "Verify downloaded seed",
+            "Upload smoke probe",
+            "Verify uploaded probe size",
+            "Remove remote smoke probe",
+            "Remove local smoke files",
+        )
+        self.assertTrue(all(name in _STEP_TASKS for name in visible_names))
+        self.assertEqual(len({_STEP_TASKS[name] for name in visible_names}), len(visible_names))
+
+        parser = _LineParser(time.time())
+        task_event = parser.parse("TASK [Download assigned seed] ****")
+        ok_event = parser.parse("ok: [d-fleet-scripted-cpu-0]")
+        failure_event = parser.parse(
+            'fatal: [d-fleet-scripted-cpu-0]: FAILED! => {"msg": "command timed out"}'
+        )
+        self.assertEqual(task_event.task, "Downloading assigned SMB seed")
+        self.assertEqual((ok_event.kind, ok_event.host), (
+            "host_ok", "d-fleet-scripted-cpu-0"
+        ))
+        self.assertEqual((failure_event.kind, failure_event.host), (
+            "host_fail", "d-fleet-scripted-cpu-0"
+        ))
+        self.assertEqual(failure_event.detail, "command timed out")
+
     def test_seed_generator_and_share_paths_are_exact(self):
         profile = json.loads(
             (ROOT / "contracts/phase-workflow-plan-v1/resource-profiles/feedback-v2.json")
@@ -323,10 +438,16 @@ class ShareSidecarTests(unittest.TestCase):
         playbook = yaml.safe_load(
             (ROOT / "deployment_engine/playbooks/decoy/prepare-share.yaml").read_text()
         )
-        smoke_names = [task["name"] for task in playbook[1]["tasks"]]
-        self.assertIn("Fleet smoke DNS and Kerberos from scripted-cpu", smoke_names)
-        self.assertIn("Fleet smoke list and seed download from scripted-cpu", smoke_names)
-        self.assertIn("Fleet smoke probe upload verify and remove from scripted-cpu", smoke_names)
+        smoke = next(
+            task for task in playbook[1]["tasks"]
+            if task["name"] == "Verify fleet-local share from scripted-cpu"
+        )
+        self.assertEqual(smoke["when"], "sup_behavior == 'scripted-cpu'")
+        self.assertIn("Resolve share DNS", [task["name"] for task in smoke["block"]])
+        self.assertIn(
+            "Remove local smoke files",
+            [task["name"] for task in self.client_tasks()[0]],
+        )
 
     def test_exact_prefix_list_and_teardown_include_share_without_collision(self):
         config = DeploymentConfig(

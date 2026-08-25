@@ -66,8 +66,8 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
                 for occurrence in window["sequence"]:
                     workflow = occurrence["workflow"]
                     occurrence["resource_id"] = feedback_resources[workflow]
-                    if "instruction" in occurrence["brain"]:
-                        occurrence["brain"]["instruction"] = (
+                    if "instruction" in occurrence:
+                        occurrence["instruction"] = (
                             feedback_instructions[workflow]
                         )
             (generation / filename).write_text(json.dumps(document) + "\n")

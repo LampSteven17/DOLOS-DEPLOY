@@ -278,7 +278,7 @@ class DailyExecutor:
             "sequence_index": occurrence.sequence_index,
             "workflow": occurrence.entry.workflow,
             "resource_profile": self.plan.resource_profile,
-            "brain_profile": occurrence.entry.brain_profile,
+            "brain_profile": self.plan.brain_profile_id,
             "resource_id": occurrence.entry.resource_id,
             "scheduled_local": occurrence.scheduled_local.isoformat(),
             "scheduled_utc": self._iso(occurrence.scheduled_utc),

@@ -61,6 +61,10 @@ from phase_workflow.workflows import (
 CONTROL_ROOT = (
     Path("/home/ubuntu/PHASE/plans/feedback-v2-rewrite/fixtures/controls")
 )
+AUTHORITATIVE_SCHEMA = Path(
+    "/home/ubuntu/PHASE/plans/feedback-v2-rewrite/"
+    "phase-workflow-plan-v1.schema.json"
+)
 REPOSITORY_ROOT = CONTRACT_ROOT.parents[1]
 INSTALLER = REPOSITORY_ROOT / "INSTALL_SUP.sh"
 PLAN_FILENAMES = {
@@ -104,14 +108,13 @@ def feedback_document(config_key="scripted-cpu"):
     for window in document["schedule"]:
         for entry in window["sequence"]:
             entry["resource_id"] = replacements[entry["workflow"]]
-            if "instruction" in entry["brain"]:
-                entry["brain"]["instruction"] = instructions[entry["workflow"]]
+            if "instruction" in entry:
+                entry["instruction"] = instructions[entry["workflow"]]
     return document
 
 
 def six_workflow_document(config_key="scripted-cpu"):
     document = feedback_document(config_key)
-    profile = PLAN_FILENAMES[config_key][:-5]
     instructions = json.loads(
         (CONTRACT_ROOT / "capabilities-v1.json").read_text(encoding="utf-8")
     )["instructions"]["feedback-v2"]
@@ -125,15 +128,14 @@ def six_workflow_document(config_key="scripted-cpu"):
     )
     sequence = []
     for offset, (workflow, resource_id) in enumerate(resources):
-        brain = {"profile": profile}
-        if config_key in {"browseruse-gpu", "smolagents-gpu"}:
-            brain["instruction"] = instructions[workflow]
-        sequence.append({
+        entry = {
             "offset_minutes": offset,
             "workflow": workflow,
             "resource_id": resource_id,
-            "brain": brain,
-        })
+        }
+        if config_key in {"browseruse-gpu", "smolagents-gpu"}:
+            entry["instruction"] = instructions[workflow]
+        sequence.append(entry)
     document["schedule"] = [{"window_local": [540, 600], "sequence": sequence}]
     return document
 
@@ -215,12 +217,15 @@ class LoaderTests(unittest.TestCase):
                 entries = plan.windows[0].sequence
                 self.assertEqual({entry.workflow for entry in entries}, set(expected))
                 self.assertEqual(plan.resource_profile, "feedback-v2")
-                self.assertTrue(all(
-                    entry.brain_profile == PLAN_FILENAMES[sup_config][:-5]
-                    for entry in entries
-                ))
+                self.assertEqual(
+                    plan.brain_profile_id, PLAN_FILENAMES[sup_config][:-5]
+                )
 
     def test_contract_assets_and_plan_names_are_versioned_only(self):
+        self.assertEqual(
+            (CONTRACT_ROOT / "phase-workflow-plan-v1.schema.json").read_bytes(),
+            AUTHORITATIVE_SCHEMA.read_bytes(),
+        )
         self.assertEqual(
             PLAN_FILENAMES,
             {
@@ -237,6 +242,74 @@ class LoaderTests(unittest.TestCase):
         self.assertFalse((CONTRACT_ROOT / "target-profiles").exists())
         self.assertFalse((CONTRACT_ROOT / "controls").exists())
 
+    def test_top_level_brain_profile_is_required_and_matches_sup_config(self):
+        missing = control_document()
+        del missing["brain_profile"]
+        with self.assertRaisesRegex(WorkflowPlanError, "brain_profile.*required"):
+            load_document(missing)
+
+        expected_profiles = {
+            "scripted-cpu": "scripted-v1",
+            "mchp-cpu": "mchp-v1",
+            "browseruse-gpu": "browseruse-v1",
+            "smolagents-gpu": "smolagents-v1",
+        }
+        for sup_config, expected_profile in expected_profiles.items():
+            with self.subTest(sup_config=sup_config):
+                document = control_document(sup_config)
+                self.assertEqual(document["brain_profile"], expected_profile)
+                document["brain_profile"] = next(
+                    value for value in expected_profiles.values()
+                    if value != expected_profile
+                )
+                with self.assertRaisesRegex(
+                    WorkflowPlanError, "Brain profile mismatch"
+                ):
+                    load_document(document, sup_config)
+
+    def test_per_entry_brain_structure_is_rejected_without_compatibility(self):
+        document = control_document("browseruse-gpu")
+        entry = document["schedule"][0]["sequence"][0]
+        instruction = entry.pop("instruction")
+        entry["brain"] = {
+            "profile": document["brain_profile"],
+            "instruction": instruction,
+        }
+        with self.assertRaisesRegex(WorkflowPlanError, "brain.*unexpected"):
+            load_document(document, "browseruse-gpu")
+
+    def test_llm_instructions_are_required_and_exact(self):
+        for sup_config in ("browseruse-gpu", "smolagents-gpu"):
+            with self.subTest(sup_config=sup_config, mutation="missing"):
+                missing = control_document(sup_config)
+                del missing["schedule"][0]["sequence"][0]["instruction"]
+                with self.assertRaisesRegex(
+                    WorkflowPlanError, "requires an instruction"
+                ):
+                    load_document(missing, sup_config)
+
+            with self.subTest(sup_config=sup_config, mutation="changed"):
+                changed = control_document(sup_config)
+                changed["schedule"][0]["sequence"][0]["instruction"] = (
+                    "Changed instruction."
+                )
+                with self.assertRaisesRegex(
+                    WorkflowPlanError, "wrong instruction"
+                ):
+                    load_document(changed, sup_config)
+
+    def test_non_llm_instructions_are_forbidden(self):
+        for sup_config in ("scripted-cpu", "mchp-cpu"):
+            with self.subTest(sup_config=sup_config):
+                document = control_document(sup_config)
+                document["schedule"][0]["sequence"][0]["instruction"] = (
+                    "Unexpected instruction."
+                )
+                with self.assertRaisesRegex(
+                    WorkflowPlanError, "forbids an instruction"
+                ):
+                    load_document(document, sup_config)
+
     def test_superseded_plan_fields_profiles_and_workflows_are_rejected(self):
         mutations = []
         old_field = control_document()
@@ -245,9 +318,11 @@ class LoaderTests(unittest.TestCase):
         old_resource_profile = control_document()
         old_resource_profile["resource_profile"] = "control-default"
         mutations.append(old_resource_profile)
-        old_brain_profile = control_document()
-        old_brain_profile["schedule"][0]["sequence"][0]["brain"]["profile"] = "control"
-        mutations.append(old_brain_profile)
+        repeated_brain = control_document()
+        repeated_brain["schedule"][0]["sequence"][0]["brain"] = {
+            "profile": "scripted-v1"
+        }
+        mutations.append(repeated_brain)
         old_workflow = control_document()
         old_workflow["schedule"][0]["sequence"][0]["workflow"] = "WhoisLookup"
         mutations.append(old_workflow)
@@ -276,9 +351,7 @@ class LoaderTests(unittest.TestCase):
                 [entry.workflow for entry in entries],
                 ["WebResearch", "VideoViewing", "DocumentCreation"],
             )
-            self.assertTrue(
-                all(entry.brain_profile == PLAN_FILENAMES[key][:-5] for entry in entries)
-            )
+            self.assertEqual(plan.brain_profile_id, PLAN_FILENAMES[key][:-5])
             with self.assertRaises(TypeError):
                 entries[0].resource["kind"] = "changed"
 
@@ -299,7 +372,7 @@ class LoaderTests(unittest.TestCase):
         old_workflow["schedule"][0]["sequence"][0]["workflow"] = "BrowseWeb"
         mutations.append((old_workflow, "scripted-cpu"))
         profile = control_document()
-        profile["schedule"][0]["sequence"][0]["brain"]["profile"] = "unknown"
+        profile["brain_profile"] = "mchp-v1"
         mutations.append((profile, "scripted-cpu"))
         resource = control_document()
         resource["schedule"][0]["sequence"][0]["resource_id"] = "unknown"
@@ -548,7 +621,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertNotIn("reason", event)
         self.assertEqual(
             event["resolved_instruction"],
-            document["schedule"][0]["sequence"][0]["brain"]["instruction"],
+            document["schedule"][0]["sequence"][0]["instruction"],
         )
         self.assertEqual(
             set(event),
@@ -1058,7 +1131,7 @@ class TransferWorkflowTests(unittest.TestCase):
 
             def run(argv, **kwargs):
                 calls.append((argv, kwargs))
-                command = argv[-1] if argv[0] == "smbclient" else ""
+                command = argv[-1] if "smbclient" in argv else ""
                 if command.startswith('get '):
                     local = command.rsplit(' "', 1)[1][:-1]
                     Path(local).write_bytes(b"seed")
@@ -1073,11 +1146,21 @@ class TransferWorkflowTests(unittest.TestCase):
             self.assertTrue(result.completed)
             self.assertEqual(store.state(workspace.name, upload), (False, True, set()))
             self.assertEqual(calls[0][0], [
+                "timeout", "--signal=TERM", "--kill-after=3s", "30s",
                 "kinit", "-c", "/run/cache", "-kt", "/fleet/keytab",
                 "ruse-share@RUSE.TEST",
             ])
-            smb_calls = [call for call in calls if call[0][0] == "smbclient"]
-            self.assertTrue(all("--use-kerberos=required" in call[0] for call in smb_calls))
+            smb_calls = [call for call in calls if "smbclient" in call[0]]
+            self.assertTrue(all(
+                call[0][:4] == [
+                    "timeout", "--signal=TERM", "--kill-after=3s", "30s"
+                ]
+                for call in smb_calls
+            ))
+            self.assertTrue(all(
+                "--use-kerberos=required" in call[0] and "--no-pass" in call[0]
+                for call in smb_calls
+            ))
             commands = [call[0][-1] for call in smb_calls]
             self.assertIn('ls "Team"', commands)
             self.assertTrue(any('get "Team/meeting-notes.odt"' in value for value in commands))
@@ -1097,7 +1180,7 @@ class TransferWorkflowTests(unittest.TestCase):
             store.register(workspace.name, local)
 
             def run(argv, **_kwargs):
-                command = argv[-1] if argv[0] == "smbclient" else ""
+                command = argv[-1] if "smbclient" in argv else ""
                 if command.startswith('get '):
                     destination = command.rsplit(' "', 1)[1][:-1]
                     Path(destination).write_bytes(b"seed")

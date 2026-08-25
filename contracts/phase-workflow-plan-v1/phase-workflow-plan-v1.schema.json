@@ -8,6 +8,7 @@
   "required": [
     "schema",
     "sup_config",
+    "brain_profile",
     "resource_profile",
     "timezone",
     "max_parallel",
@@ -24,6 +25,15 @@
         "mchp-cpu",
         "browseruse-gpu",
         "smolagents-gpu"
+      ]
+    },
+    "brain_profile": {
+      "description": "One Brain execution profile for the complete SUP plan.",
+      "enum": [
+        "scripted-v1",
+        "mchp-v1",
+        "browseruse-v1",
+        "smolagents-v1"
       ]
     },
     "resource_profile": {
@@ -93,8 +103,7 @@
       "required": [
         "offset_minutes",
         "workflow",
-        "resource_id",
-        "brain"
+        "resource_id"
       ],
       "properties": {
         "offset_minutes": {
@@ -117,23 +126,8 @@
           "type": "string",
           "minLength": 1
         },
-        "brain": {
-          "$ref": "#/$defs/brain"
-        }
-      }
-    },
-    "brain": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "profile"
-      ],
-      "properties": {
-        "profile": {
-          "type": "string",
-          "minLength": 1
-        },
         "instruction": {
+          "description": "Exact task instruction for LLM-backed Brain profiles; forbidden for non-LLM profiles.",
           "type": "string",
           "minLength": 1
         }

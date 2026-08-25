@@ -34,7 +34,6 @@ class PlanEntry:
     workflow: str
     resource_id: str
     resource: Mapping[str, Any]
-    brain_profile: str
     instruction: Optional[str]
 
 
@@ -54,6 +53,7 @@ class WorkflowPlan:
     resource_profile: str
     timezone: ZoneInfo
     max_parallel: int
+    brain_profile_id: str
     brain_profile: Mapping[str, Any]
     windows: tuple[PlanWindow, ...]
 
@@ -167,6 +167,20 @@ def load_workflow_plan(
             f"expected {expected_sup_config}, got {document['sup_config']}"
         )
     configuration = configurations[expected_sup_config]
+    selected_profile = document["brain_profile"]
+    raw_profiles = capabilities.get("brain_profiles", {}).get(
+        expected_sup_config, {}
+    )
+    if not isinstance(raw_profiles, dict) or selected_profile not in raw_profiles:
+        raise WorkflowPlanError(
+            "plan Brain profile mismatch: "
+            f"{selected_profile!r} is not installed for {expected_sup_config}"
+        )
+    raw_brain_profile = raw_profiles[selected_profile]
+    if not isinstance(raw_brain_profile, dict) or not raw_brain_profile:
+        raise WorkflowPlanError(
+            f"missing Brain profile {selected_profile!r} for {expected_sup_config}"
+        )
     try:
         timezone = ZoneInfo(document["timezone"])
     except ZoneInfoNotFoundError as exc:
@@ -235,10 +249,9 @@ def load_workflow_plan(
             allowed_profiles = supported_workflows.get(workflow)
             if allowed_profiles is None:
                 raise WorkflowPlanError(f"unsupported workflow for SUP: {workflow}")
-            brain_profile = raw_entry["brain"]["profile"]
-            if brain_profile not in allowed_profiles:
+            if selected_profile not in allowed_profiles:
                 raise WorkflowPlanError(
-                    f"unsupported profile {brain_profile!r} for {workflow}"
+                    f"unsupported profile {selected_profile!r} for {workflow}"
                 )
             resource_id = raw_entry["resource_id"]
             if resource_id not in resources:
@@ -248,7 +261,7 @@ def load_workflow_plan(
                 raise WorkflowPlanError(
                     f"resource {resource_id} does not support {workflow}"
                 )
-            instruction = raw_entry["brain"].get("instruction")
+            instruction = raw_entry.get("instruction")
             policy = configuration.get("instruction")
             if policy == "required" and instruction is None:
                 raise WorkflowPlanError(f"{workflow} requires an instruction")
@@ -267,25 +280,12 @@ def load_workflow_plan(
                 workflow=workflow,
                 resource_id=resource_id,
                 resource=_freeze(resource),
-                brain_profile=brain_profile,
                 instruction=instruction,
             ))
         windows.append(PlanWindow(start, end, tuple(entries)))
 
     brain = configuration.get("brain")
     hardware = configuration.get("hardware")
-    selected_profiles = {
-        entry.brain_profile for window in windows for entry in window.sequence
-    }
-    if len(selected_profiles) != 1:
-        raise WorkflowPlanError("a complete Brain plan must use one Brain profile")
-    selected_profile = next(iter(selected_profiles))
-    raw_profiles = capabilities.get("brain_profiles", {}).get(expected_sup_config, {})
-    raw_brain_profile = raw_profiles.get(selected_profile, {})
-    if not raw_brain_profile:
-        raise WorkflowPlanError(
-            f"missing Brain profile {selected_profile!r} for {expected_sup_config}"
-        )
     if brain not in {"scripted", "mchp", "browseruse", "smolagents"}:
         raise WorkflowPlanError(f"unsupported Brain capability: {brain!r}")
     if hardware not in {"cpu", "gpu"}:
@@ -311,6 +311,7 @@ def load_workflow_plan(
         resource_profile=profile_id,
         timezone=timezone,
         max_parallel=document["max_parallel"],
+        brain_profile_id=selected_profile,
         brain_profile=_freeze(raw_brain_profile),
         windows=tuple(windows),
     )

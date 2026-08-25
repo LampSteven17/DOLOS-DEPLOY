@@ -280,9 +280,10 @@ class Phase4ControlCanaryTests(unittest.TestCase):
 
             comparable = copy.deepcopy(document)
             comparable.pop("sup_config")
+            comparable.pop("brain_profile")
             for window in comparable["schedule"]:
                 for occurrence in window["sequence"]:
-                    occurrence.pop("brain")
+                    occurrence.pop("instruction", None)
             normalized.append(comparable)
 
         for document in normalized[1:]:
