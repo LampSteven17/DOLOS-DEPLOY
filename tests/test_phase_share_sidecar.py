@@ -24,6 +24,7 @@ CONTROL_FIXTURES = Path(
     "/home/ubuntu/PHASE/plans/feedback-v2-rewrite/fixtures/controls"
 )
 CANONICAL = tuple(feedback.DECOY_PLAN_FILENAMES)
+SHARE_PLAYBOOK = ROOT / "deployment_engine/playbooks/decoy/prepare-share.yaml"
 
 
 def write_generation(root: Path, *, include_share: bool) -> Path:
@@ -57,6 +58,11 @@ def write_generation(root: Path, *, include_share: bool) -> Path:
 
 
 class ShareSidecarTests(unittest.TestCase):
+    @staticmethod
+    def sidecar_tasks():
+        play = yaml.safe_load(SHARE_PLAYBOOK.read_text())[0]
+        return play["tasks"], {task["name"]: task for task in play["tasks"]}
+
     def test_sidecar_is_conditional_on_validated_network_share_plan(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -128,7 +134,7 @@ class ShareSidecarTests(unittest.TestCase):
         self.assertIn("sup_flavor=v1.small", content)
 
     def test_playbook_has_exact_identity_dns_principals_and_fleet_keytab(self):
-        path = ROOT / "deployment_engine/playbooks/decoy/prepare-share.yaml"
+        path = SHARE_PLAYBOOK
         document = yaml.safe_load(path.read_text())
         serialized = path.read_text()
         first, second = document
@@ -145,8 +151,14 @@ class ShareSidecarTests(unittest.TestCase):
             "share_service_principal": "cifs/share.ruse.test@RUSE.TEST",
         })
         for required in (
+            "winbind",
             "dns forwarder",
             "SAMBA_INTERNAL",
+            "DNSStubListener=no",
+            "/run/systemd/resolve/resolv.conf",
+            "Synchronize fleet-local administrator password",
+            "Create or reset fleet-local share client account",
+            "Wait for authoritative Samba DNS",
             "//share.ruse.test/shared",
             "--use-kerberos=required",
             "hostvars[groups['share_sidecar'][0]].share_keytab_blob.content",
@@ -162,6 +174,110 @@ class ShareSidecarTests(unittest.TestCase):
             for task in play["tasks"]
             if "password" in task["name"].lower() or "keytab" in task["name"].lower()
         ))
+
+    def test_sidecar_installs_winbind_with_existing_server_packages(self):
+        _tasks, by_name = self.sidecar_tasks()
+        packages = by_name[
+            "Install Samba AD and SMB/Kerberos packages"
+        ]["apt"]["name"]
+        self.assertEqual(
+            packages,
+            ["samba", "winbind", "smbclient", "krb5-user", "dnsutils", "python3"],
+        )
+
+    def test_port_53_is_released_before_samba_and_final_resolver_is_local(self):
+        tasks, by_name = self.sidecar_tasks()
+        names = [task["name"] for task in tasks]
+        retain = by_name[
+            "Retain OpenStack DHCP DNS forwarder before resolver changes"
+        ]["shell"]
+        self.assertIn("/etc/samba/smb.conf", retain)
+        self.assertIn("/run/systemd/resolve/resolv.conf", retain)
+        self.assertIn("$2 !~ /^127\\./", retain)
+
+        release = by_name[
+            "Release port 53 while retaining the OpenStack DNS forwarder"
+        ]["copy"]["content"]
+        self.assertIn("DNS={{ openstack_dns.stdout | trim }}", release)
+        self.assertIn("DNSStubListener=no", release)
+        link = by_name["Use the non-stub systemd-resolved resolver file"]["file"]
+        self.assertEqual(link["src"], "/run/systemd/resolve/resolv.conf")
+        self.assertEqual(link["dest"], "/etc/resolv.conf")
+        self.assertEqual(link["state"], "link")
+        self.assertTrue(link["force"])
+        self.assertLess(
+            names.index("Apply bootstrap resolver configuration"),
+            names.index("Start Samba AD DC"),
+        )
+
+        final = by_name[
+            "Configure sidecar to use its authoritative Samba DNS"
+        ]["copy"]["content"]
+        self.assertIn("DNS=127.0.0.1", final)
+        self.assertIn("Domains=~.", final)
+        self.assertIn("DNSStubListener=no", final)
+
+    def test_samba_dns_readiness_precedes_every_dns_command(self):
+        tasks, by_name = self.sidecar_tasks()
+        names = [task["name"] for task in tasks]
+        wait = by_name["Wait for authoritative Samba DNS"]["wait_for"]
+        self.assertEqual(wait, {
+            "host": "127.0.0.1",
+            "port": 53,
+            "timeout": 60,
+        })
+        self.assertLess(
+            names.index("Start Samba AD DC"),
+            names.index("Wait for authoritative Samba DNS"),
+        )
+        self.assertLess(
+            names.index("Wait for authoritative Samba DNS"),
+            names.index("Map share.ruse.test to the assigned OpenStack address"),
+        )
+
+    def test_partial_failure_retry_preserves_domain_and_refreshes_credentials(self):
+        tasks, by_name = self.sidecar_tasks()
+        names = [task["name"] for task in tasks]
+        self.assertEqual(
+            by_name["Check for an existing fleet-local Samba domain"]["stat"]["path"],
+            "/var/lib/samba/private/sam.ldb",
+        )
+        remove_config = by_name[
+            "Remove package-default Samba configuration before AD provisioning"
+        ]
+        self.assertEqual(remove_config["when"], "not samba_domain_db.stat.exists")
+        provision = by_name["Provision fixed Samba AD identity"]
+        self.assertEqual(provision["args"]["creates"], "/var/lib/samba/private/sam.ldb")
+        self.assertTrue(provision["no_log"])
+
+        admin = by_name["Synchronize fleet-local administrator password"]
+        self.assertNotIn("when", admin)
+        self.assertIn("setpassword", admin["command"]["argv"])
+        self.assertTrue(admin["no_log"])
+
+        account = by_name["Create or reset fleet-local share client account"]
+        self.assertIn("samba-tool user show ruse-share", account["shell"])
+        self.assertIn("samba-tool user setpassword ruse-share", account["shell"])
+        self.assertIn("samba-tool user create ruse-share", account["shell"])
+        self.assertTrue(account["no_log"])
+
+        spn = by_name["Register exact SMB service principal"]["shell"]
+        self.assertIn("samba-tool spn list 'SHARE$'", spn)
+        self.assertIn("grep -Eq", spn)
+        self.assertIn("samba-tool spn add cifs/share.ruse.test 'SHARE$'", spn)
+
+        remove_keytab = by_name[
+            "Remove prior fleet-local client keytab before export"
+        ]
+        export_keytab = by_name["Export fresh fleet-local client keytab"]
+        self.assertLess(
+            names.index("Remove prior fleet-local client keytab before export"),
+            names.index("Export fresh fleet-local client keytab"),
+        )
+        self.assertEqual(remove_keytab["file"]["state"], "absent")
+        self.assertTrue(remove_keytab["no_log"])
+        self.assertNotIn("args", export_keytab)
+        self.assertTrue(export_keytab["no_log"])
 
     def test_seed_generator_and_share_paths_are_exact(self):
         profile = json.loads(

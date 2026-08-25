@@ -25,9 +25,24 @@
       timeout: 300
 
     - name: Retain OpenStack DHCP DNS forwarder before resolver changes
-      shell: >-
-        awk '/^nameserver / && $2 != "127.0.0.53" {print $2; exit}'
-        /run/systemd/resolve/resolv.conf
+      shell: |
+        set -euo pipefail
+        forwarder=""
+        if [[ -f /etc/samba/smb.conf ]]; then
+          forwarder=$(awk -F= '
+            tolower($1) ~ /^[[:space:]]*dns forwarder[[:space:]]*$/ {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+              if ($2 !~ /^127\./) { print $2; exit }
+            }
+          ' /etc/samba/smb.conf)
+        fi
+        if [[ -z "$forwarder" ]]; then
+          forwarder=$(awk '
+            /^nameserver / && $2 !~ /^127\./ { print $2; exit }
+          ' /run/systemd/resolve/resolv.conf)
+        fi
+        [[ -n "$forwarder" ]]
+        printf '%s\n' "$forwarder"
       args:
         executable: /bin/bash
       register: openstack_dns
@@ -48,7 +63,7 @@
 
     - name: Install Samba AD and SMB/Kerberos packages
       apt:
-        name: [samba, smbclient, krb5-user, dnsutils, python3]
+        name: [samba, winbind, smbclient, krb5-user, dnsutils, python3]
         state: present
         update_cache: yes
 
@@ -64,10 +79,16 @@
       failed_when: false
       loop: [smbd, nmbd, winbind, samba-ad-dc]
 
+    - name: Check for an existing fleet-local Samba domain
+      stat:
+        path: /var/lib/samba/private/sam.ldb
+      register: samba_domain_db
+
     - name: Remove package-default Samba configuration before AD provisioning
       file:
         path: /etc/samba/smb.conf
         state: absent
+      when: not samba_domain_db.stat.exists
 
     - name: Generate fresh fleet-local administrator password
       set_fact:
@@ -90,6 +111,16 @@
           - "--host-ip={{ share_ip }}"
       args:
         creates: /var/lib/samba/private/sam.ldb
+      no_log: true
+
+    - name: Synchronize fleet-local administrator password
+      command:
+        argv:
+          - samba-tool
+          - user
+          - setpassword
+          - Administrator
+          - "--newpassword={{ share_admin_password }}"
       no_log: true
 
     - name: Configure retained OpenStack DNS forwarder
@@ -139,12 +170,45 @@
         mode: '0777'
       loop: [scripted-cpu, mchp-cpu, browseruse-gpu, smolagents-gpu]
 
+    - name: Create sidecar systemd-resolved configuration directory
+      file:
+        path: /etc/systemd/resolved.conf.d
+        state: directory
+        mode: '0755'
+
+    - name: Release port 53 while retaining the OpenStack DNS forwarder
+      copy:
+        content: |
+          [Resolve]
+          DNS={{ openstack_dns.stdout | trim }}
+          DNSStubListener=no
+        dest: /etc/systemd/resolved.conf.d/ruse-share.conf
+        mode: '0644'
+
+    - name: Use the non-stub systemd-resolved resolver file
+      file:
+        src: /run/systemd/resolve/resolv.conf
+        dest: /etc/resolv.conf
+        state: link
+        force: yes
+
+    - name: Apply bootstrap resolver configuration
+      systemd:
+        name: systemd-resolved
+        state: restarted
+
     - name: Start Samba AD DC
       systemd:
         name: samba-ad-dc
         state: restarted
         enabled: yes
         daemon_reload: yes
+
+    - name: Wait for authoritative Samba DNS
+      wait_for:
+        host: 127.0.0.1
+        port: 53
+        timeout: 60
 
     - name: Map share.ruse.test to the assigned OpenStack address
       shell: |
@@ -158,24 +222,33 @@
         executable: /bin/bash
       no_log: true
 
-    - name: Create fresh fleet-local share client account
-      command:
-        argv:
-          - samba-tool
-          - user
-          - create
-          - ruse-share
-          - "{{ share_client_password }}"
+    - name: Create or reset fleet-local share client account
+      shell: |
+        set -euo pipefail
+        if samba-tool user show ruse-share >/dev/null 2>&1; then
+          samba-tool user setpassword ruse-share \
+            --newpassword="{{ share_client_password }}"
+        else
+          samba-tool user create ruse-share "{{ share_client_password }}"
+        fi
+      args:
+        executable: /bin/bash
       no_log: true
 
     - name: Register exact SMB service principal
-      command:
-        argv:
-          - samba-tool
-          - spn
-          - add
-          - cifs/share.ruse.test
-          - SHARE$
+      shell: |
+        set -euo pipefail
+        samba-tool spn list 'SHARE$' | \
+          grep -Eq '^[[:space:]]*cifs/share\.ruse\.test[[:space:]]*$' || \
+          samba-tool spn add cifs/share.ruse.test 'SHARE$'
+      args:
+        executable: /bin/bash
+
+    - name: Remove prior fleet-local client keytab before export
+      file:
+        path: /root/ruse-share.keytab
+        state: absent
+      no_log: true
 
     - name: Export fresh fleet-local client keytab
       command:
@@ -185,8 +258,6 @@
           - exportkeytab
           - /root/ruse-share.keytab
           - "--principal={{ share_principal }}"
-      args:
-        creates: /root/ruse-share.keytab
       no_log: true
 
     - name: Read fleet keytab for in-memory distribution
@@ -207,6 +278,7 @@
           [Resolve]
           DNS=127.0.0.1
           Domains=~.
+          DNSStubListener=no
         dest: /etc/systemd/resolved.conf.d/ruse-share.conf
         mode: '0644'
       notify: restart sidecar systemd-resolved
