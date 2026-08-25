@@ -302,7 +302,8 @@ class ShareSidecarTests(unittest.TestCase):
             "Download assigned seed",
             "Verify downloaded seed",
             "Upload smoke probe",
-            "Verify uploaded probe size",
+            "Download uploaded SMB smoke probe",
+            "Verify uploaded SMB smoke probe",
             "Remove remote smoke probe",
             "Remove local smoke files",
         ]
@@ -316,7 +317,7 @@ class ShareSidecarTests(unittest.TestCase):
             "List assigned SMB directory",
             "Download assigned seed",
             "Upload smoke probe",
-            "Verify uploaded probe size",
+            "Download uploaded SMB smoke probe",
             "Remove remote smoke probe",
         ]
         for name in network_tasks:
@@ -333,7 +334,7 @@ class ShareSidecarTests(unittest.TestCase):
             "List assigned SMB directory",
             "Download assigned seed",
             "Upload smoke probe",
-            "Verify uploaded probe size",
+            "Download uploaded SMB smoke probe",
             "Remove remote smoke probe",
         ):
             command = by_name[name]["shell"]
@@ -341,6 +342,34 @@ class ShareSidecarTests(unittest.TestCase):
 
         kerberos = by_name["Acquire Kerberos ticket"]["shell"]
         self.assertIn('kinit -kt "{{ share_keytab_path }}"', kerberos)
+
+    def test_uploaded_probe_is_round_tripped_and_compared_exactly(self):
+        _, by_name = self.client_tasks()
+        playbook_source = SHARE_PLAYBOOK.read_text()
+        self.assertNotIn("allinfo", playbook_source)
+
+        download = by_name["Download uploaded SMB smoke probe"]
+        self.assertIn(
+            '-c \'get "{{ share_smoke_remote }}" "{{ share_smoke_roundtrip }}"\'',
+            download["shell"],
+        )
+        self.assertEqual(download["timeout"], 35)
+        self.assertIn(
+            "timeout --signal=TERM --kill-after=3s 30s",
+            download["shell"],
+        )
+        self.assertIn("--use-kerberos=required --no-pass", download["shell"])
+
+        verify = by_name["Verify uploaded SMB smoke probe"]
+        self.assertIn('test -f "{{ share_smoke_roundtrip }}"', verify["shell"])
+        self.assertIn(
+            'stat -c %s "{{ share_smoke_roundtrip }}"', verify["shell"]
+        )
+        self.assertIn(' -eq 16', verify["shell"])
+        self.assertIn(
+            'cmp -s "{{ share_smoke_probe }}" "{{ share_smoke_roundtrip }}"',
+            verify["shell"],
+        )
 
     def test_smoke_cleanup_is_an_always_block_after_failure(self):
         play = yaml.safe_load(SHARE_PLAYBOOK.read_text())[1]
@@ -360,6 +389,10 @@ class ShareSidecarTests(unittest.TestCase):
         self.assertEqual(
             cleanup["always"][0]["file"]["state"], "absent"
         )
+        self.assertIn(
+            "{{ share_smoke_roundtrip }}",
+            cleanup["always"][0]["loop"],
+        )
         self.assertNotIn("rescue", verification)
 
     def test_prepare_share_steps_are_visible_with_host_results_and_failures(self):
@@ -372,12 +405,21 @@ class ShareSidecarTests(unittest.TestCase):
             "Download assigned seed",
             "Verify downloaded seed",
             "Upload smoke probe",
-            "Verify uploaded probe size",
+            "Download uploaded SMB smoke probe",
+            "Verify uploaded SMB smoke probe",
             "Remove remote smoke probe",
             "Remove local smoke files",
         )
         self.assertTrue(all(name in _STEP_TASKS for name in visible_names))
         self.assertEqual(len({_STEP_TASKS[name] for name in visible_names}), len(visible_names))
+        self.assertEqual(
+            _STEP_TASKS["Download uploaded SMB smoke probe"],
+            "Downloading uploaded SMB smoke probe",
+        )
+        self.assertEqual(
+            _STEP_TASKS["Verify uploaded SMB smoke probe"],
+            "Verifying uploaded SMB smoke probe",
+        )
 
         parser = _LineParser(time.time())
         task_event = parser.parse("TASK [Download assigned seed] ****")

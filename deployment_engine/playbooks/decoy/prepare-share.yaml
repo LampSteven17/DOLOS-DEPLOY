@@ -323,6 +323,7 @@
     share_smoke_ccache: /run/ruse/krb5cc_smoke
     share_smoke_seed: /tmp/ruse-share-seed-smoke.odt
     share_smoke_probe: "/tmp/{{ deployment_id }}-share-probe"
+    share_smoke_roundtrip: "/tmp/{{ deployment_id }}-share-probe-roundtrip"
     share_smoke_remote: "Incoming/scripted-cpu/{{ deployment_id }}-share-probe"
   tasks:
     - name: Stop and mask automatic APT activity before share client install
@@ -478,13 +479,25 @@
           changed_when: false
           timeout: 35
 
-        - name: Verify uploaded probe size
+        - name: Download uploaded SMB smoke probe
           shell: |
             set -euo pipefail
             export KRB5CCNAME=FILE:{{ share_smoke_ccache }}
             timeout --signal=TERM --kill-after=3s 30s \
               smbclient "{{ share_unc }}" --use-kerberos=required --no-pass \
-              -c 'allinfo "{{ share_smoke_remote }}"' | grep -Ei 'size[ :=]+16'
+              -c 'get "{{ share_smoke_remote }}" "{{ share_smoke_roundtrip }}"'
+          args:
+            executable: /bin/bash
+          changed_when: false
+          timeout: 35
+
+        - name: Verify uploaded SMB smoke probe
+          shell: |
+            set -euo pipefail
+            test -f "{{ share_smoke_roundtrip }}"
+            roundtrip_size=$(stat -c %s "{{ share_smoke_roundtrip }}")
+            test "${roundtrip_size}" -eq 16
+            cmp -s "{{ share_smoke_probe }}" "{{ share_smoke_roundtrip }}"
           args:
             executable: /bin/bash
           changed_when: false
@@ -512,6 +525,7 @@
               loop:
                 - "{{ share_smoke_seed }}"
                 - "{{ share_smoke_probe }}"
+                - "{{ share_smoke_roundtrip }}"
                 - "{{ share_smoke_ccache }}"
 
   handlers:

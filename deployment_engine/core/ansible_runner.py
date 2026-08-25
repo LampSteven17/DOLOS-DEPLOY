@@ -66,7 +66,8 @@ _STEP_TASKS = {
     "Download assigned seed": "Downloading assigned SMB seed",
     "Verify downloaded seed": "Verifying downloaded SMB seed",
     "Upload smoke probe": "Uploading SMB smoke probe",
-    "Verify uploaded probe size": "Verifying SMB smoke probe",
+    "Download uploaded SMB smoke probe": "Downloading uploaded SMB smoke probe",
+    "Verify uploaded SMB smoke probe": "Verifying uploaded SMB smoke probe",
     "Remove remote smoke probe": "Removing remote SMB smoke probe",
     "Remove local smoke files": "Removing local SMB smoke files",
     # distribute-behavior-configs.yaml — only show the actual copy
