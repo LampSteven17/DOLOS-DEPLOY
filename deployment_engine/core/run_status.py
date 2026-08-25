@@ -27,6 +27,7 @@ STATUS_FILE = "deploy_status.json"
 
 OK = "ok"
 FAILED = "failed"
+CLEANED = "cleaned"
 UNKNOWN = "unknown"
 
 
@@ -51,7 +52,7 @@ def write_run_status(run_dir: Path, status: str, detail: str = "") -> None:
 
 
 def read_run_status(run_dir: Path) -> str:
-    """Return OK / FAILED / UNKNOWN for a run dir.
+    """Return OK / FAILED / CLEANED / UNKNOWN for a run dir.
 
     UNKNOWN covers both "no stamp" and "unreadable stamp" — either way the
     run's outcome is undetermined and --failed leaves it alone.

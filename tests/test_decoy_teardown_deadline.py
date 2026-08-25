@@ -134,11 +134,11 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
         deploy_dir = Path(temporary.name)
         config_dir = deploy_dir / CONFIG_NAME
         (config_dir / "runs" / RUN_ID).mkdir(parents=True)
-        final_calls: list[tuple[str, str]] = []
+        final_calls: list[tuple[str, str, Path]] = []
 
-        def finalize(config_name: str, run_id: str) -> bool:
-            cloud.calls.append(("finalize", config_name, run_id))
-            final_calls.append((config_name, run_id))
+        def finalize(config_name: str, run_id: str, run_dir: Path) -> bool:
+            cloud.calls.append(("finalize", config_name, run_id, run_dir))
+            final_calls.append((config_name, run_id, run_dir))
             return True
 
         stderr = StringIO()
@@ -185,7 +185,10 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
             result, final_calls, _ = self._run(cloud, clock)
 
         self.assertEqual(result, 0)
-        self.assertEqual(final_calls, [(CONFIG_NAME, RUN_ID)])
+        self.assertEqual(
+            [(name, run_id) for name, run_id, _ in final_calls],
+            [(CONFIG_NAME, RUN_ID)],
+        )
         self.assertIn(
             ("server_delete_many", ("vm-1", "vm-2"), False), cloud.calls
         )
@@ -232,7 +235,10 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
             result, final_calls, _ = self._run(cloud, clock)
 
         self.assertEqual(result, 0)
-        self.assertEqual(final_calls, [(CONFIG_NAME, RUN_ID)])
+        self.assertEqual(
+            [(name, run_id) for name, run_id, _ in final_calls],
+            [(CONFIG_NAME, RUN_ID)],
+        )
         self.assertEqual(
             [call for call in cloud.calls if call[0] == "server_force_delete_many"],
             [

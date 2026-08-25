@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -16,8 +18,17 @@ from deployment_engine import __main__ as deployment_cli
 from deployment_engine import list as deployment_list
 from deployment_engine import teardown as deployment_teardown
 from deployment_engine.core import teardown_steps
-from deployment_engine.core.phase_run_registry import PhaseRunRegistryError
-from deployment_engine.core.run_status import FAILED, write_run_status
+from deployment_engine.core.phase_run_registry import (
+    PhaseRunRegistryError,
+    create_deployment,
+)
+from deployment_engine.core.run_status import (
+    CLEANED,
+    FAILED,
+    OK,
+    read_run_status,
+    write_run_status,
+)
 from deployment_engine.core.vm_naming import make_run_dep_id, make_vm_prefix
 from deployment_engine.decoy import teardown as decoy_teardown
 
@@ -358,6 +369,39 @@ class OperatorCommandTests(unittest.TestCase):
             self.assertIn(f"decoy-controls/{CURRENT_RUN}", stderr.getvalue())
             self.assertEqual(cloud.status_map_calls, 1)
 
+    def test_cleaned_run_is_not_selected_by_failed_filter(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            config_dir = _write_config(deploy_dir)
+            run_dir = config_dir / "runs" / CURRENT_RUN
+            run_dir.mkdir(parents=True)
+            write_run_status(run_dir, CLEANED, "resources cleaned")
+            cloud = _Cloud({})
+
+            stderr = StringIO()
+            with (
+                mock.patch.object(
+                    deployment_teardown, "OpenStack", return_value=cloud
+                ),
+                mock.patch.object(
+                    deployment_teardown.output, "confirm"
+                ) as confirm,
+                redirect_stderr(stderr),
+            ):
+                result = deployment_teardown.run_teardown_filtered(
+                    deploy_dir,
+                    types={
+                        "decoy": True,
+                        "rampart": False,
+                        "ghosts": False,
+                    },
+                    failed_only=True,
+                )
+
+            self.assertEqual(result, 0)
+            self.assertIn("No failed deployments match", stderr.getvalue())
+            confirm.assert_not_called()
+
     def test_teardown_purpose_cli_dispatch_and_validation(self):
         for flag, expected in (("--controls", "control"), ("--feedback", "feedback")):
             with mock.patch(
@@ -457,11 +501,16 @@ class OperatorCommandTests(unittest.TestCase):
             run_dir.mkdir(parents=True)
             sentinel = run_dir / "deployment-sentinel"
             sentinel.write_text("unchanged\n")
+            record_path = Path(temporary) / "deployment.json"
+            record_path.write_text("{}\n")
 
             cloud = mock.Mock()
             cloud.count_vms_with_prefix.return_value = 0
             with (
                 mock.patch.object(teardown_steps, "OpenStack", return_value=cloud),
+                mock.patch.object(
+                    teardown_steps, "deployment_path", return_value=record_path
+                ),
                 mock.patch.object(
                     teardown_steps,
                     "close_deployment",
@@ -552,12 +601,35 @@ class OperatorCommandTests(unittest.TestCase):
             run_dir.mkdir(parents=True)
             sentinel = run_dir / "historical-state"
             sentinel.write_text("retained\n")
+            axes_root = Path(temporary) / "axes"
+            started_at = datetime.strptime(
+                CURRENT_RUN, "%Y-%m-%d_%H%M%SZ"
+            ).replace(tzinfo=timezone.utc)
+            created_run, record_path = create_deployment(
+                experiment_id="decoy-controls",
+                system="decoy",
+                purpose="control",
+                target=None,
+                started_at=started_at,
+                capture_interface="eno2",
+                vms=[
+                    {
+                        "name": "d-controls-exact-scripted-cpu-0",
+                        "ip": "192.0.2.10",
+                        "sup_config": "scripted-cpu",
+                    }
+                ],
+                experiments_root=axes_root / "experiments",
+            )
+            self.assertEqual(created_run, CURRENT_RUN)
             cloud = mock.Mock()
             cloud.count_vms_with_prefix.return_value = 0
 
             with (
+                mock.patch.dict(
+                    os.environ, {"PHASE_AXES_ROOT": str(axes_root)}
+                ),
                 mock.patch.object(teardown_steps, "OpenStack", return_value=cloud),
-                mock.patch.object(teardown_steps, "close_deployment") as close,
                 mock.patch(
                     "deployment_engine.core.ssh_config.remove_ssh_config"
                 ) as remove_ssh,
@@ -571,11 +643,99 @@ class OperatorCommandTests(unittest.TestCase):
                 )
 
             self.assertTrue(result)
-            close.assert_called_once()
-            self.assertEqual(close.call_args.args, ("decoy-controls", CURRENT_RUN))
             remove_ssh.assert_called_once_with(f"decoy-controls/{CURRENT_RUN}")
+            self.assertIsNotNone(json.loads(record_path.read_text())["ended_at"])
             self.assertTrue(run_dir.is_dir())
             self.assertEqual(sentinel.read_text(), "retained\n")
+
+    def test_failed_pre_registration_teardown_cleans_without_registry_record(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config_dir = Path(temporary) / "decoy-feedback"
+            run_dir = config_dir / "runs" / CURRENT_RUN
+            run_dir.mkdir(parents=True)
+            sentinel = run_dir / "historical-state"
+            sentinel.write_text("retained\n")
+            write_run_status(run_dir, FAILED, "install failed")
+            missing_record = Path(temporary) / "missing" / "deployment.json"
+            cloud = mock.Mock()
+            cloud.count_vms_with_prefix.return_value = 0
+            stderr = StringIO()
+
+            with (
+                mock.patch.object(teardown_steps, "OpenStack", return_value=cloud),
+                mock.patch.object(
+                    teardown_steps, "deployment_path", return_value=missing_record
+                ),
+                mock.patch.object(teardown_steps, "close_deployment") as close,
+                mock.patch(
+                    "deployment_engine.core.ssh_config.remove_ssh_config"
+                ) as remove_ssh,
+                redirect_stderr(stderr),
+            ):
+                result = teardown_steps.finalize_teardown(
+                    "decoy-feedback",
+                    config_dir,
+                    CURRENT_RUN,
+                    run_dir,
+                    "d-feedback-exact-",
+                )
+
+            self.assertTrue(result)
+            close.assert_not_called()
+            remove_ssh.assert_called_once_with(f"decoy-feedback/{CURRENT_RUN}")
+            self.assertIn("nothing to close", stderr.getvalue())
+            self.assertEqual(read_run_status(run_dir), CLEANED)
+            self.assertTrue(run_dir.is_dir())
+            self.assertEqual(sentinel.read_text(), "retained\n")
+
+    def test_missing_registry_record_for_nonfailed_run_preserves_state(self):
+        for local_status in (OK, None):
+            with self.subTest(local_status=local_status):
+                with tempfile.TemporaryDirectory() as temporary:
+                    config_dir = Path(temporary) / "decoy-controls"
+                    run_dir = config_dir / "runs" / CURRENT_RUN
+                    run_dir.mkdir(parents=True)
+                    if local_status is not None:
+                        write_run_status(run_dir, local_status, "deploy complete")
+                    status_before = (
+                        run_dir / "deploy_status.json"
+                    ).read_bytes() if local_status is not None else None
+                    cloud = mock.Mock()
+                    cloud.count_vms_with_prefix.return_value = 0
+
+                    with (
+                        mock.patch.object(
+                            teardown_steps, "OpenStack", return_value=cloud
+                        ),
+                        mock.patch.object(
+                            teardown_steps,
+                            "deployment_path",
+                            return_value=Path(temporary) / "missing.json",
+                        ),
+                        mock.patch.object(
+                            teardown_steps, "close_deployment"
+                        ) as close,
+                        mock.patch(
+                            "deployment_engine.core.ssh_config.remove_ssh_config"
+                        ) as remove_ssh,
+                    ):
+                        result = teardown_steps.finalize_teardown(
+                            "decoy-controls",
+                            config_dir,
+                            CURRENT_RUN,
+                            run_dir,
+                            "d-controls-exact-",
+                        )
+
+                    self.assertFalse(result)
+                    close.assert_not_called()
+                    remove_ssh.assert_not_called()
+                    self.assertTrue(run_dir.is_dir())
+                    status_path = run_dir / "deploy_status.json"
+                    if status_before is None:
+                        self.assertFalse(status_path.exists())
+                    else:
+                        self.assertEqual(status_path.read_bytes(), status_before)
 
     def test_deploy_command_builds_only_four_controls_without_provisioning(self):
         captured: dict = {}

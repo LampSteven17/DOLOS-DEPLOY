@@ -169,7 +169,7 @@ def run_decoy_teardown(
 
     # Registry closure and SSH removal are deliberately outside the resource
     # loop and occur only after both exact cohorts have verified empty.
-    return 0 if finalize_verified_teardown(config_name, run_id) else 1
+    return 0 if finalize_verified_teardown(config_name, run_id, run_dir) else 1
 
 
 def _remaining(deadline: float) -> float:

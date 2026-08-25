@@ -16,7 +16,9 @@ from .openstack import OpenStack
 from .phase_run_registry import (
     PhaseRunRegistryError,
     close_deployment,
+    deployment_path,
 )
+from .run_status import CLEANED, FAILED, read_run_status, write_run_status
 
 
 def find_hosts_ini(config_dir: Path | None, deploy_dir: Path) -> Path | None:
@@ -114,28 +116,66 @@ def finalize_teardown(
         return False
 
     output.info(f"  Verified: 0 VMs remaining on OpenStack (prefix: {vm_prefix})")
-    return finalize_verified_teardown(config_name, run_id)
+    return finalize_verified_teardown(config_name, run_id, run_dir)
 
 
-def finalize_verified_teardown(config_name: str, run_id: str) -> bool:
-    """Close one resource-empty run, then remove only its SSH block.
+def finalize_verified_teardown(
+    config_name: str, run_id: str, run_dir: Path,
+) -> bool:
+    """Finalize one resource-empty run, then remove only its SSH block.
 
     Callers must verify every resource they own before using this epilogue.
-    Keeping record closure before SSH removal preserves both pieces of local
-    state when registry closure fails.
+    Registered runs close normally. An explicitly failed run with no registry
+    record is a pre-registration failure and is marked cleaned. Every other
+    missing or invalid registry state fails closed.
     """
     from .ssh_config import remove_ssh_config
 
     try:
-        close_deployment(
-            config_name,
-            run_id,
-            ended_at=datetime.datetime.now(datetime.timezone.utc),
-        )
-        output.info(f"  Closed PHASE deployment record: {config_name}/{run_id}")
-    except PhaseRunRegistryError as exc:
-        output.error(f"  ERROR: PHASE deployment close failed: {exc}")
+        record_path = deployment_path(config_name, run_id)
+        record_exists = record_path.exists()
+    except (OSError, PhaseRunRegistryError) as exc:
+        output.error(f"  ERROR: PHASE deployment record check failed: {exc}")
         output.info("  Local state preserved. Re-run teardown after fixing the record.")
+        return False
+
+    if record_exists:
+        try:
+            close_deployment(
+                config_name,
+                run_id,
+                ended_at=datetime.datetime.now(datetime.timezone.utc),
+            )
+            output.info(
+                f"  Closed PHASE deployment record: {config_name}/{run_id}"
+            )
+        except PhaseRunRegistryError as exc:
+            output.error(f"  ERROR: PHASE deployment close failed: {exc}")
+            output.info(
+                "  Local state preserved. Re-run teardown after fixing the record."
+            )
+            return False
+    elif read_run_status(run_dir) == FAILED:
+        try:
+            write_run_status(
+                run_dir,
+                CLEANED,
+                "pre-registration deployment resources cleaned",
+            )
+        except OSError as exc:
+            output.error(f"  ERROR: Failed to mark local run cleaned: {exc}")
+            output.info("  Local and SSH state preserved.")
+            return False
+        output.info(
+            "  No PHASE deployment record was created; nothing to close."
+        )
+    else:
+        output.error(
+            f"  ERROR: PHASE deployment record is missing: {record_path}"
+        )
+        output.info(
+            "  Local and SSH state preserved because the run is not marked failed."
+        )
         return False
 
     remove_ssh_config(f"{config_name}/{run_id}")
