@@ -11,7 +11,11 @@ from pathlib import Path
 from .core import output
 from .core.config import DeploymentConfig
 from .core.openstack import OpenStack
-from .core.phase_run_registry import PhaseRunRegistryError, validate_run_id
+from .core.phase_run_registry import (
+    PhaseRunRegistryError,
+    deployment_path,
+    validate_run_id,
+)
 
 
 def run_list(deploy_dir: Path) -> int:
@@ -79,8 +83,10 @@ def run_list(deploy_dir: Path) -> int:
                 name, rid, config, server_statuses,
             )
             active_col = f"{active}/{expected}" if expected > 0 else "?"
+            registered = deployment_path(name, rid).is_file()
             status_col = _format_status_col(
-                bad_statuses, sidecar_statuses, expected, active
+                bad_statuses, sidecar_statuses, expected, active,
+                registered=registered,
             )
             date_col = _format_run_date(rid)
             target = f"{name}-{rid}"
@@ -194,9 +200,11 @@ def _format_status_col(
     sidecar_statuses: dict[str, str],
     expected: int,
     active: int,
+    *,
+    registered: bool = True,
 ) -> str:
     """Compact status annotation: errored VMs, sidecar presence, missing VMs."""
-    parts: list[str] = []
+    parts: list[str] = [] if registered else ["unregistered"]
     for status in sorted(bad_statuses):
         parts.append(f"{bad_statuses[status]} {status}")
     accounted = active + sum(bad_statuses.values())
@@ -205,7 +213,12 @@ def _format_status_col(
     for kind in ("nbhd", "share"):
         status = sidecar_statuses.get(kind)
         if status is not None:
-            parts.append(f"+{kind}" if status == "ACTIVE" else f"+{kind}:{status}")
+            if registered:
+                parts.append(
+                    f"+{kind}" if status == "ACTIVE" else f"+{kind}:{status}"
+                )
+            else:
+                parts.append(f"{kind} {status}")
     if not parts:
         return "OK"
     return ", ".join(parts)

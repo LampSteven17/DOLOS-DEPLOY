@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import filecmp
 import html
 import json
 import os
@@ -265,11 +266,13 @@ class KerberosShareAccess:
             local_day, workspace, "share", task.occurrence_id
         )
         downloaded = workspace / f"{task.occurrence_id}-{Path(assigned).name}"
+        roundtrip = workspace / f".{task.occurrence_id}-share-upload-roundtrip"
         remote_name = (
             f"Incoming/{task.sup_config}/{local_day}/"
             f"{task.occurrence_id}-{reservation.path.name}"
         )
         env = {**os.environ, "KRB5CCNAME": f"FILE:{self.ccache}"}
+        upload_attempted = False
         try:
             self._run([
                 *BOUNDED_NETWORK_COMMAND,
@@ -282,17 +285,22 @@ class KerberosShareAccess:
             if not downloaded.is_file() or downloaded.stat().st_size <= 0:
                 raise RuntimeError("assigned share seed was not downloaded")
             remote_directory = str(Path(remote_name).parent)
-            self._smb(
-                f'mkdir "{remote_directory}"; '
-                f'put "{reservation.path}" "{remote_name}"',
-                env,
-            )
-            verified = self._smb(f'allinfo "{remote_name}"', env)
-            expected_size = reservation.path.stat().st_size
-            if Path(remote_name).name not in verified or not _smb_size_matches(
-                verified, expected_size
-            ):
-                raise RuntimeError("remote share upload filename or byte size mismatch")
+            try:
+                upload_attempted = True
+                self._smb(
+                    f'mkdir "{remote_directory}"; '
+                    f'put "{reservation.path}" "{remote_name}"',
+                    env,
+                )
+                self._smb(f'get "{remote_name}" "{roundtrip}"', env)
+                if not roundtrip.is_file() or not filecmp.cmp(
+                    reservation.path, roundtrip, shallow=False
+                ):
+                    raise RuntimeError("remote share upload round-trip mismatch")
+            finally:
+                roundtrip.unlink(missing_ok=True)
+                if upload_attempted:
+                    self._smb(f'del "{remote_name}"', env)
             self.documents.complete(reservation)
             return WorkflowResult(completed=True, artifact=str(downloaded))
         except Exception:
@@ -314,14 +322,6 @@ class KerberosShareAccess:
             argv, check=True, capture_output=True, text=True, env=env
         )
         return completed.stdout or ""
-
-
-def _smb_size_matches(output: str, expected: int) -> bool:
-    import re
-    return any(
-        int(value) == expected
-        for value in re.findall(r"(?i)\bsize\s*[:=]\s*(\d+)", output)
-    )
 
 
 class SeleniumResourceWorkflows:

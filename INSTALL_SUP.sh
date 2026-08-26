@@ -935,6 +935,11 @@ EOF
 create_systemd_service() {
     local service_name="$1"
     local deploy_dir="$2"
+    local runtime_directory_directives=""
+
+    if is_phase_workflow_config "$CONFIG_KEY"; then
+        runtime_directory_directives=$'RuntimeDirectory=ruse\nRuntimeDirectoryMode=0700'
+    fi
 
     log "Creating systemd service: $service_name"
 
@@ -950,6 +955,7 @@ WorkingDirectory=$deploy_dir
 ExecStart=/bin/bash $deploy_dir/run_agent.sh
 Restart=always
 RestartSec=5s
+$runtime_directory_directives
 StandardOutput=append:$deploy_dir/logs/systemd.log
 StandardError=append:$deploy_dir/logs/systemd_error.log
 

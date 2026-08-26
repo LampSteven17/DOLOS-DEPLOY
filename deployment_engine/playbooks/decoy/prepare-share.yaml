@@ -67,6 +67,14 @@
         state: present
         update_cache: yes
 
+    - name: Resolve fixed share hostname locally
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1(?:\s|$)'
+        line: '127.0.1.1 share'
+        create: yes
+        mode: '0644'
+
     - name: Set fixed share hostname
       hostname:
         name: share
@@ -290,6 +298,7 @@
       shell: |
         set -euo pipefail
         test "$(hostname)" = share
+        getent hosts share | grep -F '127.0.1.1'
         test -f "{{ share_root }}/Team/meeting-notes.odt"
         test -f "{{ share_root }}/Operations/inventory.ods"
         test -f "{{ share_root }}/Projects/project-status.odt"

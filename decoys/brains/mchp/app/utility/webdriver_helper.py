@@ -13,6 +13,13 @@ class WebDriverUnavailableError(Exception):
 class WebDriverHelper(BaseDriverHelper):
     """Firefox-only WebDriver helper for MCHP workflows."""
 
+    @classmethod
+    def independent(cls, download_dir=None):
+        """Create a driver owner without entering the legacy singleton cache."""
+        instance = cls.__new__(cls)
+        cls.__init__(instance, download_dir=download_dir)
+        return instance
+
     def __init__(self, download_dir=None):
         DRIVER_NAME = 'geckowebdriver'
         self._driver = None
@@ -84,7 +91,8 @@ class WebDriverHelper(BaseDriverHelper):
             self._driver = None
             # BaseDriverHelper is a legacy singleton. A quit WebDriver cannot be
             # reused by the next canonical scheduled workflow.
-            type(self)._instances.pop(type(self), None)
+            if type(self)._instances.get(type(self)) is self:
+                type(self)._instances.pop(type(self), None)
 
     def check_valid_driver_connection(self):
         try:

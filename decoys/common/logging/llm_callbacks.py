@@ -21,12 +21,16 @@ Usage:
 """
 
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 from uuid import UUID
 
 if TYPE_CHECKING:
     from common.logging.agent_logger import AgentLogger
+
+
+_LITELLM_REGISTRATION_LOCK = threading.Lock()
 
 
 # =============================================================================
@@ -391,38 +395,54 @@ def setup_litellm_callbacks(logger: "AgentLogger") -> Optional[LiteLLMLoggingCal
     try:
         import litellm
 
-        callback = LiteLLMLoggingCallback(logger)
+        with _LITELLM_REGISTRATION_LOCK:
+            # Register one modern CustomLogger object. The lock matters because
+            # canonical plans deliberately allow concurrent SmolAgents tasks.
+            if not hasattr(litellm, "callbacks") or litellm.callbacks is None:
+                litellm.callbacks = []
 
-        # Register the callback with LiteLLM's callbacks list
-        # This is the modern way - LiteLLM inspects objects for log_* methods
-        if not hasattr(litellm, "callbacks") or litellm.callbacks is None:
-            litellm.callbacks = []
+            callback = next(
+                (
+                    candidate
+                    for candidate in litellm.callbacks
+                    if isinstance(candidate, LiteLLMLoggingCallback)
+                ),
+                None,
+            )
+            created = callback is None
+            if callback is None:
+                callback = LiteLLMLoggingCallback(logger)
+            else:
+                callback.logger = logger
 
-        # Avoid duplicate registration
-        existing_types = [type(c).__name__ for c in litellm.callbacks]
-        if "LiteLLMLoggingCallback" not in existing_types:
+            # Older code also appended a fresh bound method to these lists on
+            # every task, multiplying identical events across a long runtime.
+            litellm.callbacks[:] = [
+                candidate
+                for candidate in litellm.callbacks
+                if not isinstance(candidate, LiteLLMLoggingCallback)
+            ]
             litellm.callbacks.append(callback)
-
-        # Also register with success/failure callback lists for broader compatibility
-        if hasattr(litellm, "success_callback"):
-            if litellm.success_callback is None:
-                litellm.success_callback = []
-            if callback.log_success_event not in litellm.success_callback:
-                litellm.success_callback.append(callback.log_success_event)
-
-        if hasattr(litellm, "failure_callback"):
-            if litellm.failure_callback is None:
-                litellm.failure_callback = []
-            if callback.log_failure_event not in litellm.failure_callback:
-                litellm.failure_callback.append(callback.log_failure_event)
+            for attribute in ("success_callback", "failure_callback"):
+                registrations = getattr(litellm, attribute, None)
+                if isinstance(registrations, list):
+                    registrations[:] = [
+                        registration
+                        for registration in registrations
+                        if not isinstance(
+                            getattr(registration, "__self__", None),
+                            LiteLLMLoggingCallback,
+                        )
+                    ]
 
         # Set callbacks at module level to ensure they're used
         litellm.set_verbose = True  # Enables callback invocation
 
-        logger.info("LiteLLM callbacks registered", details={
-            "callback_type": "LiteLLMLoggingCallback",
-            "litellm_version": getattr(litellm, "__version__", "unknown")
-        })
+        if created:
+            logger.info("LiteLLM callbacks registered", details={
+                "callback_type": "LiteLLMLoggingCallback",
+                "litellm_version": getattr(litellm, "__version__", "unknown")
+            })
         return callback
 
     except ImportError:

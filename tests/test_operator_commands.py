@@ -166,6 +166,71 @@ class OperatorCommandTests(unittest.TestCase):
             self.assertIn(f"decoy-controls-{CURRENT_RUN}", rendered)
             self.assertIn("1 BUILD", rendered)
 
+    def test_list_marks_exact_resources_without_phase_record_unregistered(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            config_dir = _write_config(deploy_dir)
+            run_dir = config_dir / "runs" / CURRENT_RUN
+            run_dir.mkdir(parents=True)
+            (run_dir / "inventory.ini").write_text(
+                "[sup_hosts]\n"
+                + "\n".join(
+                    f"vm-{index} ansible_host=10.0.0.{index} "
+                    f"sup_behavior={behavior}"
+                    for index, (behavior, _flavor) in enumerate(CANONICAL, 1)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            prefix = make_vm_prefix(make_run_dep_id(config_dir.name, CURRENT_RUN))
+            statuses = {
+                **{
+                    prefix + f"{behavior}-0": "ACTIVE"
+                    for behavior, _flavor in CANONICAL
+                },
+                prefix + "share-0": "ACTIVE",
+            }
+            missing_record = Path(temporary) / "missing" / "deployment.json"
+
+            stderr = StringIO()
+            with (
+                mock.patch.object(
+                    deployment_list, "OpenStack", return_value=_Cloud(statuses)
+                ),
+                mock.patch.object(
+                    deployment_list, "deployment_path", return_value=missing_record
+                ),
+                redirect_stderr(stderr),
+            ):
+                self.assertEqual(deployment_list.run_list(deploy_dir), 0)
+
+            rendered = stderr.getvalue()
+            self.assertIn(f"decoy-controls-{CURRENT_RUN}", rendered)
+            self.assertIn("4/4", rendered)
+            self.assertIn("unregistered", rendered)
+            self.assertIn("share ACTIVE", rendered)
+            self.assertNotIn("+share", rendered)
+
+            registered_record = Path(temporary) / "registered" / "deployment.json"
+            registered_record.parent.mkdir()
+            registered_record.write_text("{}\n", encoding="utf-8")
+            stderr = StringIO()
+            with (
+                mock.patch.object(
+                    deployment_list, "OpenStack", return_value=_Cloud(statuses)
+                ),
+                mock.patch.object(
+                    deployment_list,
+                    "deployment_path",
+                    return_value=registered_record,
+                ),
+                redirect_stderr(stderr),
+            ):
+                self.assertEqual(deployment_list.run_list(deploy_dir), 0)
+            registered = stderr.getvalue()
+            self.assertIn("+share", registered)
+            self.assertNotIn("unregistered", registered)
+
     def test_filtered_teardown_ignores_legacy_runs(self):
         with tempfile.TemporaryDirectory() as temporary:
             deploy_dir = Path(temporary)

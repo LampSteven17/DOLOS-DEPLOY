@@ -49,7 +49,7 @@ def _chromium_driver():
 def _mchp_driver(download_dir=None):
     from brains.mchp.app.utility.webdriver_helper import WebDriverHelper
 
-    return WebDriverHelper(download_dir=download_dir)
+    return WebDriverHelper.independent(download_dir=download_dir)
 
 
 class ResourceBrain:

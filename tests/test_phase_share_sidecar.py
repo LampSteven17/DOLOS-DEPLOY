@@ -177,9 +177,9 @@ class ShareSidecarTests(unittest.TestCase):
             "hostvars[groups['share_sidecar'][0]].share_keytab_blob.content",
             "DNS={{ share_ip }}",
             "getent hosts \"{{ share_fqdn }}\"",
+            "getent hosts share",
         ):
             self.assertIn(required, serialized)
-        self.assertNotIn("/etc/hosts", serialized)
         self.assertNotIn("fixed_ip", serialized)
         self.assertTrue(all(
             task.get("no_log") is True
@@ -187,6 +187,20 @@ class ShareSidecarTests(unittest.TestCase):
             for task in play["tasks"]
             if "password" in task["name"].lower() or "keytab" in task["name"].lower()
         ))
+
+    def test_fixed_sidecar_hostname_resolves_locally_without_claiming_fqdn(self):
+        tasks, by_name = self.sidecar_tasks()
+        names = [task["name"] for task in tasks]
+        local_host = by_name["Resolve fixed share hostname locally"]
+        self.assertEqual(local_host["lineinfile"]["path"], "/etc/hosts")
+        self.assertEqual(local_host["lineinfile"]["line"], "127.0.1.1 share")
+        self.assertNotIn("share.ruse.test", local_host["lineinfile"]["line"])
+        self.assertLess(
+            names.index("Resolve fixed share hostname locally"),
+            names.index("Set fixed share hostname"),
+        )
+        verification = by_name["Verify fixed Samba identity and seeds"]["shell"]
+        self.assertIn("getent hosts share | grep -F '127.0.1.1'", verification)
 
     def test_sidecar_installs_winbind_with_existing_server_packages(self):
         _tasks, by_name = self.sidecar_tasks()

@@ -5,12 +5,15 @@ import copy
 import importlib
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -18,6 +21,7 @@ from unittest.mock import ANY, patch
 from zoneinfo import ZoneInfo
 
 from common.logging.agent_logger import AgentLogger
+from common.logging.llm_callbacks import setup_litellm_callbacks
 from phase_workflow.brains import (
     AssignedDocumentCreation,
     AssignedBoundedTransfer,
@@ -26,6 +30,7 @@ from phase_workflow.brains import (
     AssignedVideoPlayback,
     FrameworkBrain,
     ResourceBrain,
+    _mchp_driver,
     _read_webpage,
     browseruse_runner,
     build_brain,
@@ -1133,11 +1138,12 @@ class TransferWorkflowTests(unittest.TestCase):
                 calls.append((argv, kwargs))
                 command = argv[-1] if "smbclient" in argv else ""
                 if command.startswith('get '):
-                    local = command.rsplit(' "', 1)[1][:-1]
-                    Path(local).write_bytes(b"seed")
-                if command.startswith("allinfo"):
-                    remote = command.split('"')[1]
-                    return SimpleNamespace(stdout=f"{Path(remote).name}\nsize: 7\n")
+                    _, remote, local = shlex.split(command)
+                    Path(local).write_bytes(
+                        upload.read_bytes()
+                        if remote.startswith("Incoming/")
+                        else b"seed"
+                    )
                 return SimpleNamespace(stdout="ok\n")
 
             result = KerberosShareAccess(
@@ -1168,6 +1174,9 @@ class TransferWorkflowTests(unittest.TestCase):
                 "Incoming/scripted-cpu/2026-08-24/w1-s5-created.odt" in value
                 for value in commands
             ))
+            self.assertTrue(any(value.startswith("del ") for value in commands))
+            self.assertFalse(any("allinfo" in value for value in commands))
+            self.assertFalse(any(workspace.glob(".*-share-upload-roundtrip")))
 
     def test_share_failure_releases_and_bounded_transfer_rejects_repeat(self):
         store = DailyDocumentStore()
@@ -1182,15 +1191,29 @@ class TransferWorkflowTests(unittest.TestCase):
             def run(argv, **_kwargs):
                 command = argv[-1] if "smbclient" in argv else ""
                 if command.startswith('get '):
-                    destination = command.rsplit(' "', 1)[1][:-1]
-                    Path(destination).write_bytes(b"seed")
+                    _, remote, destination = shlex.split(command)
+                    Path(destination).write_bytes(
+                        b"mismatch" if remote.startswith("Incoming/") else b"seed"
+                    )
                 return SimpleNamespace(stdout="remote verification missing\n")
 
-            executor = KerberosShareAccess(store, runner=run)
+            calls = []
+            original_run = run
+
+            def recording_run(argv, **kwargs):
+                calls.append(argv)
+                return original_run(argv, **kwargs)
+
+            executor = KerberosShareAccess(store, runner=recording_run)
             action = AssignedBoundedTransfer(task, workspace, executor)
-            self.assertIn("filename or byte size mismatch", action.invoke())
+            self.assertIn("round-trip mismatch", action.invoke())
             self.assertFalse(action.result.completed)
             self.assertEqual(store.state(workspace.name, local), (False, False, set()))
+            self.assertTrue(any(
+                argv[-1].startswith("del ")
+                for argv in calls if "smbclient" in argv
+            ))
+            self.assertFalse(any(workspace.glob(".*-share-upload-roundtrip")))
             self.assertIn("only once", action.invoke())
 
     @staticmethod
@@ -1843,6 +1866,83 @@ class OpenDocumentValidationTests(unittest.TestCase):
 
 
 class MCHPDriverLifecycleTests(unittest.TestCase):
+    def test_concurrent_canonical_browser_workflows_use_independent_drivers(self):
+        selenium = ModuleType("selenium")
+        selenium_webdriver = ModuleType("selenium.webdriver")
+        selenium.webdriver = selenium_webdriver
+        selenium_firefox = ModuleType("selenium.webdriver.firefox")
+        selenium_service = ModuleType("selenium.webdriver.firefox.service")
+        selenium_service.Service = object
+        modules = {
+            "selenium": selenium,
+            "selenium.webdriver": selenium_webdriver,
+            "selenium.webdriver.firefox": selenium_firefox,
+            "selenium.webdriver.firefox.service": selenium_service,
+        }
+        with patch.dict(sys.modules, modules):
+            from brains.mchp.app.utility.webdriver_helper import WebDriverHelper
+            modules[
+                "brains.mchp.app.utility.webdriver_helper"
+            ] = sys.modules["brains.mchp.app.utility.webdriver_helper"]
+
+        document = six_workflow_document("mchp-cpu")
+        plan = load_document(document, "mchp-cpu")
+        registry = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp"))
+        tasks = {
+            entry.workflow: registry.resolve(entry)
+            for entry in plan.windows[0].sequence
+        }
+        barrier = threading.Barrier(2)
+        created = []
+
+        class Driver:
+            def __init__(self, download_dir):
+                self.download_dir = Path(download_dir) if download_dir else None
+                self.closed = False
+
+            def get(self, _url):
+                barrier.wait(timeout=2)
+                if self.download_dir is not None:
+                    expected = tasks["FileDownload"].resource["expected_bytes"]
+                    (self.download_dir / "assigned.bin").write_bytes(b"x" * expected)
+
+            def find_element(self, *_args):
+                return object()
+
+            def execute_script(self, *_args):
+                pass
+
+            def quit(self):
+                self.closed = True
+
+        def initialize(instance, download_dir=None):
+            instance._driver = Driver(download_dir)
+            created.append(instance._driver)
+
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            sys.modules, modules
+        ), patch.object(WebDriverHelper, "__init__", initialize):
+            workspace = Path(temporary)
+            videos = SeleniumResourceWorkflows(
+                _mchp_driver, sleeper=lambda _seconds: None
+            )
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                video_future = pool.submit(
+                    videos.video_viewing, tasks["VideoViewing"]
+                )
+                download_future = pool.submit(
+                    firefox_download,
+                    tasks["FileDownload"],
+                    workspace,
+                    lambda path: _mchp_driver(path),
+                )
+                self.assertTrue(video_future.result(timeout=3).completed)
+                self.assertTrue(download_future.result(timeout=3).is_file())
+
+        self.assertEqual(len(created), 2)
+        self.assertIsNot(created[0], created[1])
+        self.assertTrue(all(driver.closed for driver in created))
+
     def test_sequential_browser_workflows_receive_fresh_driver_after_cleanup(self):
         from brains.mchp.app.utility.base_driver import Singleton
 
@@ -1910,6 +2010,47 @@ class MCHPDriverLifecycleTests(unittest.TestCase):
         self.assertEqual(len(created), 2)
         self.assertIsNot(created[0], created[1])
         self.assertTrue(all(driver.closed for driver in created))
+
+
+class LiteLLMCallbackRegistrationTests(unittest.TestCase):
+    def test_repeated_smolagents_setup_emits_one_response_per_request(self):
+        litellm = ModuleType("litellm")
+        litellm.callbacks = []
+        litellm.success_callback = []
+        litellm.failure_callback = []
+        litellm.set_verbose = False
+        litellm.__version__ = "test"
+
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="answer"))]
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            logger = AgentLogger(
+                "smolagents-gpu", log_dir=temporary, session_id="callbacks"
+            )
+            with patch.dict(sys.modules, {"litellm": litellm}):
+                for index in range(6):
+                    setup_litellm_callbacks(logger)
+                    for callback in litellm.callbacks:
+                        callback.log_pre_api_call(
+                            "ollama/test", [{"content": f"request {index}"}], {}
+                        )
+                        callback.log_success_event(
+                            {"model": "ollama/test"}, response, 0.0, 1.0
+                        )
+                    for callback in litellm.success_callback:
+                        callback({"model": "ollama/test"}, response, 0.0, 1.0)
+            logger.close()
+            event_types = [
+                json.loads(line)["event_type"]
+                for line in logger.log_file.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(len(litellm.callbacks), 1)
+        self.assertEqual(litellm.success_callback, [])
+        self.assertEqual(litellm.failure_callback, [])
+        self.assertEqual(event_types.count("llm_request"), 6)
+        self.assertEqual(event_types.count("llm_response"), 6)
 
 
 class VideoMechanicsTests(unittest.TestCase):
@@ -2420,6 +2561,23 @@ class InstallerTests(unittest.TestCase):
             "import markdownify, requests; from smolagents import "
             "VisitWebpageTool; VisitWebpageTool()",
             installer,
+        )
+
+    def test_canonical_service_recreates_private_runtime_directory(self):
+        installer = INSTALLER.read_text(encoding="utf-8")
+        service_function = installer[
+            installer.index("create_systemd_service() {"):
+            installer.index("# Runner Mode (Direct Execution)")
+        ]
+        self.assertIn('if is_phase_workflow_config "$CONFIG_KEY"; then', service_function)
+        self.assertIn(
+            "RuntimeDirectory=ruse\\nRuntimeDirectoryMode=0700",
+            service_function,
+        )
+        self.assertIn("$runtime_directory_directives", service_function)
+        self.assertLess(
+            service_function.index("$runtime_directory_directives"),
+            service_function.index("StandardOutput="),
         )
 
     def test_installed_tree_contains_runtime_contract_behavior_and_sup_command(self):
