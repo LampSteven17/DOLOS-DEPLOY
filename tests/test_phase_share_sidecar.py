@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -259,7 +260,55 @@ class ShareSidecarTests(unittest.TestCase):
         )
         self.assertLess(
             names.index("Wait for authoritative Samba DNS"),
+            names.index("Waiting for Samba directory service"),
+        )
+        self.assertLess(
+            names.index("Waiting for Samba directory service"),
             names.index("Map share.ruse.test to the assigned OpenStack address"),
+        )
+
+    def test_directory_readiness_is_local_visible_and_bounded(self):
+        play = yaml.safe_load(SHARE_PLAYBOOK.read_text())[0]
+        tasks = play["tasks"]
+        by_name = {task["name"]: task for task in tasks}
+        readiness = by_name["Waiting for Samba directory service"]
+        account = by_name["Create or reset fleet-local share client account"]
+        self.assertEqual(readiness["command"]["argv"][-3:], [
+            "samba-tool", "user", "list",
+        ])
+        self.assertEqual(readiness["until"], "samba_directory_ready.rc == 0")
+        self.assertNotIn("no_log", readiness)
+        self.assertEqual(
+            _STEP_TASKS["Waiting for Samba directory service"],
+            "Waiting for Samba directory service",
+        )
+        self.assertEqual(
+            _STEP_TASKS["Create or reset fleet-local share client account"],
+            "Create or reset fleet-local share client account",
+        )
+
+        variables = play["vars"]
+        attempt = variables["samba_directory_attempt_timeout_seconds"]
+        delay = variables["samba_directory_retry_delay_seconds"]
+        readiness_attempts = variables["samba_directory_readiness_attempts"]
+        account_attempts = variables["samba_directory_account_attempts"]
+        bounded_seconds = (
+            (attempt + 1) * (readiness_attempts + account_attempts)
+            + delay * ((readiness_attempts - 1) + (account_attempts - 1))
+        )
+        self.assertLessEqual(
+            bounded_seconds, variables["samba_directory_max_wait_seconds"]
+        )
+        self.assertEqual(variables["samba_directory_max_wait_seconds"], 60)
+        self.assertIn("timeout", readiness["command"]["argv"])
+        self.assertEqual(
+            account["until"], "share_client_account.rc == 0"
+        )
+        self.assertEqual(
+            readiness["timeout"], "{{ samba_directory_max_wait_seconds }}"
+        )
+        self.assertEqual(
+            account["timeout"], "{{ samba_directory_max_wait_seconds }}"
         )
 
     def test_partial_failure_retry_preserves_domain_and_refreshes_credentials(self):
@@ -286,6 +335,14 @@ class ShareSidecarTests(unittest.TestCase):
         self.assertIn("samba-tool user show ruse-share", account["shell"])
         self.assertIn("samba-tool user setpassword ruse-share", account["shell"])
         self.assertIn("samba-tool user create ruse-share", account["shell"])
+        self.assertGreaterEqual(
+            account["shell"].count("samba-tool user show ruse-share"), 2
+        )
+        self.assertIn("RUSE_SHARE_CLIENT_PASSWORD", account["environment"])
+        self.assertNotIn("{{ share_client_password }}", account["shell"])
+        self.assertEqual(
+            account["retries"], "{{ samba_directory_account_attempts }}"
+        )
         self.assertTrue(account["no_log"])
 
         spn = by_name["Register exact SMB service principal"]["shell"]
@@ -305,6 +362,54 @@ class ShareSidecarTests(unittest.TestCase):
         self.assertTrue(remove_keytab["no_log"])
         self.assertNotIn("args", export_keytab)
         self.assertTrue(export_keytab["no_log"])
+
+    def test_transient_account_creation_failure_is_safe_on_retry(self):
+        _tasks, by_name = self.sidecar_tasks()
+        account = by_name["Create or reset fleet-local share client account"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "samba-tool"
+            executable.write_text(
+                """#!/bin/bash
+set -euo pipefail
+state=${RUSE_FAKE_SAMBA_STATE:?}
+if [[ "$1 $2" == "user show" ]]; then
+  [[ -f "$state/account" ]]
+elif [[ "$1 $2" == "user create" ]]; then
+  touch "$state/account"
+  if [[ ! -f "$state/failed-once" ]]; then
+    touch "$state/failed-once"
+    exit 1
+  fi
+elif [[ "$1 $2" == "user setpassword" ]]; then
+  [[ -f "$state/account" ]]
+  touch "$state/password-reset"
+else
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+            command = account["shell"].replace(
+                '"{{ samba_directory_attempt_timeout_seconds }}s"', '"3s"'
+            )
+            environment = {
+                **os.environ,
+                "PATH": f"{root}:{os.environ['PATH']}",
+                "RUSE_FAKE_SAMBA_STATE": str(root),
+                "RUSE_SHARE_CLIENT_PASSWORD": "test-secret",
+            }
+            first = subprocess.run(
+                ["bash", "-c", command], env=environment, check=False
+            )
+            second = subprocess.run(
+                ["bash", "-c", command], env=environment, check=False
+            )
+            self.assertNotEqual(first.returncode, 0)
+            self.assertEqual(second.returncode, 0)
+            self.assertTrue((root / "account").exists())
+            self.assertTrue((root / "password-reset").exists())
 
     def test_smoke_network_operations_are_separate_bounded_and_noninteractive(self):
         tasks, by_name = self.client_tasks()
@@ -413,6 +518,8 @@ class ShareSidecarTests(unittest.TestCase):
         visible_names = (
             "Start Samba AD DC",
             "Wait for authoritative Samba DNS",
+            "Waiting for Samba directory service",
+            "Create or reset fleet-local share client account",
             "Resolve share DNS",
             "Acquire Kerberos ticket",
             "List assigned SMB directory",
@@ -433,6 +540,23 @@ class ShareSidecarTests(unittest.TestCase):
         self.assertEqual(
             _STEP_TASKS["Verify uploaded SMB smoke probe"],
             "Verifying uploaded SMB smoke probe",
+        )
+
+        parser = _LineParser(time.time())
+        readiness_event = parser.parse(
+            "TASK [Waiting for Samba directory service] ****"
+        )
+        retry_event = parser.parse(
+            "FAILED - RETRYING: [share]: Waiting for Samba directory service "
+            "(Retries left: 7)."
+        )
+        self.assertEqual(
+            (readiness_event.kind, readiness_event.task),
+            ("task", "Waiting for Samba directory service"),
+        )
+        self.assertEqual(
+            (retry_event.kind, retry_event.host, retry_event.detail),
+            ("retry", "share", "retries left: 7"),
         )
 
         parser = _LineParser(time.time())

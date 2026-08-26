@@ -59,6 +59,8 @@ _STEP_TASKS = {
     "Provision fixed Samba AD identity": "Provisioning fleet Samba domain",
     "Start Samba AD DC": "Starting Samba AD domain controller",
     "Wait for authoritative Samba DNS": "Waiting for authoritative Samba DNS",
+    "Waiting for Samba directory service": "Waiting for Samba directory service",
+    "Create or reset fleet-local share client account": "Create or reset fleet-local share client account",
     "Install Kerberos and SMB client packages": "Installing fleet SMB clients",
     "Resolve share DNS": "Resolving fleet share DNS",
     "Acquire Kerberos ticket": "Acquiring fleet Kerberos ticket",

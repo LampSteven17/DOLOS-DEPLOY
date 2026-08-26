@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import yaml
@@ -363,6 +364,69 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
             result = spinup.run_decoy_spinup(name, self.deploy_root)
         self.assertEqual(result, 1)
         runner.assert_not_called()
+
+    def test_permanent_share_readiness_failure_aborts_before_install_and_registration(self):
+        source = self.generation("axes-spring26")
+        scripted_path = source / feedback.DECOY_PLAN_FILENAMES["scripted-cpu"]
+        scripted = json.loads(scripted_path.read_text(encoding="utf-8"))
+        scripted["schedule"][0]["sequence"].append({
+            "offset_minutes": 45,
+            "workflow": "NetworkShareAccess",
+            "resource_id": "share_team_notes",
+        })
+        scripted_path.write_text(json.dumps(scripted) + "\n", encoding="utf-8")
+        name = feedback.generate_feedback_config(source, "all", self.deploy_root)
+        (self.deploy_root / "hosts.ini").write_text(
+            "[openstack_controller]\n", encoding="utf-8"
+        )
+
+        class Runner:
+            def __init__(self):
+                self.playbooks = []
+
+            def run_playbook(self, playbook, _inventory, *, extra_vars, **_kwargs):
+                self.playbooks.append(playbook)
+                if playbook == "shared/provision-vms.yaml":
+                    run_dir = Path(extra_vars["run_dir"])
+                    inventory = run_dir / "inventory.ini"
+                    inventory.write_text(
+                        "[sup_hosts]\n"
+                        + "\n".join(
+                            f"vm-{index} ansible_host=10.0.0.{index} "
+                            f"sup_behavior={sup_config}"
+                            for index, sup_config in enumerate(CANONICAL, 1)
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    return SimpleNamespace(rc=0, log_path=run_dir / "provision.log")
+                if playbook == "decoy/prepare-share.yaml":
+                    return SimpleNamespace(rc=1, log_path=Path("prepare-share.log"))
+                raise AssertionError(f"unexpected playbook after share failure: {playbook}")
+
+        runner = Runner()
+        register = mock.Mock(return_value=True)
+        with (
+            mock.patch.object(spinup, "_active_current_runs", return_value=[]),
+            mock.patch.object(spinup, "resolve_ruse_revision", return_value="a" * 40),
+            mock.patch.object(spinup, "AnsibleRunner", return_value=runner),
+            mock.patch.object(spinup, "_provision_share_sidecar", return_value={
+                "name": "d-run-share-0",
+                "ip": "10.0.0.10",
+                "flavor": "v1.small",
+                "sup_config": None,
+            }),
+            mock.patch.object(spinup, "ssh_connectivity_test", return_value=4),
+            mock.patch.object(spinup, "register_phase_run", register),
+        ):
+            result = spinup.run_decoy_spinup(name, self.deploy_root)
+
+        self.assertEqual(result, 1)
+        self.assertEqual(runner.playbooks, [
+            "shared/provision-vms.yaml",
+            "decoy/prepare-share.yaml",
+        ])
+        register.assert_not_called()
 
     def test_generated_config_has_fixed_topology_identity_and_no_legacy_fields(self):
         source = self.generation("axes-summer24")

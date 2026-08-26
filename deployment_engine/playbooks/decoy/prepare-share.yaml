@@ -12,6 +12,11 @@
     share_root: /srv/ruse-share
     share_principal: ruse-share@RUSE.TEST
     share_service_principal: cifs/share.ruse.test@RUSE.TEST
+    samba_directory_max_wait_seconds: 60
+    samba_directory_attempt_timeout_seconds: 3
+    samba_directory_retry_delay_seconds: 2
+    samba_directory_readiness_attempts: 6
+    samba_directory_account_attempts: 4
     feedback_profile: "{{ playbook_dir }}/../../../contracts/phase-workflow-plan-v1/resource-profiles/feedback-v2.json"
   tasks:
     - name: Wait for share-sidecar SSH
@@ -218,6 +223,23 @@
         port: 53
         timeout: 60
 
+    - name: Waiting for Samba directory service
+      command:
+        argv:
+          - timeout
+          - --signal=TERM
+          - --kill-after=1s
+          - "{{ samba_directory_attempt_timeout_seconds }}s"
+          - samba-tool
+          - user
+          - list
+      register: samba_directory_ready
+      changed_when: false
+      until: samba_directory_ready.rc == 0
+      retries: "{{ samba_directory_readiness_attempts }}"
+      delay: "{{ samba_directory_retry_delay_seconds }}"
+      timeout: "{{ samba_directory_max_wait_seconds }}"
+
     - name: Map share.ruse.test to the assigned OpenStack address
       shell: |
         set -euo pipefail
@@ -233,14 +255,26 @@
     - name: Create or reset fleet-local share client account
       shell: |
         set -euo pipefail
-        if samba-tool user show ruse-share >/dev/null 2>&1; then
-          samba-tool user setpassword ruse-share \
-            --newpassword="{{ share_client_password }}"
-        else
-          samba-tool user create ruse-share "{{ share_client_password }}"
-        fi
+        timeout --signal=TERM --kill-after=1s \
+          "{{ samba_directory_attempt_timeout_seconds }}s" /bin/bash -c '
+            set -euo pipefail
+            if samba-tool user show ruse-share >/dev/null 2>&1; then
+              samba-tool user setpassword ruse-share \
+                --newpassword="$RUSE_SHARE_CLIENT_PASSWORD"
+            else
+              samba-tool user create ruse-share "$RUSE_SHARE_CLIENT_PASSWORD"
+            fi
+            samba-tool user show ruse-share >/dev/null
+          '
       args:
         executable: /bin/bash
+      environment:
+        RUSE_SHARE_CLIENT_PASSWORD: "{{ share_client_password }}"
+      register: share_client_account
+      until: share_client_account.rc == 0
+      retries: "{{ samba_directory_account_attempts }}"
+      delay: "{{ samba_directory_retry_delay_seconds }}"
+      timeout: "{{ samba_directory_max_wait_seconds }}"
       no_log: true
 
     - name: Register exact SMB service principal
