@@ -140,8 +140,9 @@ def _teardown_parser() -> argparse.ArgumentParser:
         help="Filter: only deployments with purpose: feedback",
     )
     p.add_argument("--failed", action="store_true",
-                   help="Filter: only runs stamped failed (deploy_status.json). "
-                        "Composes with system/purpose filters; alone, spans all types")
+                   help="Filter: only runs stamped failed (deploy_status.json) "
+                        "with an exact-prefix OpenStack VM. Composes with "
+                        "system/purpose filters; alone, spans all types")
     return p
 
 

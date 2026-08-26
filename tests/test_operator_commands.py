@@ -399,7 +399,7 @@ class OperatorCommandTests(unittest.TestCase):
             )
             self.assertEqual(teardown_cloud.status_map_calls, 1)
 
-    def test_failed_filter_keeps_zero_vm_failed_run_as_explicit_cleanup(self):
+    def test_failed_filter_excludes_zero_vm_failed_run_without_prompting(self):
         with tempfile.TemporaryDirectory() as temporary:
             deploy_dir = Path(temporary)
             config_dir = _write_config(deploy_dir)
@@ -414,8 +414,8 @@ class OperatorCommandTests(unittest.TestCase):
                     deployment_teardown, "OpenStack", return_value=cloud
                 ),
                 mock.patch.object(
-                    deployment_teardown.output, "confirm", return_value=False
-                ),
+                    deployment_teardown.output, "confirm"
+                ) as confirm,
                 redirect_stderr(stderr),
             ):
                 self.assertEqual(
@@ -431,7 +431,57 @@ class OperatorCommandTests(unittest.TestCase):
                     0,
                 )
 
-            self.assertIn(f"decoy-controls/{CURRENT_RUN}", stderr.getvalue())
+            self.assertIn("No failed deployments match", stderr.getvalue())
+            self.assertNotIn(f"decoy-controls/{CURRENT_RUN}", stderr.getvalue())
+            confirm.assert_not_called()
+            self.assertEqual(cloud.status_map_calls, 1)
+
+    def test_failed_filter_selects_exact_error_vm_and_ignores_partial_collision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            selected = _write_config(deploy_dir, "failed-exact")
+            collided = _write_config(deploy_dir, "failed-collision")
+            for config_dir in (selected, collided):
+                run_dir = config_dir / "runs" / CURRENT_RUN
+                run_dir.mkdir(parents=True)
+                write_run_status(run_dir, FAILED, "test failure")
+
+            exact_prefix = make_vm_prefix(
+                make_run_dep_id(selected.name, CURRENT_RUN)
+            )
+            collision_prefix = make_vm_prefix(
+                make_run_dep_id(collided.name, CURRENT_RUN)
+            )
+            statuses = {
+                exact_prefix + "scripted-cpu-0": "ERROR",
+                collision_prefix.removesuffix("-")
+                + "extra-scripted-cpu-0": "ACTIVE",
+            }
+            cloud = _Cloud(statuses)
+            stderr = StringIO()
+            with (
+                mock.patch.object(
+                    deployment_teardown, "OpenStack", return_value=cloud
+                ),
+                mock.patch.object(
+                    deployment_teardown.output, "confirm", return_value=False
+                ),
+                redirect_stderr(stderr),
+            ):
+                result = deployment_teardown.run_teardown_filtered(
+                    deploy_dir,
+                    types={
+                        "decoy": True,
+                        "rampart": False,
+                        "ghosts": False,
+                    },
+                    failed_only=True,
+                )
+
+            self.assertEqual(result, 0)
+            rendered = stderr.getvalue()
+            self.assertIn(f"{selected.name}/{CURRENT_RUN}", rendered)
+            self.assertNotIn(f"{collided.name}/{CURRENT_RUN}", rendered)
             self.assertEqual(cloud.status_map_calls, 1)
 
     def test_cleaned_run_is_not_selected_by_failed_filter(self):
@@ -500,6 +550,10 @@ class OperatorCommandTests(unittest.TestCase):
         self.assertNotIn("--control ", help_text)
 
     def test_failed_filter_still_spans_systems_and_composes_with_purpose(self):
+        self.assertIn(
+            "exact-prefix OpenStack VM",
+            deployment_cli._teardown_parser().format_help(),
+        )
         with mock.patch(
             "deployment_engine.teardown.run_teardown_filtered", return_value=0
         ) as filtered:

@@ -83,9 +83,9 @@ def run_teardown_filtered(
     purpose matches this value.
 
     failed_only: only target runs stamped FAILED in deploy_status.json
-    (see core/run_status.py). Runs with no stamp (UNKNOWN) or an OK stamp
-    are left alone — a missing stamp is never treated as failure, so this
-    won't delete an in-flight or pre-instrumentation run.
+    (see core/run_status.py) that still have an exact-prefix OpenStack VM.
+    Runs with no stamp (UNKNOWN), an OK stamp, or no matching VM are left
+    alone.
     """
     from .core.run_status import read_run_status, FAILED
 
@@ -121,9 +121,9 @@ def run_teardown_filtered(
         if purpose is not None and config.purpose != purpose:
             continue
 
-        # Normal filtered teardown follows the same active-run definition as
+        # Every filtered teardown follows the same active-run definition as
         # ./list: at least one OpenStack VM under this run's exact prefix.
-        # --failed remains the explicit path for locally failed zero-VM runs.
+        # --failed adds the local FAILED status predicate to that definition.
         runs_dir = config_dir / "runs"
         if not runs_dir.is_dir():
             continue
@@ -137,7 +137,7 @@ def run_teardown_filtered(
             if failed_only:
                 if read_run_status(run_dir) != FAILED:
                     continue
-            elif not has_exact_run_vm(
+            if not has_exact_run_vm(
                 config_dir.name, run_dir.name, config, server_statuses
             ):
                 continue
