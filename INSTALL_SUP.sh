@@ -380,6 +380,26 @@ is_phase_workflow_config() {
     esac
 }
 
+apply_phase_workflow_gpu_tier() {
+    is_phase_workflow_config "$CONFIG_KEY" || return 0
+
+    local gpu_tier="${RUSE_WORKFLOW_GPU_TIER:-v100}"
+    case "$gpu_tier" in
+        v100)
+            ;;
+        rtx)
+            if [[ "$CONFIG_KEY" == "browseruse-gpu" || \
+                  "$CONFIG_KEY" == "smolagents-gpu" ]]; then
+                MODEL="gemmar"
+            fi
+            ;;
+        *)
+            log_error "Invalid canonical workflow GPU tier: $gpu_tier (expected v100 or rtx)"
+            return 1
+            ;;
+    esac
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -865,6 +885,7 @@ create_run_script() {
     [[ "$CALIBRATION" != "none" ]] && calibration_arg="--calibration=$CALIBRATION"
 
     local model_name="${MODEL_NAMES[$MODEL]:-llama3.1:8b}"
+    local workflow_gpu_tier="${RUSE_WORKFLOW_GPU_TIER:-v100}"
 
     # Build model arg (skip if none)
     local model_arg=""
@@ -916,6 +937,7 @@ source venv/bin/activate
 export PATH="\$HOME/.local/bin:\$PATH"
 export OLLAMA_MODEL="$model_name"
 export LITELLM_MODEL="ollama/$model_name"
+export RUSE_WORKFLOW_GPU_TIER="$workflow_gpu_tier"
 export PYTHONPATH="$deploy_dir/decoys:\${PYTHONPATH:-}"
 export LOG_DIR="$deploy_dir/logs"
 export SUP_CONFIG_KEY="$CONFIG_KEY"
@@ -1200,6 +1222,7 @@ main() {
     fi
 
     parse_args "$@"
+    apply_phase_workflow_gpu_tier
 
     echo ""
     echo -e "${BLUE}================================${NC}"

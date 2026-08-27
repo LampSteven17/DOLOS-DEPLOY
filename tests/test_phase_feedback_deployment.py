@@ -131,8 +131,65 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
         self.assertEqual([task["target"] for task in captured], requested)
         self.assertEqual(len(captured), 3)
         self.assertTrue(all(len(task["deployments"]) == 4 for task in captured))
+        self.assertTrue(all(task["gpu_tier"] == "v100" for task in captured))
+        self.assertTrue(all(
+            task["deployments"] == list(feedback.DECOY_FEEDBACK_DEPLOYMENTS)
+            for task in captured
+        ))
         show.assert_called_once()
         execute.assert_called_once()
+
+    def test_explicit_rtx_cli_renders_and_executes_two_ordered_targets(self):
+        requested = ["vt-spring22", "vt-summer21"]
+        for target in requested:
+            self.generation(target)
+        lines = []
+        with (
+            self.patch_root(),
+            mock.patch.object(deployment_cli, "DEPLOY_DIR", self.deploy_root),
+            mock.patch.object(plan.output, "info", side_effect=lines.append),
+            mock.patch.object(plan.output, "banner", side_effect=lines.append),
+            mock.patch.object(plan.output, "confirm", return_value=True),
+            mock.patch.object(plan, "execute_plan", return_value=0) as execute,
+        ):
+            result = deployment_cli._cmd_deploy([
+                "--decoys",
+                "--feedback",
+                "--preset",
+                self.preset,
+                "--gpu",
+                "rtx",
+                "--target",
+                *requested,
+            ])
+
+        self.assertEqual(result, 0)
+        tasks = execute.call_args.args[0]
+        self.assertEqual([task["target"] for task in tasks], requested)
+        self.assertTrue(all(task["gpu_tier"] == "rtx" for task in tasks))
+        expected = list(feedback.canonical_decoy_feedback_deployments("rtx"))
+        self.assertTrue(all(task["deployments"] == expected for task in tasks))
+        self.assertEqual(execute.call_args.kwargs["gpu_tier"], "rtx")
+        rendered = "\n".join(lines)
+        self.assertEqual(rendered.count("tier=rtx"), 2)
+        self.assertEqual(rendered.count("rtx2080ti-1gpu.14vcpu.28g"), 4)
+        self.assertEqual(rendered.count("gemma4:e4b"), 4)
+        self.assertNotIn("B2R", rendered)
+        self.assertNotIn("S2R", rendered)
+
+    def test_invalid_gpu_tier_is_rejected_before_plan_or_provisioning(self):
+        with mock.patch.object(plan, "build_deploy_plan") as build:
+            with self.assertRaises(SystemExit) as raised:
+                deployment_cli._cmd_deploy([
+                    "--decoy",
+                    "--feedback",
+                    "--preset",
+                    self.preset,
+                    "--gpu",
+                    "automatic",
+                ])
+        self.assertEqual(raised.exception.code, 2)
+        build.assert_not_called()
 
     def test_exact_six_target_operator_command_reaches_combined_plan_only(self):
         requested = [
@@ -442,16 +499,33 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
         self.assertEqual(document["target"], "axes-summer24")
         self.assertEqual(document["capture_interface"], "eno2")
         self.assertEqual(document["behavior_source"], str(source))
+        self.assertEqual(document["gpu_tier"], "v100")
         self.assertEqual(document["deployments"], list(feedback.DECOY_FEEDBACK_DEPLOYMENTS))
         self.assertEqual(
             document["flavor_capacity"],
             {"v1.14vcpu.28g": 2, "v100-1gpu.14vcpu.28g": 2},
         )
-        self.assertNotIn("gpu_tier", document)
         self.assertNotIn("behavior_configs", document)
-        with self.assertRaisesRegex(feedback.FeedbackSourceError, "requires V100"):
+
+        rtx_name = feedback.generate_feedback_config(
+            source, "all", self.deploy_root, gpu_tier="rtx"
+        )
+        rtx_document = yaml.safe_load(
+            (self.deploy_root / rtx_name / "config.yaml").read_text()
+        )
+        self.assertEqual(rtx_name, name)
+        self.assertEqual(rtx_document["gpu_tier"], "rtx")
+        self.assertEqual(
+            rtx_document["deployments"],
+            list(feedback.canonical_decoy_feedback_deployments("rtx")),
+        )
+        self.assertEqual(
+            rtx_document["flavor_capacity"],
+            {"v1.14vcpu.28g": 2, "rtx2080ti-1gpu.14vcpu.28g": 2},
+        )
+        with self.assertRaisesRegex(feedback.FeedbackSourceError, "v100 or rtx"):
             feedback.generate_feedback_config(
-                source, "all", self.deploy_root, gpu_tier="rtx"
+                source, "all", self.deploy_root, gpu_tier="automatic"
             )
 
     def test_installer_selects_one_feedback_plan_before_service_start(self):
@@ -474,6 +548,12 @@ class CanonicalFeedbackDeploymentTests(unittest.TestCase):
         )
         installer = (ROOT / "INSTALL_SUP.sh").read_text()
         self.assertIn("RUSE_WORKFLOW_BEHAVIOR_PATH", installer)
+        self.assertEqual(
+            (ROOT / "deployment_engine/playbooks/decoy/install-sups.yaml")
+            .read_text()
+            .count('RUSE_WORKFLOW_GPU_TIER="{{ workflow_gpu_tier }}"'),
+            2,
+        )
         self.assertNotIn("phase-workflow-plan-v1/controls", installer)
         self.assertEqual(
             installer.count(

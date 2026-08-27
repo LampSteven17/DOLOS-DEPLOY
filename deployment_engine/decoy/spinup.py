@@ -15,6 +15,7 @@ from ..core.config import DeploymentConfig
 from ..core.openstack import OpenStack, OpenStackCommandError
 from ..core.ssh_config import install_ssh_config
 from ..core.feedback import (
+    DECOY_CANONICAL_GPU_TIERS,
     DECOY_FEEDBACK_SUP_CONFIGS,
     FeedbackSourceError,
     decoy_generation_uses_network_share,
@@ -57,9 +58,10 @@ def run_decoy_spinup(
     gpu_tier: str = "v100",
 ) -> int:
     """Deploy DECOY SUP agents."""
-    if behavior_source and gpu_tier != "v100":
+    if behavior_source and gpu_tier not in DECOY_CANONICAL_GPU_TIERS:
         output.error(
-            f"ERROR: canonical Decoy feedback requires V100; got {gpu_tier!r}"
+            "ERROR: canonical Decoy feedback GPU tier must be v100 or rtx; "
+            f"got {gpu_tier!r}"
         )
         return 1
     # If feedback args given but config is decoy-controls, generate feedback config
@@ -81,6 +83,20 @@ def run_decoy_spinup(
         return 1
 
     config = DeploymentConfig.load(config_file)
+    workflow_gpu_tier = config.gpu_tier or gpu_tier
+    if (
+        config.purpose == "feedback"
+        and all(
+            dep.get("behavior") in CANONICAL_WORKFLOW_CONFIGS
+            for dep in config.deployments
+        )
+        and workflow_gpu_tier not in DECOY_CANONICAL_GPU_TIERS
+    ):
+        output.error(
+            "ERROR: canonical Decoy feedback GPU tier must be v100 or rtx; "
+            f"got {workflow_gpu_tier!r}"
+        )
+        return 1
 
     # Find hosts.ini
     hosts_ini = _find_hosts_ini(config_dir, deploy_dir)
@@ -164,6 +180,8 @@ def run_decoy_spinup(
     output.info(f"  Run ID:    {run_id}")
     output.info(f"  VM prefix: {vm_prefix}*")
     output.info(f"  RUSE ref:  {ruse_revision}")
+    if config.purpose == "feedback":
+        output.info(f"  GPU tier:  {workflow_gpu_tier}")
     if behavior_source:
         source_label = "Feedback" if config.purpose == "feedback" else "Controls"
         output.info(f"  {source_label}:  {behavior_source}")
@@ -277,6 +295,7 @@ def run_decoy_spinup(
         "deployment_id": dep_id,
         "run_dir": str(run_dir),
         "ruse_revision": ruse_revision,
+        "workflow_gpu_tier": workflow_gpu_tier,
     }
 
     # Override behavior_source if provided via CLI

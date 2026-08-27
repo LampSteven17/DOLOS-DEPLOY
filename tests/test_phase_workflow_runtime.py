@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import ANY, patch
+from unittest.mock import ANY, Mock, patch
 from zoneinfo import ZoneInfo
 
 from common.logging.agent_logger import AgentLogger
@@ -48,7 +48,10 @@ from phase_workflow.registry import (
     WorkflowRegistry,
     WorkflowResult,
 )
-from phase_workflow.runtime import run_workflow_runtime
+from phase_workflow.runtime import (
+    _select_runtime_brain_profile,
+    run_workflow_runtime,
+)
 from phase_workflow.workflows import (
     DailyDocumentStore,
     HttpsDocumentSync,
@@ -2520,6 +2523,72 @@ class LLMDocumentRunnerTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_runtime_gpu_tier_selects_model_without_mutating_contract_profile(self):
+        gpu_plan = load_workflow_plan(
+            CONTROL_ROOT / PLAN_FILENAMES["browseruse-gpu"], "browseruse-gpu"
+        )
+        for tier, expected_model in (
+            ("v100", "gemma4:26b"),
+            ("rtx", "gemma4:e4b"),
+        ):
+            with self.subTest(tier=tier), patch.dict(
+                os.environ,
+                {
+                    "RUSE_WORKFLOW_GPU_TIER": tier,
+                    "OLLAMA_MODEL": expected_model,
+                },
+                clear=True,
+            ):
+                profile, selected_tier, model = _select_runtime_brain_profile(
+                    gpu_plan
+                )
+            self.assertEqual(selected_tier, tier)
+            self.assertEqual(model, expected_model)
+            self.assertEqual(profile["model"]["ollama"], expected_model)
+        self.assertEqual(
+            gpu_plan.brain_profile["model"]["ollama"], "gemma4:26b"
+        )
+
+        cpu_plan = load_workflow_plan(
+            CONTROL_ROOT / PLAN_FILENAMES["scripted-cpu"], "scripted-cpu"
+        )
+        with patch.dict(
+            os.environ, {"RUSE_WORKFLOW_GPU_TIER": "rtx"}, clear=True
+        ):
+            profile, tier, model = _select_runtime_brain_profile(cpu_plan)
+        self.assertIs(profile, cpu_plan.brain_profile)
+        self.assertEqual((tier, model), ("rtx", None))
+
+    def test_runtime_records_rtx_tier_and_model_in_session_start(self):
+        plan = load_workflow_plan(
+            CONTROL_ROOT / PLAN_FILENAMES["smolagents-gpu"], "smolagents-gpu"
+        )
+        logger = Mock()
+        executor = Mock()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "RUSE_WORKFLOW_GPU_TIER": "rtx",
+                    "OLLAMA_MODEL": "gemma4:e4b",
+                },
+                clear=True,
+            ),
+            patch("phase_workflow.runtime.load_workflow_plan", return_value=plan),
+            patch("phase_workflow.runtime.AgentLogger", return_value=logger),
+            patch("phase_workflow.runtime.build_brain") as build,
+            patch("phase_workflow.runtime.WorkflowRegistry"),
+            patch("phase_workflow.runtime.DailyExecutor", return_value=executor),
+        ):
+            run_workflow_runtime("smolagents-gpu", "/tmp/assigned")
+
+        session_config = logger.session_start.call_args.kwargs["config"]
+        self.assertEqual(session_config["gpu_tier"], "rtx")
+        self.assertEqual(session_config["ollama_model"], "gemma4:e4b")
+        self.assertEqual(
+            build.call_args.args[1]["model"]["ollama"], "gemma4:e4b"
+        )
+
     def test_invalid_startup_plan_never_constructs_runtime_or_falls_back(self):
         with tempfile.TemporaryDirectory() as td, patch(
             "phase_workflow.runtime.load_workflow_plan",
@@ -2536,6 +2605,36 @@ class RuntimeTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_canonical_rtx_installer_reuses_gemmar_model_mapping(self):
+        for config_key, expected_alias, expected_model in (
+            ("scripted-cpu", "none", ""),
+            ("mchp-cpu", "none", ""),
+            ("browseruse-gpu", "gemmar", "gemma4:e4b"),
+            ("smolagents-gpu", "gemmar", "gemma4:e4b"),
+        ):
+            with self.subTest(config_key=config_key):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        (
+                            f'source "{INSTALLER}"; '
+                            f'parse_config_key "{config_key}"; '
+                            "RUSE_WORKFLOW_GPU_TIER=rtx; "
+                            "export RUSE_WORKFLOW_GPU_TIER; "
+                            "apply_phase_workflow_gpu_tier; "
+                            'printf "%s|%s" "$MODEL" "${MODEL_NAMES[$MODEL]}"'
+                        ),
+                    ],
+                    cwd=REPOSITORY_ROOT,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                )
+                self.assertEqual(
+                    result.stdout, f"{expected_alias}|{expected_model}"
+                )
+
     def test_installer_lists_and_registers_all_canonical_ids(self):
         result = subprocess.run(
             [str(INSTALLER), "--list"],

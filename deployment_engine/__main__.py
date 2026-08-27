@@ -67,6 +67,8 @@ examples:
       --target axes-summer24                 one exact target
   ./deploy --decoy --feedback --preset colfix_v12.5.0 \
       --target axes-fall24 axes-spring25     selected targets in this order
+  ./deploy --decoys --feedback --preset colfix_v12.5.0 --gpu rtx \
+      --target vt-spring22 vt-summer21       selected targets on explicit RTX
   ./deploy --decoy --controls --feedback --preset colfix_v12.5.0
                                             controls + ALL feedback (explicit)
   ./deploy --decoy --controls --preset colfix_v12.5.0 \
@@ -97,8 +99,8 @@ examples:
         nargs="+",
         help="One or more space-separated exact Decoy feedback target names.",
     )
-    p.add_argument("--gpu", type=str, choices=["v100"], default=None,
-                   help="Canonical Decoy feedback GPU hardware (V100 only).")
+    p.add_argument("--gpu", type=str, choices=["v100", "rtx"], default=None,
+                   help="Canonical Decoy feedback GPU hardware (default: v100).")
     return p
 
 
@@ -335,6 +337,8 @@ def _cmd_deploy(argv: list[str]) -> int:
             _print_available_presets(deploy_type)
             return 1
 
+    gpu_tier = getattr(args, "gpu", None) or "v100"
+
     # --- Build plan: list of (label, behavior_source, configs_spec) tasks ---
     from .core.plan import build_deploy_plan, show_plan_and_confirm, execute_plan
 
@@ -349,6 +353,7 @@ def _cmd_deploy(argv: list[str]) -> int:
         preset=args.preset,
         deploy_dir=DEPLOY_DIR,
         tier_plan=None,
+        gpu_tier=gpu_tier,
     )
     if plan is None:
         return 1
@@ -356,7 +361,6 @@ def _cmd_deploy(argv: list[str]) -> int:
         output.error("Nothing to deploy. Use --controls and/or --feedback.")
         return 1
 
-    gpu_tier = getattr(args, "gpu", None) or "v100"
     if not show_plan_and_confirm(plan, deploy_type, gpu_tier=gpu_tier):
         return 0
 

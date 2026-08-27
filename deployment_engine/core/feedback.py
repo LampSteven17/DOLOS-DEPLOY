@@ -43,11 +43,37 @@ DECOY_FEEDBACK_DEPLOYMENTS = (
     {"behavior": "browseruse-gpu", "flavor": "v100-1gpu.14vcpu.28g", "count": 1},
     {"behavior": "smolagents-gpu", "flavor": "v100-1gpu.14vcpu.28g", "count": 1},
 )
+DECOY_CANONICAL_GPU_TIERS = {
+    "v100": {
+        "flavor": "v100-1gpu.14vcpu.28g",
+        "ollama_model": "gemma4:26b",
+    },
+    "rtx": {
+        "flavor": "rtx2080ti-1gpu.14vcpu.28g",
+        "ollama_model": "gemma4:e4b",
+    },
+}
 DECOY_GENERATION_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}Z$")
 
 
 class FeedbackSourceError(RuntimeError):
     """A selected PHASE feedback generation cannot be deployed."""
+
+
+def canonical_decoy_feedback_deployments(gpu_tier: str) -> tuple[dict, ...]:
+    """Return the fixed four-SUP topology for an explicit supported tier."""
+    try:
+        gpu = DECOY_CANONICAL_GPU_TIERS[gpu_tier]
+    except KeyError as exc:
+        raise FeedbackSourceError(
+            f"canonical Decoy feedback GPU tier must be v100 or rtx; got {gpu_tier!r}"
+        ) from exc
+    return (
+        {"behavior": "scripted-cpu", "flavor": "v1.14vcpu.28g", "count": 1},
+        {"behavior": "mchp-cpu", "flavor": "v1.14vcpu.28g", "count": 1},
+        {"behavior": "browseruse-gpu", "flavor": gpu["flavor"], "count": 1},
+        {"behavior": "smolagents-gpu", "flavor": gpu["flavor"], "count": 1},
+    )
 
 
 def _is_decoy_generation_name(value: str) -> bool:
@@ -407,7 +433,11 @@ def template_vm_table_lines(gpu_tier: str, indent: str = "    ") -> list[str]:
     return _render_vm_table(rows, indent)
 
 
-def config_vm_table_lines(deployments: list[dict], indent: str = "    ") -> list[str]:
+def config_vm_table_lines(
+    deployments: list[dict],
+    indent: str = "    ",
+    gpu_tier: str | None = None,
+) -> list[str]:
     """Per-VM provisioning table for a config.yaml `deployments` list
     ([{behavior, flavor, count}, ...]). Used for CONTROLS, whose VMs come from
     config.yaml rather than a GPU-tier template."""
@@ -425,6 +455,11 @@ def config_vm_table_lines(deployments: list[dict], indent: str = "    ") -> list
         beh = dep.get("behavior", "?")
         details = _workflow_control_runtime_details(beh, capabilities)
         brain, model = details or _legacy_controls_vm_runtime_details(beh)
+        if gpu_tier is not None and beh in {"browseruse-gpu", "smolagents-gpu"}:
+            try:
+                model = DECOY_CANONICAL_GPU_TIERS[gpu_tier]["ollama_model"]
+            except KeyError as exc:
+                raise ValueError(f"unsupported canonical GPU tier: {gpu_tier}") from exc
         rows.append((beh, brain, dep.get("flavor", "?"), model))
     return _render_vm_table(rows, indent)
 
@@ -1022,10 +1057,8 @@ def generate_feedback_config(
     """Generate one canonical four-VM DECOY feedback configuration."""
     import yaml
 
-    if gpu_tier != "v100":
-        raise FeedbackSourceError(
-            f"canonical Decoy feedback requires V100 GPU SUPs; got {gpu_tier!r}"
-        )
+    deployments = canonical_decoy_feedback_deployments(gpu_tier)
+    gpu = DECOY_CANONICAL_GPU_TIERS[gpu_tier]
     preset, target = decoy_feedback_source_identity(source_dir)
     dep_name = f"decoy-feedback-{_decoy_preset_slug(preset)}-{target}"
     dep_dir = deploy_dir / dep_name
@@ -1037,11 +1070,12 @@ def generate_feedback_config(
         "target": target,
         "capture_interface": "eno2",
         "behavior_source": str(source_dir),
+        "gpu_tier": gpu_tier,
         "flavor_capacity": {
             "v1.14vcpu.28g": 2,
-            "v100-1gpu.14vcpu.28g": 2,
+            gpu["flavor"]: 2,
         },
-        "deployments": [dict(item) for item in DECOY_FEEDBACK_DEPLOYMENTS],
+        "deployments": [dict(item) for item in deployments],
     }
 
     config_path = dep_dir / "config.yaml"

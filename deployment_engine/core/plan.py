@@ -25,8 +25,8 @@ from pathlib import Path
 from . import output
 from .config import DeploymentConfig
 from .feedback import (
-    DECOY_FEEDBACK_DEPLOYMENTS,
     FeedbackSourceError,
+    canonical_decoy_feedback_deployments,
     config_vm_table_lines,
     decoy_feedback_source_identity,
     find_decoy_control_generation,
@@ -52,6 +52,7 @@ def build_deploy_plan(
     deploy_dir: Path,
     preset: str | None = None,
     tier_plan: list[tuple[str, list[str]]] | None = None,
+    gpu_tier: str = "v100",
 ) -> list[dict] | None:
     """Resolve controls + feedback intent into an ordered list of deploy tasks.
 
@@ -76,7 +77,7 @@ def build_deploy_plan(
     if want_feedback:
         feedback_tasks = _build_feedback_tasks(
             deploy_type, configs_spec, single_selector, target, source,
-            preset=preset, tier_plan=tier_plan,
+            preset=preset, tier_plan=tier_plan, gpu_tier=gpu_tier,
         )
         if feedback_tasks is None:
             return None
@@ -131,6 +132,7 @@ def _build_feedback_tasks(
     source: str | None,
     preset: str | None = None,
     tier_plan: list[tuple[str, list[str]]] | None = None,
+    gpu_tier: str = "v100",
 ) -> list[dict] | None:
     """Resolve feedback sources into tasks. Returns None on resolution failure.
 
@@ -148,7 +150,11 @@ def _build_feedback_tasks(
     """
     if deploy_type == "decoy":
         return _build_decoy_feedback_tasks(
-            configs_spec, target=target, source=source, preset=preset
+            configs_spec,
+            target=target,
+            source=source,
+            preset=preset,
+            gpu_tier=gpu_tier,
         )
 
     sources: list[dict] = []
@@ -221,6 +227,7 @@ def _build_decoy_feedback_tasks(
     target: str | list[str] | None,
     source: str | None,
     preset: str | None,
+    gpu_tier: str,
 ) -> list[dict] | None:
     """Resolve canonical flat PHASE generations for Decoy only."""
     try:
@@ -262,6 +269,12 @@ def _build_decoy_feedback_tasks(
         output.error(f"ERROR: {exc}")
         return None
 
+    try:
+        deployments = canonical_decoy_feedback_deployments(gpu_tier)
+    except FeedbackSourceError as exc:
+        output.error(f"ERROR: {exc}")
+        return None
+
     return [
         {
             "label": f"decoy-feedback: {item['target']}",
@@ -272,8 +285,8 @@ def _build_decoy_feedback_tasks(
             "purpose": "feedback",
             "target": item["target"],
             "preset": item["preset"],
-            "deployments": [dict(dep) for dep in DECOY_FEEDBACK_DEPLOYMENTS],
-            "gpu_tier": "v100",
+            "deployments": [dict(dep) for dep in deployments],
+            "gpu_tier": gpu_tier,
         }
         for item in sources
     ]
@@ -327,9 +340,14 @@ def show_plan_and_confirm(
                 output.info(f"      generation:  {source.name}")
                 output.info(f"      source:      {source}")
                 output.info("")
-                output.info("      VMs to provision (4), fixed V100 topology:")
+                task_gpu_tier = task.get("gpu_tier") or gpu_tier
+                output.info(
+                    f"      VMs to provision (4), tier={task_gpu_tier}:"
+                )
                 for line in config_vm_table_lines(
-                    task["deployments"], indent="        "
+                    task["deployments"],
+                    indent="        ",
+                    gpu_tier=task_gpu_tier,
                 ):
                     output.info(line)
             else:
