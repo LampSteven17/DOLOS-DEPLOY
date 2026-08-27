@@ -270,14 +270,21 @@ class PhaseRunRegistryTests(unittest.TestCase):
                 filename = DECOY_PLAN_FILENAMES[sup_config]
                 document = json.loads((control_root / filename).read_text())
                 document["resource_profile"] = "feedback-v2"
-                for window in document["schedule"]:
-                    for occurrence in window["sequence"]:
-                        workflow = occurrence["workflow"]
-                        occurrence["resource_id"] = feedback_resources[workflow]
-                        if "instruction" in occurrence:
-                            occurrence["instruction"] = (
-                                feedback_instructions[workflow]
-                            )
+                sequence = []
+                for offset, workflow in enumerate(feedback_resources):
+                    occurrence = {
+                        "offset_minutes": offset * 15,
+                        "workflow": workflow,
+                        "resource_id": feedback_resources[workflow],
+                    }
+                    if sup_config in {"browseruse-gpu", "smolagents-gpu"}:
+                        occurrence["instruction"] = feedback_instructions[workflow]
+                    sequence.append(occurrence)
+                document["max_parallel"] = 1
+                document["schedule"] = [{
+                    "window_local": [540, 600],
+                    "sequence": sequence,
+                }]
                 (source / filename).write_text(json.dumps(document) + "\n")
             deploy_root = base / "deployments"
             name = generate_feedback_config(source, "all", deploy_root)

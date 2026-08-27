@@ -14,6 +14,7 @@ import threading
 import unittest
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -73,6 +74,16 @@ AUTHORITATIVE_SCHEMA = Path(
     "/home/ubuntu/PHASE/plans/feedback-v2-rewrite/"
     "phase-workflow-plan-v1.schema.json"
 )
+AUTHORITATIVE_CAPABILITIES = Path(
+    "/home/ubuntu/PHASE/plans/feedback-v2-rewrite/capabilities-v1.json"
+)
+AUTHORITATIVE_CONTROLS_PROFILE = Path(
+    "/home/ubuntu/PHASE/plans/feedback-v2-rewrite/"
+    "resource-profiles/controls-v2.json"
+)
+CURRENT_CONTROL_ROOT = Path(
+    "/data/axes-mirror/controls/2026-08-27_1552Z"
+)
 REPOSITORY_ROOT = CONTRACT_ROOT.parents[1]
 INSTALLER = REPOSITORY_ROOT / "INSTALL_SUP.sh"
 PLAN_FILENAMES = {
@@ -87,19 +98,36 @@ EXPECTED_CONFIGS = {
     "browseruse-gpu",
     "smolagents-gpu",
 }
-EXPECTED_RESOURCES = tuple(
-    entry["resource_id"]
-    for window in json.loads(
-        (CONTROL_ROOT / PLAN_FILENAMES["scripted-cpu"]).read_text(encoding="utf-8")
-    )["schedule"]
-    for entry in window["sequence"]
+EXPECTED_RESOURCES = (
+    "google_climate_change_news",
+    "video_cpp_course",
+    "document_team_meeting_notes",
 )
 
 
 def control_document(config_key="scripted-cpu"):
-    return json.loads(
+    document = json.loads(
         (CONTROL_ROOT / PLAN_FILENAMES[config_key]).read_text(encoding="utf-8")
     )
+    instructions = json.loads(
+        (CONTRACT_ROOT / "capabilities-v1.json").read_text(encoding="utf-8")
+    )["instructions"]["controls-v2"]
+    workflows = ("WebResearch", "VideoViewing", "DocumentCreation")
+    sequence = []
+    for offset, (workflow, resource_id) in enumerate(
+        zip(workflows, EXPECTED_RESOURCES)
+    ):
+        entry = {
+            "offset_minutes": offset * 15,
+            "workflow": workflow,
+            "resource_id": resource_id,
+        }
+        if config_key in {"browseruse-gpu", "smolagents-gpu"}:
+            entry["instruction"] = instructions[workflow]
+        sequence.append(entry)
+    document["max_parallel"] = 1
+    document["schedule"] = [{"window_local": [540, 600], "sequence": sequence}]
+    return document
 
 
 def feedback_document(config_key="scripted-cpu"):
@@ -160,6 +188,10 @@ def load_document(document, expected=None):
         raise
     temporary.cleanup()
     return plan
+
+
+def load_control_plan(config_key="scripted-cpu"):
+    return load_document(control_document(config_key), config_key)
 
 
 class FakeClock:
@@ -233,6 +265,14 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(
             (CONTRACT_ROOT / "phase-workflow-plan-v1.schema.json").read_bytes(),
             AUTHORITATIVE_SCHEMA.read_bytes(),
+        )
+        self.assertEqual(
+            (CONTRACT_ROOT / "capabilities-v1.json").read_bytes(),
+            AUTHORITATIVE_CAPABILITIES.read_bytes(),
+        )
+        self.assertEqual(
+            (CONTRACT_ROOT / "resource-profiles/controls-v2.json").read_bytes(),
+            AUTHORITATIVE_CONTROLS_PROFILE.read_bytes(),
         )
         self.assertEqual(
             PLAN_FILENAMES,
@@ -339,26 +379,32 @@ class LoaderTests(unittest.TestCase):
                 with self.assertRaises(WorkflowPlanError):
                     load_document(document, "scripted-cpu")
 
-    def test_four_controls_load_with_exact_shape_order_and_policy(self):
+    def test_four_current_controls_load_with_expanded_catalog(self):
         self.assertEqual(set(CONFIGURATIONS), EXPECTED_CONFIGS)
         plans = {
-            key: load_workflow_plan(CONTROL_ROOT / PLAN_FILENAMES[key], key)
+            key: load_workflow_plan(CURRENT_CONTROL_ROOT / PLAN_FILENAMES[key], key)
             for key in EXPECTED_CONFIGS
+        }
+        expected_workflows = {
+            "WebResearch",
+            "VideoViewing",
+            "DocumentCreation",
+            "FileDownload",
+            "FileSyncUpload",
+            "NetworkShareAccess",
         }
         for key, plan in plans.items():
             self.assertEqual(plan.sup_config, key)
             self.assertEqual(str(plan.timezone), "America/New_York")
-            self.assertEqual(plan.max_parallel, 1)
-            self.assertEqual(
-                [(window.start_minute, window.end_minute) for window in plan.windows],
-                [(540, 600)],
-            )
+            self.assertEqual(plan.resource_profile, "controls-v2")
+            self.assertEqual(plan.max_parallel, 10)
+            self.assertEqual(len(plan.windows), 24)
             entries = [entry for window in plan.windows for entry in window.sequence]
-            self.assertEqual(tuple(entry.resource_id for entry in entries), EXPECTED_RESOURCES)
             self.assertEqual(
-                [entry.workflow for entry in entries],
-                ["WebResearch", "VideoViewing", "DocumentCreation"],
+                Counter(entry.workflow for entry in entries),
+                Counter({workflow: 240 for workflow in expected_workflows}),
             )
+            self.assertEqual(len(entries), 1440)
             self.assertEqual(plan.brain_profile_id, PLAN_FILENAMES[key][:-5])
             with self.assertRaises(TypeError):
                 entries[0].resource["kind"] = "changed"
@@ -652,7 +698,7 @@ class RegistryAndBrainTests(unittest.TestCase):
         )
         resolved = []
         for key in ("scripted-cpu", "mchp-cpu", "browseruse-gpu", "smolagents-gpu"):
-            plan = load_workflow_plan(CONTROL_ROOT / PLAN_FILENAMES[key], key)
+            plan = load_control_plan(key)
             brain = RecordingBrain()
             registry = WorkflowRegistry(plan, brain, Path("/tmp/workspace"))
             self.assertEqual(registry.workflows, CANONICAL_HANDLERS)
@@ -666,9 +712,7 @@ class RegistryAndBrainTests(unittest.TestCase):
         self.assertEqual(resolved[2].instruction, resolved[3].instruction)
 
     def test_llm_brain_receives_exact_instruction_and_resource(self):
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["browseruse-gpu"], "browseruse-gpu"
-        )
+        plan = load_control_plan("browseruse-gpu")
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[0]
         )
@@ -689,9 +733,7 @@ class RegistryAndBrainTests(unittest.TestCase):
         self.assertEqual(received[0][0].resource_id, EXPECTED_RESOURCES[0])
 
     def test_llm_video_is_dispatched_through_the_framework_runner(self):
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["browseruse-gpu"], "browseruse-gpu"
-        )
+        plan = load_control_plan("browseruse-gpu")
         entry = plan.windows[0].sequence[1]
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(entry)
         framework_tasks = []
@@ -725,9 +767,7 @@ class RegistryAndBrainTests(unittest.TestCase):
             def quit(self):
                 self.closed = True
 
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["scripted-cpu"], "scripted-cpu"
-        )
+        plan = load_control_plan("scripted-cpu")
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[1]
         )
@@ -776,9 +816,7 @@ class RegistryAndBrainTests(unittest.TestCase):
         self.assertIn("--headless=new", created[0].arguments)
 
     def test_document_writer_uses_exact_filename_and_supplied_content(self):
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["scripted-cpu"], "scripted-cpu"
-        )
+        plan = load_control_plan("scripted-cpu")
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[2]
         )
@@ -799,9 +837,7 @@ class RegistryAndBrainTests(unittest.TestCase):
             ("browseruse-gpu", "browseruse_runner", "play_video_with_chromium"),
             ("smolagents-gpu", "smolagents_runner", "play_video_realtime"),
         ):
-            plan = load_workflow_plan(
-                CONTROL_ROOT / PLAN_FILENAMES[config_key], config_key
-            )
+            plan = load_control_plan(config_key)
             task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
                 plan.windows[0].sequence[1]
             )
@@ -825,9 +861,7 @@ class RegistryAndBrainTests(unittest.TestCase):
             player.assert_not_called()
 
     def test_smol_video_consumes_one_stream_at_real_time_for_300_seconds(self):
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["smolagents-gpu"], "smolagents-gpu"
-        )
+        plan = load_control_plan("smolagents-gpu")
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[1]
         )
@@ -904,9 +938,7 @@ class RegistryAndBrainTests(unittest.TestCase):
                     artifact=str(workspace / task.resource["filename"]),
                 )
 
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["mchp-cpu"], "mchp-cpu"
-        )
+        plan = load_control_plan("mchp-cpu")
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[2]
         )
@@ -1994,9 +2026,7 @@ class MCHPDriverLifecycleTests(unittest.TestCase):
             instance._driver = Driver()
             created.append(instance._driver)
 
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["mchp-cpu"], "mchp-cpu"
-        )
+        plan = load_control_plan("mchp-cpu")
         registry = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp"))
         web = registry.resolve(plan.windows[0].sequence[0])
         video = registry.resolve(plan.windows[0].sequence[1])
@@ -2084,9 +2114,7 @@ class VideoMechanicsTests(unittest.TestCase):
 class LLMVideoRunnerTests(unittest.TestCase):
     @staticmethod
     def video_task(config_key):
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES[config_key], config_key
-        )
+        plan = load_control_plan(config_key)
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[1]
         )
@@ -2313,9 +2341,7 @@ class LLMDocumentRunnerTests(unittest.TestCase):
 
     @staticmethod
     def document_task(config_key):
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES[config_key], config_key
-        )
+        plan = load_control_plan(config_key)
         task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
             plan.windows[0].sequence[2]
         )
@@ -2524,9 +2550,7 @@ class LLMDocumentRunnerTests(unittest.TestCase):
 
 class RuntimeTests(unittest.TestCase):
     def test_runtime_gpu_tier_selects_model_without_mutating_contract_profile(self):
-        gpu_plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["browseruse-gpu"], "browseruse-gpu"
-        )
+        gpu_plan = load_control_plan("browseruse-gpu")
         for tier, expected_model in (
             ("v100", "gemma4:26b"),
             ("rtx", "gemma4:e4b"),
@@ -2549,9 +2573,7 @@ class RuntimeTests(unittest.TestCase):
             gpu_plan.brain_profile["model"]["ollama"], "gemma4:26b"
         )
 
-        cpu_plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["scripted-cpu"], "scripted-cpu"
-        )
+        cpu_plan = load_control_plan("scripted-cpu")
         with patch.dict(
             os.environ, {"RUSE_WORKFLOW_GPU_TIER": "rtx"}, clear=True
         ):
@@ -2560,9 +2582,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual((tier, model), ("rtx", None))
 
     def test_runtime_records_rtx_tier_and_model_in_session_start(self):
-        plan = load_workflow_plan(
-            CONTROL_ROOT / PLAN_FILENAMES["smolagents-gpu"], "smolagents-gpu"
-        )
+        plan = load_control_plan("smolagents-gpu")
         logger = Mock()
         executor = Mock()
         with (

@@ -5,7 +5,10 @@
     "controls-v2": {
       "WebResearch": "Use the assigned research resource. For a search query, open one result and read it. For a direct page, read it and follow one relevant link.",
       "VideoViewing": "Open the assigned video and play it for five minutes.",
-      "DocumentCreation": "Create and save the assigned document or spreadsheet using the provided template and sample content."
+      "FileDownload": "Download the assigned file once using the bounded assigned-file action.",
+      "DocumentCreation": "Create and save the assigned document or spreadsheet using the provided template and sample content.",
+      "FileSyncUpload": "Sync one assigned local document once using the bounded assigned-upload action.",
+      "NetworkShareAccess": "Access the assigned network share once using the bounded assigned-share action."
     },
     "feedback-v2": {
       "WebResearch": "Open the assigned page, read it, and follow one relevant link from that page.",

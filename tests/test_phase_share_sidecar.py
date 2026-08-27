@@ -28,6 +28,7 @@ CONTROL_FIXTURES = Path(
 )
 CANONICAL = tuple(feedback.DECOY_PLAN_FILENAMES)
 SHARE_PLAYBOOK = ROOT / "deployment_engine/playbooks/decoy/prepare-share.yaml"
+CURRENT_CONTROL_ROOT = Path("/data/axes-mirror/controls/2026-08-27_1552Z")
 
 
 def write_generation(root: Path, *, include_share: bool) -> Path:
@@ -43,11 +44,18 @@ def write_generation(root: Path, *, include_share: bool) -> Path:
     for sup_config, filename in feedback.DECOY_PLAN_FILENAMES.items():
         document = json.loads((CONTROL_FIXTURES / filename).read_text())
         document["resource_profile"] = "feedback-v2"
-        for window in document["schedule"]:
-            for entry in window["sequence"]:
-                entry["resource_id"] = replacements[entry["workflow"]]
-                if "instruction" in entry:
-                    entry["instruction"] = instructions[entry["workflow"]]
+        sequence = []
+        for offset, workflow in enumerate(replacements):
+            entry = {
+                "offset_minutes": offset * 15,
+                "workflow": workflow,
+                "resource_id": replacements[workflow],
+            }
+            if sup_config in {"browseruse-gpu", "smolagents-gpu"}:
+                entry["instruction"] = instructions[workflow]
+            sequence.append(entry)
+        document["max_parallel"] = 1
+        document["schedule"] = [{"window_local": [540, 600], "sequence": sequence}]
         if include_share and sup_config == "scripted-cpu":
             document["schedule"][0]["sequence"].append({
                 "offset_minutes": 45,
@@ -88,6 +96,9 @@ class ShareSidecarTests(unittest.TestCase):
             self.assertTrue(feedback.decoy_generation_uses_network_share(
                 present, purpose="feedback"
             ))
+        self.assertTrue(feedback.decoy_generation_uses_network_share(
+            CURRENT_CONTROL_ROOT, purpose="control"
+        ))
 
     def test_provision_uses_exact_prefixed_name_flavor_defaults_and_assigned_ip(self):
         class Cloud:

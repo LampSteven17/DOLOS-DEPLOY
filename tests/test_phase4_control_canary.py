@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import copy
 import json
 import shutil
 import tempfile
 import unittest
+from collections import Counter, defaultdict
 from pathlib import Path
 from unittest import mock
 
@@ -19,6 +19,7 @@ from deployment_engine.decoy import spinup
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CONTROL_CONFIG = REPOSITORY_ROOT / "deployments" / "decoy-controls" / "config.yaml"
 CONTROL_ROOT = Path("/home/ubuntu/PHASE/plans/feedback-v2-rewrite/fixtures/controls")
+CURRENT_CONTROL_ROOT = Path("/data/axes-mirror/controls/2026-08-27_1552Z")
 CANONICAL = (
     "scripted-cpu",
     "mchp-cpu",
@@ -269,25 +270,81 @@ class Phase4ControlCanaryTests(unittest.TestCase):
     def test_four_control_plans_validate_and_share_one_schedule(self):
         from phase_workflow.loader import load_workflow_plan
 
+        self.assertEqual(feedback.find_decoy_control_generation(), CURRENT_CONTROL_ROOT)
+        self.assertEqual(
+            {path.name for path in CURRENT_CONTROL_ROOT.iterdir()},
+            set(feedback.DECOY_PLAN_FILENAMES.values()),
+        )
+        profile = json.loads(
+            (REPOSITORY_ROOT / "contracts/phase-workflow-plan-v1/"
+             "resource-profiles/controls-v2.json").read_text(encoding="utf-8")
+        )["resources"]
+        instructions = json.loads(
+            (REPOSITORY_ROOT / "contracts/phase-workflow-plan-v1/"
+             "capabilities-v1.json").read_text(encoding="utf-8")
+        )["instructions"]["controls-v2"]
+        expected_counts = Counter({
+            workflow: 240 for workflow in (
+                "WebResearch",
+                "VideoViewing",
+                "DocumentCreation",
+                "FileDownload",
+                "FileSyncUpload",
+                "NetworkShareAccess",
+            )
+        })
         normalized = []
         for sup_config in CANONICAL:
-            path = CONTROL_ROOT / feedback.DECOY_PLAN_FILENAMES[sup_config]
-            load_workflow_plan(path, sup_config)
+            path = CURRENT_CONTROL_ROOT / feedback.DECOY_PLAN_FILENAMES[sup_config]
+            plan = load_workflow_plan(path, sup_config)
             document = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(document["sup_config"], sup_config)
             self.assertEqual(document["timezone"], "America/New_York")
             self.assertEqual(document["resource_profile"], "controls-v2")
+            self.assertEqual(document["max_parallel"], 10)
+            self.assertEqual(len(document["schedule"]), 24)
+            entries = [
+                entry
+                for window in document["schedule"]
+                for entry in window["sequence"]
+            ]
+            self.assertEqual(len(entries), 1440)
+            self.assertEqual(Counter(entry["workflow"] for entry in entries), expected_counts)
+            for entry in entries:
+                resource = profile[entry["resource_id"]]
+                self.assertEqual(resource["workflow"], entry["workflow"])
+                if sup_config in ("browseruse-gpu", "smolagents-gpu"):
+                    self.assertEqual(entry["instruction"], instructions[entry["workflow"]])
+                else:
+                    self.assertNotIn("instruction", entry)
 
-            comparable = copy.deepcopy(document)
-            comparable.pop("sup_config")
-            comparable.pop("brain_profile")
-            for window in comparable["schedule"]:
-                for occurrence in window["sequence"]:
-                    occurrence.pop("instruction", None)
-            normalized.append(comparable)
+            document_bursts = defaultdict(list)
+            for window_index, window in enumerate(plan.windows):
+                for entry in window.sequence:
+                    if entry.workflow == "DocumentCreation":
+                        document_bursts[(window_index, entry.offset_minutes)].append(
+                            entry.resource["filename"]
+                        )
+            self.assertEqual(len(document_bursts), 24)
+            for filenames in document_bursts.values():
+                self.assertEqual((len(filenames), len(set(filenames))), (10, 10))
 
-        for document in normalized[1:]:
-            self.assertEqual(document, normalized[0])
+            normalized.append(tuple(
+                (
+                    window["window_local"],
+                    tuple(
+                        (entry["offset_minutes"], entry["workflow"], entry["resource_id"])
+                        for entry in window["sequence"]
+                    ),
+                )
+                for window in document["schedule"]
+            ))
+
+        for schedule in normalized[1:]:
+            self.assertEqual(schedule, normalized[0])
+        self.assertTrue(feedback.decoy_generation_uses_network_share(
+            CURRENT_CONTROL_ROOT, purpose="control"
+        ))
 
     def test_controls_render_fixed_topology_and_pass_selected_source(self):
         with tempfile.TemporaryDirectory() as temporary:
