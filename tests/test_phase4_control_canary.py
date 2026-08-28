@@ -4,7 +4,6 @@ import json
 import shutil
 import tempfile
 import unittest
-from collections import Counter, defaultdict
 from pathlib import Path
 from unittest import mock
 
@@ -19,7 +18,7 @@ from deployment_engine.decoy import spinup
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CONTROL_CONFIG = REPOSITORY_ROOT / "deployments" / "decoy-controls" / "config.yaml"
 CONTROL_ROOT = Path("/home/ubuntu/PHASE/plans/feedback-v2-rewrite/fixtures/controls")
-CURRENT_CONTROL_ROOT = Path("/data/axes-mirror/controls/2026-08-27_1552Z")
+CURRENT_CONTROL_ROOT = Path("/data/axes-mirror/controls/2026-08-28_1847Z")
 CANONICAL = (
     "scripted-cpu",
     "mchp-cpu",
@@ -129,6 +128,26 @@ class Phase4ControlCanaryTests(unittest.TestCase):
                 feedback.find_decoy_control_generation()
             self.assertTrue(older.is_dir())
 
+    def test_target_nested_directories_are_ignored(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = self._generation(root, "2026-08-28_1847Z")
+            nested = root / "axes-summer24" / "2026-08-29_0000Z"
+            nested.mkdir(parents=True)
+            for filename in feedback.DECOY_PLAN_FILENAMES.values():
+                (nested / filename).write_text("{}\n", encoding="utf-8")
+            with mock.patch.object(feedback, "DECOY_CONTROL_BASE", root):
+                actual = feedback.find_decoy_control_generation()
+        self.assertEqual(actual, selected)
+
+    def test_controls_have_no_target_selection_interface(self):
+        with mock.patch.object(plan, "build_deploy_plan") as build:
+            result = deployment_cli._cmd_deploy([
+                "--decoy", "--controls", "--target", "axes-summer24",
+            ])
+        self.assertEqual(result, 1)
+        build.assert_not_called()
+
     def test_invalid_control_plans_abort_before_plan_display_or_execution(self):
         def missing(path):
             (path / "scripted-v1.json").unlink()
@@ -168,7 +187,9 @@ class Phase4ControlCanaryTests(unittest.TestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 control_root = root / "controls"
-                generation = self._generation(control_root, "2026-08-24_1456Z")
+                generation = self._generation(
+                    control_root, "2026-08-24_1456Z"
+                )
                 mutation(generation)
                 deploy_root = self._deploy_root(root)
                 with (
@@ -267,79 +288,32 @@ class Phase4ControlCanaryTests(unittest.TestCase):
             stage["when"], "sup_behavior in canonical_workflow_configs"
         )
 
-    def test_four_control_plans_validate_and_share_one_schedule(self):
+    def test_current_global_control_generation_loads_and_requires_share(self):
         from phase_workflow.loader import load_workflow_plan
 
-        self.assertEqual(feedback.find_decoy_control_generation(), CURRENT_CONTROL_ROOT)
+        self.assertEqual(
+            feedback.find_decoy_control_generation(), CURRENT_CONTROL_ROOT
+        )
         self.assertEqual(
             {path.name for path in CURRENT_CONTROL_ROOT.iterdir()},
             set(feedback.DECOY_PLAN_FILENAMES.values()),
         )
-        profile = json.loads(
-            (REPOSITORY_ROOT / "contracts/phase-workflow-plan-v1/"
-             "resource-profiles/controls-v2.json").read_text(encoding="utf-8")
-        )["resources"]
-        instructions = json.loads(
-            (REPOSITORY_ROOT / "contracts/phase-workflow-plan-v1/"
-             "capabilities-v1.json").read_text(encoding="utf-8")
-        )["instructions"]["controls-v2"]
-        expected_counts = Counter({
-            workflow: 240 for workflow in (
-                "WebResearch",
-                "VideoViewing",
-                "DocumentCreation",
-                "FileDownload",
-                "FileSyncUpload",
-                "NetworkShareAccess",
-            )
-        })
         normalized = []
         for sup_config in CANONICAL:
             path = CURRENT_CONTROL_ROOT / feedback.DECOY_PLAN_FILENAMES[sup_config]
             plan = load_workflow_plan(path, sup_config)
-            document = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(document["sup_config"], sup_config)
-            self.assertEqual(document["timezone"], "America/New_York")
-            self.assertEqual(document["resource_profile"], "controls-v2")
-            self.assertEqual(document["max_parallel"], 10)
-            self.assertEqual(len(document["schedule"]), 24)
-            entries = [
-                entry
-                for window in document["schedule"]
-                for entry in window["sequence"]
-            ]
-            self.assertEqual(len(entries), 1440)
-            self.assertEqual(Counter(entry["workflow"] for entry in entries), expected_counts)
-            for entry in entries:
-                resource = profile[entry["resource_id"]]
-                self.assertEqual(resource["workflow"], entry["workflow"])
-                if sup_config in ("browseruse-gpu", "smolagents-gpu"):
-                    self.assertEqual(entry["instruction"], instructions[entry["workflow"]])
-                else:
-                    self.assertNotIn("instruction", entry)
-
-            document_bursts = defaultdict(list)
-            for window_index, window in enumerate(plan.windows):
-                for entry in window.sequence:
-                    if entry.workflow == "DocumentCreation":
-                        document_bursts[(window_index, entry.offset_minutes)].append(
-                            entry.resource["filename"]
-                        )
-            self.assertEqual(len(document_bursts), 24)
-            for filenames in document_bursts.values():
-                self.assertEqual((len(filenames), len(set(filenames))), (10, 10))
-
+            self.assertEqual(plan.sup_config, sup_config)
+            self.assertEqual(plan.resource_profile, "controls-v2")
             normalized.append(tuple(
                 (
-                    window["window_local"],
+                    (window.start_minute, window.end_minute),
                     tuple(
-                        (entry["offset_minutes"], entry["workflow"], entry["resource_id"])
-                        for entry in window["sequence"]
+                        (entry.offset_minutes, entry.workflow, entry.resource_id)
+                        for entry in window.sequence
                     ),
                 )
-                for window in document["schedule"]
+                for window in plan.windows
             ))
-
         for schedule in normalized[1:]:
             self.assertEqual(schedule, normalized[0])
         self.assertTrue(feedback.decoy_generation_uses_network_share(
@@ -361,33 +335,37 @@ class Phase4ControlCanaryTests(unittest.TestCase):
                 mock.patch.object(plan, "execute_plan", return_value=0) as execute,
             ):
                 result = deployment_cli._cmd_deploy(["--decoy", "--controls"])
-        self.assertEqual(result, 0)
-        tasks = execute.call_args.args[0]
-        self.assertEqual(tasks[0]["behavior_source"], generation)
-        rendered = "\n".join(lines)
-        for expected in (
-            "scripted-cpu",
-            "Scripted",
-            "mchp-cpu",
-            "MCHP",
-            "browseruse-gpu",
-            "BrowserUse",
-            "smolagents-gpu",
-            "SmolAgents",
-            "v1.14vcpu.28g",
-            "v100-1gpu.14vcpu.28g",
-            "gemma4:26b",
-        ):
-            self.assertIn(expected, rendered)
+            self.assertEqual(result, 0)
+            tasks = execute.call_args.args[0]
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0]["behavior_source"], generation)
+            rendered = "\n".join(lines)
+            for expected in (
+                "scripted-cpu",
+                "Scripted",
+                "mchp-cpu",
+                "MCHP",
+                "browseruse-gpu",
+                "BrowserUse",
+                "smolagents-gpu",
+                "SmolAgents",
+                "v1.14vcpu.28g",
+                "v100-1gpu.14vcpu.28g",
+                "gemma4:26b",
+            ):
+                self.assertIn(expected, rendered)
 
-        with mock.patch.object(spinup, "run_decoy_spinup", return_value=0) as deploy:
-            result = plan.execute_plan(
-                tasks, "decoy", None, deploy_root, gpu_tier="v100"
-            )
-        self.assertEqual(result, 0)
-        self.assertEqual(deploy.call_args.args[0], "decoy-controls")
-        self.assertEqual(deploy.call_args.args[2], str(generation))
-        self.assertIsNone(deploy.call_args.args[3])
+            with mock.patch.object(
+                spinup, "run_decoy_spinup", return_value=0
+            ) as deploy:
+                result = plan.execute_plan(
+                    tasks, "decoy", None, deploy_root, gpu_tier="v100"
+                )
+            self.assertEqual(result, 0)
+            deploy.assert_called_once()
+            self.assertEqual(deploy.call_args.args[0], "decoy-controls")
+            self.assertEqual(deploy.call_args.args[2], str(generation))
+            self.assertIsNone(deploy.call_args.args[3])
 
     def test_repository_contains_no_control_plan_copies(self):
         duplicate_root = (

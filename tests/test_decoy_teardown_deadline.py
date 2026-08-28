@@ -256,7 +256,68 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
         )
         self.assertFalse(any(call[0] == "server_fault" for call in cloud.calls))
 
-    def test_error_force_delete_failure_reports_fault_and_preserves_state(self):
+    def test_nonzero_force_delete_succeeds_when_exact_vm_is_verified_absent(self):
+        clock = _Clock()
+        cloud = _Cloud(
+            clock,
+            servers=[
+                [_server("vm-error", "d-exact-one", "ERROR")],
+                [],
+            ],
+            force_ok=False,
+        )
+        with mock.patch.object(teardown, "make_vm_prefix", return_value="d-exact-"):
+            result, final_calls, _ = self._run(cloud, clock)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(final_calls), 1)
+        self.assertEqual(
+            [call for call in cloud.calls if call[0] == "server_force_delete_many"],
+            [("server_force_delete_many", ("vm-error",))],
+        )
+
+    def test_nonzero_ordinary_delete_succeeds_when_exact_vm_is_verified_absent(self):
+        clock = _Clock()
+        cloud = _Cloud(
+            clock,
+            servers=[
+                [_server("vm-active", "d-exact-one", "ACTIVE")],
+                [],
+            ],
+            delete_ok=False,
+        )
+        with mock.patch.object(teardown, "make_vm_prefix", return_value="d-exact-"):
+            result, final_calls, _ = self._run(cloud, clock)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(final_calls), 1)
+        self.assertEqual(
+            [call for call in cloud.calls if call[0] == "server_delete_many"],
+            [("server_delete_many", ("vm-active",), False)],
+        )
+
+    def test_nonzero_volume_delete_succeeds_when_volume_is_verified_absent(self):
+        clock = _Clock()
+        cloud = _Cloud(
+            clock,
+            servers=[
+                [_server("vm-1", "d-exact-one", "ACTIVE", "vol-1")],
+                [],
+            ],
+            volumes=[{"vol-1": "available"}, {}],
+            volume_delete_ok=False,
+        )
+        with mock.patch.object(teardown, "make_vm_prefix", return_value="d-exact-"):
+            result, final_calls, _ = self._run(cloud, clock)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(final_calls), 1)
+        self.assertEqual(
+            [call for call in cloud.calls if call[0] == "volume_delete_many"],
+            [("volume_delete_many", ("vol-1",))],
+        )
+
+    def test_nonzero_delete_with_remaining_error_vm_times_out_without_finalizing(self):
         clock = _Clock()
         exact = _server("vm-error", "d-exact-one", "ERROR", "vol-error")
         cloud = _Cloud(
@@ -275,15 +336,14 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertEqual(final_calls, [])
-        self.assertIn(
-            "d-exact-one id=vm-error status=ERROR fault=No valid host", rendered
-        )
-        self.assertIn("vol-error status=in-use", rendered)
+        self.assertIn("five-minute teardown deadline expired", rendered)
+        self.assertIn("d-exact-one id=vm-error status=ERROR", rendered)
         self.assertIn("Registry record remains open; SSH state was preserved", rendered)
-        self.assertEqual(
-            [call for call in cloud.calls if call[0] == "server_force_delete_many"],
-            [("server_force_delete_many", ("vm-error",))],
+        self.assertGreater(
+            len([call for call in cloud.calls if call[0] == "server_force_delete_many"]),
+            1,
         )
+        self.assertFalse(any(call[0] == "finalize" for call in cloud.calls))
 
     def test_one_deadline_times_out_without_closing_or_resetting(self):
         clock = _Clock()
@@ -302,7 +362,7 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
         self.assertIn("vol-stuck", rendered)
         self.assertFalse(any(call[0] == "server_fault" for call in cloud.calls))
 
-    def test_volume_delete_failure_does_not_finalize(self):
+    def test_persistent_nonzero_volume_delete_times_out_without_finalizing(self):
         clock = _Clock()
         cloud = _Cloud(
             clock,
@@ -319,8 +379,12 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertEqual(final_calls, [])
-        self.assertIn("batch volume delete failed", rendered)
+        self.assertIn("five-minute teardown deadline expired", rendered)
         self.assertIn("vol-1 status=available", rendered)
+        self.assertGreater(
+            len([call for call in cloud.calls if call[0] == "volume_delete_many"]),
+            1,
+        )
 
     def test_decoy_teardown_has_no_ansible_or_sequential_wait_playbook(self):
         source = Path(teardown.__file__).read_text(encoding="utf-8")

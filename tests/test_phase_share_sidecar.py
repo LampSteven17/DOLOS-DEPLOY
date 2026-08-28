@@ -28,7 +28,7 @@ CONTROL_FIXTURES = Path(
 )
 CANONICAL = tuple(feedback.DECOY_PLAN_FILENAMES)
 SHARE_PLAYBOOK = ROOT / "deployment_engine/playbooks/decoy/prepare-share.yaml"
-CURRENT_CONTROL_ROOT = Path("/data/axes-mirror/controls/2026-08-27_1552Z")
+CURRENT_CONTROL_ROOT = Path("/data/axes-mirror/controls/2026-08-28_1847Z")
 
 
 def write_generation(root: Path, *, include_share: bool) -> Path:

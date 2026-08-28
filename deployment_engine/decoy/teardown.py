@@ -116,17 +116,19 @@ def run_decoy_teardown(
                 and all(status.upper() == "AVAILABLE" for status in last_volumes.values())
             ):
                 volume_ids = sorted(last_volumes)
-                if not os_client.volume_delete_many(
+                delete_ok = os_client.volume_delete_many(
                     volume_ids, timeout_s=_remaining(deadline)
-                ):
-                    raise TeardownOperationFailed(
-                        "batch volume delete failed for captured IDs: "
-                        + ", ".join(volume_ids)
-                    )
-                volume_delete_requested = True
-                output.info(
-                    f"  Delete requested for {len(volume_ids)} boot volumes"
                 )
+                if delete_ok:
+                    volume_delete_requested = True
+                    output.info(
+                        f"  Delete requested for {len(volume_ids)} boot volumes"
+                    )
+                else:
+                    output.info(
+                        "  Volume delete command returned nonzero; "
+                        "reconciling exact captured IDs"
+                    )
             elif not volume_delete_requested:
                 output.info(
                     f"  Waiting for {len(last_volumes)} boot volumes to detach..."
@@ -220,15 +222,17 @@ def _delete_exact_servers(
         if server["status"].upper() == "ERROR"
     ]
     if error_ids:
-        if not os_client.server_force_delete_many(
+        delete_ok = os_client.server_force_delete_many(
             error_ids, timeout_s=_remaining(deadline)
-        ):
-            raise TeardownOperationFailed(
-                "force-delete failed for exact ERROR VM IDs: "
-                + ", ".join(error_ids)
+        )
+        if delete_ok:
+            ever_forced_ids.update(error_ids)
+            output.info(f"  Force-delete requested for {len(error_ids)} ERROR VMs")
+        else:
+            output.info(
+                "  Force-delete command returned nonzero; "
+                "reconciling exact VM cohort"
             )
-        ever_forced_ids.update(error_ids)
-        output.info(f"  Force-delete requested for {len(error_ids)} ERROR VMs")
 
     ordinary_ids = [
         server["id"]
@@ -238,14 +242,17 @@ def _delete_exact_servers(
         and server["id"] not in ever_forced_ids
     ]
     if ordinary_ids:
-        if not os_client.server_delete_many(
+        delete_ok = os_client.server_delete_many(
             ordinary_ids, wait=False, timeout_s=_remaining(deadline)
-        ):
-            raise TeardownOperationFailed(
-                "batch VM delete failed for exact IDs: " + ", ".join(ordinary_ids)
+        )
+        if delete_ok:
+            ordinary_requested_ids.update(ordinary_ids)
+            output.info(f"  Delete requested for {len(ordinary_ids)} exact VMs")
+        else:
+            output.info(
+                "  VM delete command returned nonzero; "
+                "reconciling exact VM cohort"
             )
-        ordinary_requested_ids.update(ordinary_ids)
-        output.info(f"  Delete requested for {len(ordinary_ids)} exact VMs")
 
 
 def _sleep_within_deadline(deadline: float) -> None:

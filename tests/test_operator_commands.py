@@ -700,6 +700,13 @@ class OperatorCommandTests(unittest.TestCase):
                 mock.patch.object(
                     decoy_teardown, "finalize_verified_teardown"
                 ) as finalize,
+                mock.patch.object(
+                    decoy_teardown,
+                    "_sleep_within_deadline",
+                    side_effect=decoy_teardown.TeardownDeadlineExpired(
+                        "five-minute teardown deadline expired"
+                    ),
+                ),
             ):
                 result = decoy_teardown.run_decoy_teardown(
                     config_dir, "decoy-controls", CURRENT_RUN, deploy_dir
@@ -858,7 +865,7 @@ class OperatorCommandTests(unittest.TestCase):
 
     def test_deploy_command_builds_only_four_controls_without_provisioning(self):
         captured: dict = {}
-        selected = Path("/data/axes-mirror/controls/2026-08-24_1456Z")
+        selected = Path("/data/axes-mirror/controls/2026-08-28_1847Z")
 
         def refuse_execution(plan, deploy_type, config_name, deploy_dir, **kwargs):
             captured.update(plan=plan, deploy_type=deploy_type, deploy_dir=deploy_dir)
