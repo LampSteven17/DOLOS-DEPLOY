@@ -54,6 +54,11 @@ class _Cloud:
         force_ok: bool = True,
         volume_delete_ok: bool = True,
         faults: dict[str, str] | None = None,
+        lifecycles: dict[str, dict] | None = None,
+        reset_ok: bool = True,
+        stop_ok: bool = True,
+        events: dict[str, list[dict]] | None = None,
+        event_details: dict[tuple[str, str], dict] | None = None,
         call_cost: float = 0.1,
     ):
         self.clock = clock
@@ -63,6 +68,11 @@ class _Cloud:
         self.force_ok = force_ok
         self.volume_delete_ok = volume_delete_ok
         self.faults = faults or {}
+        self.lifecycles = lifecycles or {}
+        self.reset_ok = reset_ok
+        self.stop_ok = stop_ok
+        self.events = events or {}
+        self.event_details = event_details or {}
         self.attachments: dict[str, list[str]] = {}
         for snapshot in servers:
             for server in snapshot:
@@ -107,6 +117,37 @@ class _Cloud:
         self._consume("server_force_delete_many", timeout_s, tuple(ids))
         return self.force_ok
 
+    def server_lifecycle(self, server_id: str, *, timeout_s: float) -> dict:
+        self._consume("server_lifecycle", timeout_s, server_id)
+        return deepcopy(self.lifecycles.get(server_id, {
+            "host": "axes-test.maas",
+            "status": "ERROR",
+            "vm_state": "error",
+            "task_state": None,
+            "power_state": 1,
+            "fault": self.faults.get(server_id),
+        }))
+
+    def server_reset_state_active(
+        self, server_id: str, *, timeout_s: float
+    ) -> bool:
+        self._consume("server_reset_state_active", timeout_s, server_id)
+        return self.reset_ok
+
+    def server_stop(self, server_id: str, *, timeout_s: float) -> bool:
+        self._consume("server_stop", timeout_s, server_id)
+        return self.stop_ok
+
+    def server_events(self, server_id: str, *, timeout_s: float) -> list[dict]:
+        self._consume("server_events", timeout_s, server_id)
+        return deepcopy(self.events.get(server_id, []))
+
+    def server_event_show(
+        self, server_id: str, request_id: str, *, timeout_s: float
+    ) -> dict:
+        self._consume("server_event_show", timeout_s, server_id, request_id)
+        return deepcopy(self.event_details.get((server_id, request_id), {}))
+
     def server_fault(
         self, server_id: str, *, timeout_s: float | None = None
     ) -> str | None:
@@ -128,7 +169,14 @@ class _Cloud:
 
 
 class DecoyTeardownDeadlineTests(unittest.TestCase):
-    def _run(self, cloud: _Cloud, clock: _Clock, *, timeout_s: float = 10.0):
+    def _run(
+        self,
+        cloud: _Cloud,
+        clock: _Clock,
+        *,
+        timeout_s: float = 10.0,
+        grace_s: float = 3.0,
+    ):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         deploy_dir = Path(temporary.name)
@@ -146,6 +194,7 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
             mock.patch.object(teardown, "OpenStack", return_value=cloud),
             mock.patch.object(teardown, "TEARDOWN_TIMEOUT_S", timeout_s),
             mock.patch.object(teardown, "POLL_INTERVAL_S", 1.0),
+            mock.patch.object(teardown, "FORCE_DELETE_GRACE_S", grace_s),
             mock.patch.object(teardown.time, "monotonic", side_effect=clock.monotonic),
             mock.patch.object(teardown.time, "sleep", side_effect=clock.sleep),
             mock.patch.object(
@@ -213,22 +262,17 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
         )
         self.assertNotIn("server_fault", names)
 
-    def test_initial_error_is_repeatedly_force_deleted_while_it_remains_error(self):
+    def test_initial_error_first_force_delete_succeeds_without_recovery(self):
         clock = _Clock()
         cloud = _Cloud(
             clock,
             servers=[
                 [
                     _server("vm-error", "d-exact-error", "ERROR", "vol-error"),
-                    _server("vm-active", "d-exact-active", "ACTIVE", "vol-active"),
                 ],
-                [_server("vm-error", "d-exact-error", "ERROR", "vol-error")],
                 [],
             ],
-            volumes=[
-                {"vol-error": "available", "vol-active": "available"},
-                {},
-            ],
+            volumes=[{"vol-error": "available"}, {}],
             faults={"vm-error": "must not be inspected on success"},
         )
         with mock.patch.object(teardown, "make_vm_prefix", return_value="d-exact-"):
@@ -241,20 +285,146 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
         )
         self.assertEqual(
             [call for call in cloud.calls if call[0] == "server_force_delete_many"],
+            [("server_force_delete_many", ("vm-error",))],
+        )
+        self.assertFalse(any(call[0] == "server_reset_state_active" for call in cloud.calls))
+        self.assertFalse(any(call[0] == "server_fault" for call in cloud.calls))
+
+    def test_normal_delete_is_submitted_once_without_recovery(self):
+        clock = _Clock()
+        cloud = _Cloud(
+            clock,
+            servers=[
+                [_server("vm-active", "d-exact-active", "ACTIVE", "vol-1")],
+                [],
+            ],
+            volumes=[{"vol-1": "available"}, {}],
+        )
+        with mock.patch.object(teardown, "make_vm_prefix", return_value="d-exact-"):
+            result, final_calls, _ = self._run(cloud, clock)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(final_calls), 1)
+        self.assertEqual(
+            [call for call in cloud.calls if call[0] == "server_delete_many"],
+            [("server_delete_many", ("vm-active",), False)],
+        )
+        self.assertFalse(any(
+            call[0] in {
+                "server_force_delete_many",
+                "server_reset_state_active",
+                "server_stop",
+            }
+            for call in cloud.calls
+        ))
+
+    def test_stuck_error_runs_one_recovery_sequence_then_disappears(self):
+        clock = _Clock()
+        error = _server("vm-error", "d-exact-error", "ERROR", "vol-error")
+        cloud = _Cloud(
+            clock,
+            servers=[
+                [error],
+                [error],
+                [error],
+                [error],
+                [error],
+                [_server("vm-error", "d-exact-error", "ACTIVE", "vol-error")],
+                [_server("vm-error", "d-exact-error", "ACTIVE", "vol-error")],
+                [_server("vm-error", "d-exact-error", "SHUTOFF", "vol-error")],
+                [],
+            ],
+            volumes=[{"vol-error": "available"}, {}],
+        )
+        with mock.patch.object(teardown, "make_vm_prefix", return_value="d-exact-"):
+            result, final_calls, _ = self._run(cloud, clock)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(final_calls), 1)
+        self.assertEqual(
+            [call for call in cloud.calls if call[0] == "server_force_delete_many"],
             [
                 ("server_force_delete_many", ("vm-error",)),
                 ("server_force_delete_many", ("vm-error",)),
             ],
         )
         self.assertEqual(
-            [call for call in cloud.calls if call[0] == "server_delete_many"],
-            [("server_delete_many", ("vm-active",), False)],
+            [call for call in cloud.calls if call[0] == "server_reset_state_active"],
+            [("server_reset_state_active", "vm-error")],
+        )
+        self.assertEqual(
+            [call for call in cloud.calls if call[0] == "server_stop"],
+            [("server_stop", "vm-error")],
         )
         names = [call[0] for call in cloud.calls]
-        self.assertLess(
-            names.index("server_force_delete_many"), names.index("server_delete_many")
+        self.assertGreater(
+            names.index("volume_statuses"),
+            max(
+                index for index, item in enumerate(names)
+                if item == "server_force_delete_many"
+            ),
         )
-        self.assertFalse(any(call[0] == "server_fault" for call in cloud.calls))
+
+    def test_force_delete_is_not_repeated_during_75_second_grace(self):
+        self.assertEqual(teardown.FORCE_DELETE_GRACE_S, 75.0)
+        clock = _Clock()
+        error = _server("vm-error", "d-exact-error", "ERROR", "vol-error")
+        cloud = _Cloud(clock, servers=[[error]], call_cost=0.0)
+        with mock.patch.object(teardown, "make_vm_prefix", return_value="d-exact-"):
+            result, final_calls, _ = self._run(
+                cloud, clock, timeout_s=5.0, grace_s=75.0
+            )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(final_calls, [])
+        self.assertEqual(
+            [call for call in cloud.calls if call[0] == "server_force_delete_many"],
+            [("server_force_delete_many", ("vm-error",))],
+        )
+        self.assertFalse(any(call[0] == "server_reset_state_active" for call in cloud.calls))
+
+    def test_recovery_requires_idle_task_and_nonzero_power_state(self):
+        error = _server("vm-error", "d-exact-error", "ERROR", "vol-error")
+        cases = (
+            ("task running", {"task_state": "deleting", "power_state": 1}),
+            ("powered off", {"task_state": None, "power_state": 0}),
+        )
+        for name, lifecycle_fields in cases:
+            with self.subTest(name=name):
+                clock = _Clock()
+                cloud = _Cloud(
+                    clock,
+                    servers=[[error]],
+                    lifecycles={
+                        "vm-error": {
+                            "host": "axes-test.maas",
+                            "status": "ERROR",
+                            "vm_state": "error",
+                            "fault": None,
+                            **lifecycle_fields,
+                        }
+                    },
+                    call_cost=0.0,
+                )
+                with mock.patch.object(
+                    teardown, "make_vm_prefix", return_value="d-exact-"
+                ):
+                    result, final_calls, _ = self._run(
+                        cloud, clock, timeout_s=4.0, grace_s=1.0
+                    )
+                self.assertEqual(result, 1)
+                self.assertEqual(final_calls, [])
+                self.assertEqual(
+                    len([
+                        call for call in cloud.calls
+                        if call[0] == "server_force_delete_many"
+                    ]),
+                    1,
+                )
+                self.assertFalse(any(
+                    call[0] == "server_reset_state_active"
+                    for call in cloud.calls
+                ))
 
     def test_nonzero_force_delete_succeeds_when_exact_vm_is_verified_absent(self):
         clock = _Clock()
@@ -317,7 +487,60 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
             [("volume_delete_many", ("vol-1",))],
         )
 
-    def test_nonzero_delete_with_remaining_error_vm_times_out_without_finalizing(self):
+    def test_nonzero_reset_or_stop_reconciles_absent_vm(self):
+        error = _server("vm-error", "d-exact-one", "ERROR", "vol-error")
+        cases = (
+            (
+                "reset",
+                [[error], [error], []],
+                {"reset_ok": False},
+                "server_reset_state_active",
+            ),
+            (
+                "stop",
+                [
+                    [error],
+                    [error],
+                    [_server("vm-error", "d-exact-one", "ACTIVE", "vol-error")],
+                    [],
+                ],
+                {"stop_ok": False},
+                "server_stop",
+            ),
+        )
+        for name, snapshots, options, expected_command in cases:
+            with self.subTest(name=name):
+                clock = _Clock()
+                cloud = _Cloud(
+                    clock,
+                    servers=snapshots,
+                    volumes=[{"vol-error": "available"}, {}],
+                    **options,
+                )
+                with mock.patch.object(
+                    teardown, "make_vm_prefix", return_value="d-exact-"
+                ):
+                    result, final_calls, _ = self._run(
+                        cloud, clock, grace_s=0.0
+                    )
+                self.assertEqual(result, 0)
+                self.assertEqual(len(final_calls), 1)
+                self.assertEqual(
+                    len([
+                        call for call in cloud.calls
+                        if call[0] == expected_command
+                    ]),
+                    1,
+                )
+                self.assertEqual(
+                    len([
+                        call for call in cloud.calls
+                        if call[0] == "server_force_delete_many"
+                    ]),
+                    1,
+                )
+
+    def test_failed_recovery_reports_lifecycle_and_event_without_finalizing(self):
         clock = _Clock()
         exact = _server("vm-error", "d-exact-one", "ERROR", "vol-error")
         cloud = _Cloud(
@@ -326,24 +549,65 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
                 [_server("vm-error", "d-exact-one", "ACTIVE", "vol-error")],
                 [exact],
                 [exact],
+                [exact],
+                [_server("vm-error", "d-exact-one", "ACTIVE", "vol-error")],
+                [_server("vm-error", "d-exact-one", "SHUTOFF", "vol-error")],
+                [exact],
             ],
             volumes=[{"vol-error": "in-use"}],
             force_ok=False,
-            faults={"vm-error": "No valid host"},
+            lifecycles={
+                "vm-error": {
+                    "host": "axes-2u19.maas",
+                    "status": "ERROR",
+                    "vm_state": "error",
+                    "task_state": None,
+                    "power_state": 1,
+                    "fault": "InternalServerError",
+                }
+            },
+            events={
+                "vm-error": [{
+                    "Request ID": "req-final",
+                    "Action": "delete",
+                    "Start Time": "2026-08-28T23:11:00Z",
+                }]
+            },
+            event_details={
+                ("vm-error", "req-final"): {
+                    "events": [{
+                        "event": "compute_terminate_instance",
+                        "result": "Error",
+                        "start_time": "2026-08-28T23:11:00Z",
+                        "finish_time": "2026-08-28T23:12:02Z",
+                    }]
+                }
+            },
+            call_cost=0.0,
         )
         with mock.patch.object(teardown, "make_vm_prefix", return_value="d-exact-"):
-            result, final_calls, rendered = self._run(cloud, clock)
+            result, final_calls, rendered = self._run(
+                cloud, clock, timeout_s=8.0, grace_s=1.0
+            )
 
         self.assertEqual(result, 1)
         self.assertEqual(final_calls, [])
         self.assertIn("five-minute teardown deadline expired", rendered)
-        self.assertIn("d-exact-one id=vm-error status=ERROR", rendered)
+        self.assertIn("d-exact-one id=vm-error host=axes-2u19.maas", rendered)
+        self.assertIn(
+            "status=ERROR vm_state=error task_state=null power_state=1", rendered
+        )
+        self.assertIn("fault=InternalServerError", rendered)
+        self.assertIn("request_id=req-final compute_result=Error", rendered)
+        self.assertIn("start=2026-08-28T23:11:00Z", rendered)
+        self.assertIn("finish=2026-08-28T23:12:02Z", rendered)
         self.assertIn("Registry record remains open; SSH state was preserved", rendered)
-        self.assertGreater(
+        self.assertEqual(
             len([call for call in cloud.calls if call[0] == "server_force_delete_many"]),
-            1,
+            2,
         )
         self.assertFalse(any(call[0] == "finalize" for call in cloud.calls))
+        self.assertFalse(any(call[0] == "volume_statuses" for call in cloud.calls))
 
     def test_one_deadline_times_out_without_closing_or_resetting(self):
         clock = _Clock()
@@ -399,6 +663,11 @@ class DecoyTeardownDeadlineTests(unittest.TestCase):
                 / "teardown.yaml"
             ).exists()
         )
+        self.assertEqual(
+            source.count("time.monotonic() + TEARDOWN_TIMEOUT_S"), 1
+        )
+        self.assertNotIn("server_status_map", source)
+        self.assertNotIn("server_list_with_ids", source)
 
 
 class OpenStackCohortTests(unittest.TestCase):
@@ -447,6 +716,101 @@ class OpenStackCohortTests(unittest.TestCase):
         self.assertNotIn("Volumes Attached", command.call_args_list[0].args)
         self.assertEqual(command.call_args_list[0].kwargs["timeout_s"], 17.0)
         self.assertEqual(command.call_args_list[1].kwargs["timeout_s"], 16.0)
+
+    def test_exact_server_recovery_commands_and_lifecycle_fields(self):
+        lifecycle_result = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({
+                "OS-EXT-SRV-ATTR:host": "axes-2u19.maas",
+                "status": "ERROR",
+                "OS-EXT-STS:vm_state": "error",
+                "OS-EXT-STS:task_state": None,
+                "OS-EXT-STS:power_state": 1,
+                "fault": {"message": "InternalServerError"},
+            }),
+            "",
+        )
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        client = OpenStack()
+        with mock.patch.object(
+            client, "_run", side_effect=[lifecycle_result, ok, ok]
+        ) as command:
+            lifecycle = client.server_lifecycle("vm-exact", timeout_s=30.0)
+            reset = client.server_reset_state_active(
+                "vm-exact", timeout_s=29.0
+            )
+            stopped = client.server_stop("vm-exact", timeout_s=28.0)
+
+        self.assertEqual(
+            lifecycle,
+            {
+                "host": "axes-2u19.maas",
+                "status": "ERROR",
+                "vm_state": "error",
+                "task_state": None,
+                "power_state": 1,
+                "fault": '{"message":"InternalServerError"}',
+            },
+        )
+        self.assertTrue(reset)
+        self.assertTrue(stopped)
+        self.assertEqual(
+            command.call_args_list[1].args,
+            ("server", "set", "--state", "active", "vm-exact"),
+        )
+        self.assertEqual(
+            command.call_args_list[2].args,
+            ("server", "stop", "vm-exact"),
+        )
+
+    def test_exact_server_event_queries_use_server_and_request_ids(self):
+        list_result = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps([{"Request ID": "req-delete", "Action": "delete"}]),
+            "",
+        )
+        show_result = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({
+                "events": [{
+                    "event": "compute_terminate_instance",
+                    "result": "Error",
+                }]
+            }),
+            "",
+        )
+        client = OpenStack()
+        with mock.patch.object(
+            client, "_run", side_effect=[list_result, show_result]
+        ) as command:
+            events = client.server_events("vm-exact", timeout_s=27.0)
+            details = client.server_event_show(
+                "vm-exact", "req-delete", timeout_s=26.0
+            )
+
+        self.assertEqual(events[0]["Request ID"], "req-delete")
+        self.assertEqual(
+            details["events"][0]["event"], "compute_terminate_instance"
+        )
+        self.assertEqual(
+            command.call_args_list[0].args,
+            ("server", "event", "list", "vm-exact", "-f", "json"),
+        )
+        self.assertEqual(
+            command.call_args_list[1].args,
+            (
+                "server",
+                "event",
+                "show",
+                "vm-exact",
+                "req-delete",
+                "-f",
+                "json",
+            ),
+        )
 
 
 if __name__ == "__main__":

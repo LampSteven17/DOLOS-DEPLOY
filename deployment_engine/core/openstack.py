@@ -163,6 +163,50 @@ class OpenStack:
         )
         return _attached_volume_ids(attached)
 
+    def server_lifecycle(
+        self, server_id: str, *, timeout_s: float | None = None
+    ) -> dict:
+        """Return exact-server lifecycle fields used by bounded teardown."""
+        result = self._run(
+            "server", "show", server_id, "-f", "json",
+            check=False, timeout_s=timeout_s,
+        )
+        if result.returncode != 0:
+            raise OpenStackCommandError(
+                f"server lifecycle query failed for {server_id}: "
+                f"{result.stderr.strip() or 'unknown error'}"
+            )
+        try:
+            details = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise OpenStackCommandError(
+                f"server lifecycle query returned invalid JSON for {server_id}"
+            ) from exc
+        if not isinstance(details, dict):
+            raise OpenStackCommandError(
+                f"server lifecycle query did not return an object for {server_id}"
+            )
+        fault = details.get("fault", details.get("Fault"))
+        if isinstance(fault, dict):
+            fault = json.dumps(fault, sort_keys=True, separators=(",", ":"))
+        return {
+            "host": details.get(
+                "OS-EXT-SRV-ATTR:host",
+                details.get("host", details.get("Host")),
+            ),
+            "status": details.get("status", details.get("Status")),
+            "vm_state": details.get(
+                "OS-EXT-STS:vm_state", details.get("vm_state")
+            ),
+            "task_state": details.get(
+                "OS-EXT-STS:task_state", details.get("task_state")
+            ),
+            "power_state": details.get(
+                "OS-EXT-STS:power_state", details.get("power_state")
+            ),
+            "fault": fault,
+        }
+
     def server_delete(self, server_id: str) -> bool:
         """Delete a server by ID. Returns True on success."""
         result = self._run("server", "delete", server_id, check=False)
@@ -203,6 +247,26 @@ class OpenStack:
             *server_ids,
             check=False,
             timeout_s=timeout_s,
+        )
+        return result.returncode == 0
+
+    def server_reset_state_active(
+        self, server_id: str, *, timeout_s: float | None = None
+    ) -> bool:
+        """Reset one exact server's administrative state to ACTIVE."""
+        result = self._run(
+            "server", "set", "--state", "active", server_id,
+            check=False, timeout_s=timeout_s,
+        )
+        return result.returncode == 0
+
+    def server_stop(
+        self, server_id: str, *, timeout_s: float | None = None
+    ) -> bool:
+        """Request shutdown of one exact server ID."""
+        result = self._run(
+            "server", "stop", server_id,
+            check=False, timeout_s=timeout_s,
         )
         return result.returncode == 0
 
@@ -317,6 +381,62 @@ class OpenStack:
         if isinstance(fault, str):
             return fault
         return json.dumps(fault, sort_keys=True, separators=(",", ":"))
+
+    def server_events(
+        self, server_id: str, *, timeout_s: float | None = None
+    ) -> list[dict]:
+        """Return Nova instance-action summaries for one exact server."""
+        result = self._run(
+            "server", "event", "list", server_id, "-f", "json",
+            check=False, timeout_s=timeout_s,
+        )
+        if result.returncode != 0:
+            raise OpenStackCommandError(
+                f"server event list failed for {server_id}: "
+                f"{result.stderr.strip() or 'unknown error'}"
+            )
+        try:
+            events = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise OpenStackCommandError(
+                f"server event list returned invalid JSON for {server_id}"
+            ) from exc
+        if not isinstance(events, list):
+            raise OpenStackCommandError(
+                f"server event list did not return a list for {server_id}"
+            )
+        return [event for event in events if isinstance(event, dict)]
+
+    def server_event_show(
+        self,
+        server_id: str,
+        request_id: str,
+        *,
+        timeout_s: float | None = None,
+    ) -> dict:
+        """Return one Nova instance-action event by exact server/request ID."""
+        result = self._run(
+            "server", "event", "show", server_id, request_id, "-f", "json",
+            check=False, timeout_s=timeout_s,
+        )
+        if result.returncode != 0:
+            raise OpenStackCommandError(
+                f"server event show failed for {server_id}/{request_id}: "
+                f"{result.stderr.strip() or 'unknown error'}"
+            )
+        try:
+            event = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise OpenStackCommandError(
+                f"server event show returned invalid JSON for "
+                f"{server_id}/{request_id}"
+            ) from exc
+        if not isinstance(event, dict):
+            raise OpenStackCommandError(
+                f"server event show did not return an object for "
+                f"{server_id}/{request_id}"
+            )
+        return event
 
     def volume_statuses(
         self, volume_ids: set[str], *, timeout_s: float | None = None

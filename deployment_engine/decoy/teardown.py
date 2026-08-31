@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from ..core.vm_naming import make_run_dep_id, make_vm_prefix
 
 TEARDOWN_TIMEOUT_S = 300.0
 POLL_INTERVAL_S = 5.0
+FORCE_DELETE_GRACE_S = 75.0
 
 
 class TeardownDeadlineExpired(RuntimeError):
@@ -21,7 +23,7 @@ class TeardownDeadlineExpired(RuntimeError):
 
 
 class TeardownOperationFailed(RuntimeError):
-    """A scoped OpenStack delete request failed."""
+    """A scoped teardown operation reached an unsafe resource state."""
 
 
 def run_decoy_teardown(
@@ -41,8 +43,8 @@ def run_decoy_teardown(
     last_servers: list[dict] = []
     captured_volumes: set[str] = set()
     last_volumes: dict[str, str] = {}
-    ordinary_requested_ids: set[str] = set()
-    ever_forced_ids: set[str] = set()
+    delete_states: dict[str, dict] = {}
+    failure_evidence: dict[str, dict] = {}
     volume_inspected_ids: set[str] = set()
 
     try:
@@ -55,19 +57,10 @@ def run_decoy_teardown(
             captured_volumes,
             deadline,
         )
-        if last_servers:
-            _delete_exact_servers(
-                os_client,
-                last_servers,
-                ordinary_requested_ids,
-                ever_forced_ids,
-                deadline,
-            )
-        else:
+        if not last_servers:
             output.info("  No Decoy VMs found")
 
         while last_servers:
-            last_servers = _query_servers(os_client, vm_prefix, deadline)
             _capture_attached_volumes(
                 os_client,
                 last_servers,
@@ -75,23 +68,24 @@ def run_decoy_teardown(
                 captured_volumes,
                 deadline,
             )
-            if not last_servers:
-                break
-
-            # A same-run VM appearing during the poll is still exact-scope.
-            # Capture its volume before issuing its first delete request.
-            _delete_exact_servers(
+            last_servers, advanced = _advance_server_deletion(
                 os_client,
+                vm_prefix,
                 last_servers,
-                ordinary_requested_ids,
-                ever_forced_ids,
+                delete_states,
+                failure_evidence,
                 deadline,
             )
+            if not last_servers:
+                break
+            if advanced:
+                continue
 
             output.info(
                 f"  Waiting for {len(last_servers)} exact VMs to disappear..."
             )
             _sleep_within_deadline(deadline)
+            last_servers = _query_servers(os_client, vm_prefix, deadline)
 
         output.info(f"  Verified: 0 VMs remaining (prefix: {vm_prefix})")
 
@@ -163,9 +157,19 @@ def run_decoy_teardown(
             last_servers,
             last_volumes,
         )
-        faults = _collect_remaining_faults(os_client, last_servers, deadline)
+        _collect_remaining_evidence(
+            os_client, last_servers, deadline, failure_evidence
+        )
+        faults = _collect_remaining_faults(
+            os_client, last_servers, deadline, failure_evidence
+        )
         _report_incomplete(
-            reason, last_servers, faults, captured_volumes, last_volumes
+            reason,
+            last_servers,
+            faults,
+            failure_evidence,
+            captured_volumes,
+            last_volumes,
         )
         return 1
 
@@ -209,50 +213,184 @@ def _capture_attached_volumes(
         inspected_ids.add(server_id)
 
 
-def _delete_exact_servers(
+def _advance_server_deletion(
     os_client: OpenStack,
+    vm_prefix: str,
     servers: list[dict],
-    ordinary_requested_ids: set[str],
-    ever_forced_ids: set[str],
+    states: dict[str, dict],
+    evidence: dict[str, dict],
     deadline: float,
-) -> None:
+) -> tuple[list[dict], bool]:
+    """Advance at most one deletion transition, then reconcile the cohort."""
+    for server in servers:
+        states.setdefault(
+            server["id"],
+            {
+                "ordinary_requested": False,
+                "first_force_at": None,
+                "recovery_started": False,
+                "final_force_requested": False,
+            },
+        )
+
     error_ids = [
-        server["id"]
-        for server in servers
+        server["id"] for server in servers
         if server["status"].upper() == "ERROR"
+        and states[server["id"]]["first_force_at"] is None
     ]
     if error_ids:
+        requested_at = time.monotonic()
+        for server_id in error_ids:
+            states[server_id]["first_force_at"] = requested_at
         delete_ok = os_client.server_force_delete_many(
             error_ids, timeout_s=_remaining(deadline)
         )
         if delete_ok:
-            ever_forced_ids.update(error_ids)
             output.info(f"  Force-delete requested for {len(error_ids)} ERROR VMs")
         else:
             output.info(
                 "  Force-delete command returned nonzero; "
                 "reconciling exact VM cohort"
             )
+        return _query_servers(os_client, vm_prefix, deadline), True
 
     ordinary_ids = [
         server["id"]
         for server in servers
         if server["status"].upper() != "ERROR"
-        and server["id"] not in ordinary_requested_ids
-        and server["id"] not in ever_forced_ids
+        and not states[server["id"]]["ordinary_requested"]
+        and states[server["id"]]["first_force_at"] is None
     ]
     if ordinary_ids:
+        for server_id in ordinary_ids:
+            states[server_id]["ordinary_requested"] = True
         delete_ok = os_client.server_delete_many(
             ordinary_ids, wait=False, timeout_s=_remaining(deadline)
         )
         if delete_ok:
-            ordinary_requested_ids.update(ordinary_ids)
             output.info(f"  Delete requested for {len(ordinary_ids)} exact VMs")
         else:
             output.info(
                 "  VM delete command returned nonzero; "
                 "reconciling exact VM cohort"
             )
+        return _query_servers(os_client, vm_prefix, deadline), True
+
+    now = time.monotonic()
+    for server in servers:
+        state = states[server["id"]]
+        first_force_at = state["first_force_at"]
+        if (
+            server["status"].upper() != "ERROR"
+            or first_force_at is None
+            or state["recovery_started"]
+            or now - first_force_at < FORCE_DELETE_GRACE_S
+        ):
+            continue
+
+        try:
+            lifecycle = os_client.server_lifecycle(
+                server["id"], timeout_s=_remaining(deadline)
+            )
+        except OpenStackCommandError:
+            refreshed = _query_servers(os_client, vm_prefix, deadline)
+            if _find_server(refreshed, server["id"]) is None:
+                return refreshed, True
+            raise
+        evidence.setdefault(server["id"], {})["lifecycle"] = lifecycle
+        if not _is_recoverable_stuck_error(lifecycle):
+            continue
+        return (
+            _recover_stuck_error(
+                os_client,
+                vm_prefix,
+                server,
+                state,
+                evidence,
+                deadline,
+            ),
+            True,
+        )
+
+    return servers, False
+
+
+def _recover_stuck_error(
+    os_client: OpenStack,
+    vm_prefix: str,
+    server: dict,
+    state: dict,
+    evidence: dict[str, dict],
+    deadline: float,
+) -> list[dict]:
+    """Run the one allowed exact-ID recovery sequence for a stuck ERROR VM."""
+    server_id = server["id"]
+    state["recovery_started"] = True
+    output.info(
+        f"  Recovering stuck ERROR VM {server['name']} ({server_id}): "
+        "reset ACTIVE, stop, then final force-delete"
+    )
+
+    reset_ok = os_client.server_reset_state_active(
+        server_id, timeout_s=_remaining(deadline)
+    )
+    servers = _query_servers(os_client, vm_prefix, deadline)
+    if _find_server(servers, server_id) is None:
+        return servers
+    if not reset_ok:
+        output.info("  Reset-state returned nonzero; exact VM still present")
+
+    stop_ok = os_client.server_stop(server_id, timeout_s=_remaining(deadline))
+    servers = _query_servers(os_client, vm_prefix, deadline)
+    if _find_server(servers, server_id) is None:
+        return servers
+    if not stop_ok:
+        output.info("  Stop returned nonzero; proceeding to final force-delete")
+
+    if reset_ok and stop_ok:
+        while True:
+            current = _find_server(servers, server_id)
+            if current is None:
+                return servers
+            if current["status"].upper() in {"SHUTOFF", "ERROR"}:
+                break
+            _sleep_within_deadline(deadline)
+            servers = _query_servers(os_client, vm_prefix, deadline)
+
+    state["final_force_requested"] = True
+    delete_ok = os_client.server_force_delete_many(
+        [server_id], timeout_s=_remaining(deadline)
+    )
+    if delete_ok:
+        output.info(f"  Final force-delete requested for {server['name']}")
+    else:
+        output.info(
+            "  Final force-delete returned nonzero; reconciling exact VM"
+        )
+    servers = _query_servers(os_client, vm_prefix, deadline)
+    current = _find_server(servers, server_id)
+    if current is not None:
+        _collect_one_server_evidence(
+            os_client, current, deadline, evidence.setdefault(server_id, {})
+        )
+    return servers
+
+
+def _find_server(servers: list[dict], server_id: str) -> dict | None:
+    return next((server for server in servers if server["id"] == server_id), None)
+
+
+def _is_recoverable_stuck_error(lifecycle: dict) -> bool:
+    task_state = lifecycle.get("task_state")
+    task_idle = task_state is None or str(task_state).strip().lower() in {
+        "", "none", "null",
+    }
+    power_state = lifecycle.get("power_state")
+    try:
+        powered = int(str(power_state).strip()) != 0
+    except (TypeError, ValueError):
+        powered = False
+    return task_idle and powered
 
 
 def _sleep_within_deadline(deadline: float) -> None:
@@ -282,11 +420,20 @@ def _refresh_diagnostics(
 
 
 def _collect_remaining_faults(
-    os_client: OpenStack, servers: list[dict], deadline: float
+    os_client: OpenStack,
+    servers: list[dict],
+    deadline: float,
+    evidence: dict[str, dict],
 ) -> dict[str, str | None]:
     """Inspect failure-only faults within the original teardown deadline."""
     faults: dict[str, str | None] = {}
     for server in servers:
+        lifecycle = evidence.get(server["id"], {}).get("lifecycle", {})
+        if not isinstance(lifecycle, dict):
+            lifecycle = {}
+        if lifecycle.get("fault") not in (None, "", {}):
+            faults[server["id"]] = str(lifecycle["fault"])
+            continue
         try:
             timeout_s = _remaining(deadline)
         except TeardownDeadlineExpired:
@@ -300,10 +447,129 @@ def _collect_remaining_faults(
     return faults
 
 
+def _collect_remaining_evidence(
+    os_client: OpenStack,
+    servers: list[dict],
+    deadline: float,
+    evidence: dict[str, dict],
+) -> None:
+    """Best-effort lifecycle/event evidence under the original deadline."""
+    for server in servers:
+        try:
+            _remaining(deadline)
+        except TeardownDeadlineExpired:
+            return
+        _collect_one_server_evidence(
+            os_client, server, deadline, evidence.setdefault(server["id"], {})
+        )
+
+
+def _collect_one_server_evidence(
+    os_client: OpenStack,
+    server: dict,
+    deadline: float,
+    evidence: dict,
+) -> None:
+    """Capture exact-server lifecycle and latest delete event when possible."""
+    try:
+        lifecycle = os_client.server_lifecycle(
+            server["id"], timeout_s=_remaining(deadline)
+        )
+    except (
+        OpenStackCommandError,
+        TeardownDeadlineExpired,
+        subprocess.TimeoutExpired,
+    ):
+        return
+    if not isinstance(lifecycle, dict):
+        return
+    evidence["lifecycle"] = lifecycle
+
+    try:
+        events = os_client.server_events(
+            server["id"], timeout_s=_remaining(deadline)
+        )
+    except (
+        OpenStackCommandError,
+        TeardownDeadlineExpired,
+        subprocess.TimeoutExpired,
+    ):
+        return
+    if not isinstance(events, list):
+        return
+    delete_events = [
+        event for event in events
+        if "delete" in str(_event_value(event, "Action", "action") or "").lower()
+    ]
+    if not delete_events:
+        return
+    summary = max(
+        delete_events,
+        key=lambda event: str(
+            _event_value(
+                event,
+                "Start Time",
+                "start_time",
+                "Created At",
+                "created_at",
+            ) or ""
+        ),
+    )
+    request_id = _event_value(
+        summary, "Request ID", "Request Id", "request_id"
+    )
+    if not request_id:
+        return
+    try:
+        details = os_client.server_event_show(
+            server["id"], str(request_id), timeout_s=_remaining(deadline)
+        )
+    except (
+        OpenStackCommandError,
+        TeardownDeadlineExpired,
+        subprocess.TimeoutExpired,
+    ):
+        return
+    compute_events = details.get("events", details.get("Events", []))
+    if isinstance(compute_events, str):
+        try:
+            compute_events = json.loads(compute_events)
+        except (TypeError, json.JSONDecodeError):
+            compute_events = []
+    if not isinstance(compute_events, list):
+        compute_events = []
+    compute = next(
+        (
+            item for item in reversed(compute_events)
+            if isinstance(item, dict)
+            and _event_value(item, "event", "Event") == "compute_terminate_instance"
+        ),
+        None,
+    )
+    evidence["delete_event"] = {
+        "request_id": str(request_id),
+        "result": _event_value(compute or {}, "result", "Result"),
+        "start": _event_value(
+            compute or summary, "start_time", "Start Time", "created_at"
+        ),
+        "finish": _event_value(
+            compute or details, "finish_time", "Finish Time", "updated_at"
+        ),
+    }
+
+
+def _event_value(mapping: dict, *keys: str):
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return None
+
+
 def _report_incomplete(
     reason: str,
     servers: list[dict],
     faults: dict[str, str | None],
+    evidence: dict[str, dict],
     captured_volumes: set[str],
     volumes: dict[str, str],
 ) -> None:
@@ -311,11 +577,28 @@ def _report_incomplete(
     output.error("  Remaining exact VMs:")
     if servers:
         for server in servers:
+            lifecycle = evidence.get(server["id"], {}).get("lifecycle", {})
+            if not isinstance(lifecycle, dict):
+                lifecycle = {}
             fault = faults.get(server["id"])
             output.error(
                 f"    {server['name']} id={server['id']} "
-                f"status={server['status']} fault={fault or 'none reported'}"
+                f"host={lifecycle.get('host') or 'unknown'} "
+                f"status={server['status']} "
+                f"vm_state={lifecycle.get('vm_state') or 'unknown'} "
+                f"task_state={_display_value(lifecycle.get('task_state'))} "
+                f"power_state={_display_value(lifecycle.get('power_state'))} "
+                f"fault={fault or 'none reported'}"
             )
+            delete_event = evidence.get(server["id"], {}).get("delete_event")
+            if delete_event:
+                output.error(
+                    "      latest_delete_event "
+                    f"request_id={delete_event['request_id']} "
+                    f"compute_result={delete_event.get('result') or 'unknown'} "
+                    f"start={delete_event.get('start') or 'unknown'} "
+                    f"finish={delete_event.get('finish') or 'unknown'}"
+                )
     else:
         output.error("    none in last successful cohort query")
     output.error("  Captured boot volumes:")
@@ -326,3 +609,7 @@ def _report_incomplete(
     else:
         output.error("    none captured")
     output.error("  Registry record remains open; SSH state was preserved.")
+
+
+def _display_value(value) -> str:
+    return "null" if value is None else str(value)
