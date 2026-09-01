@@ -21,6 +21,9 @@ from .core.teardown_steps import find_hosts_ini
 from .list import has_exact_run_vm
 
 
+FILTERED_TEARDOWN_WORKERS = 3
+
+
 def run_teardown(target: str, deploy_dir: Path) -> int:
     """Teardown one run addressed by deployment name and UTC run ID.
 
@@ -168,8 +171,9 @@ def run_teardown_filtered(
     #   - each PHASE run closes under its own run-directory lock
     #   - per-deploy state lives in distinct config_dir/runs/{rid}/ trees
     #   - OpenStack handles concurrent server/volume DELETEs natively
-    # Sequential serial run was 8 × ~3min = ~25min; parallel run is bounded
-    # by the slowest single teardown (~3min).
+    # Bound cloud pressure to three deployments at a time. A queued child has
+    # no parent-side deadline; its full teardown deadline starts inside the
+    # child process only after a worker launches it.
     import subprocess
     import time as _time
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -205,7 +209,9 @@ def run_teardown_filtered(
 
     failures = 0
     completed = 0
-    with ThreadPoolExecutor(max_workers=len(matches)) as ex:
+    with ThreadPoolExecutor(
+        max_workers=min(FILTERED_TEARDOWN_WORKERS, len(matches))
+    ) as ex:
         futures = [
             ex.submit(_one, i, cn, rid)
             for i, (cn, rid, _) in enumerate(matches, 1)

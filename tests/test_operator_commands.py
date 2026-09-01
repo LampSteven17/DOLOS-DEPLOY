@@ -5,6 +5,8 @@ import os
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import redirect_stderr
 from datetime import datetime, timezone
@@ -482,6 +484,66 @@ class OperatorCommandTests(unittest.TestCase):
             rendered = stderr.getvalue()
             self.assertIn(f"{selected.name}/{CURRENT_RUN}", rendered)
             self.assertNotIn(f"{collided.name}/{CURRENT_RUN}", rendered)
+            self.assertEqual(cloud.status_map_calls, 1)
+
+    def test_filtered_teardown_limits_nine_deployments_to_three_workers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            deploy_dir = Path(temporary)
+            statuses = {}
+            for index in range(9):
+                config_dir = _write_config(deploy_dir, f"control-{index}")
+                (config_dir / "runs" / CURRENT_RUN).mkdir(parents=True)
+                prefix = make_vm_prefix(
+                    make_run_dep_id(config_dir.name, CURRENT_RUN)
+                )
+                statuses[prefix + "scripted-cpu-0"] = "ERROR"
+
+            cloud = _Cloud(statuses)
+            lock = threading.Lock()
+            first_wave = threading.Barrier(3)
+            active = 0
+            maximum_active = 0
+            launched: list[str] = []
+
+            def run_child(command, **kwargs):
+                nonlocal active, maximum_active
+                with lock:
+                    active += 1
+                    maximum_active = max(maximum_active, active)
+                    launched.append(command[-1])
+                    launch_number = len(launched)
+                try:
+                    if launch_number <= 3:
+                        first_wave.wait(timeout=2)
+                    time.sleep(0.01)
+                    self.assertEqual(kwargs["env"]["CI"], "1")
+                    self.assertNotIn("RUSE_TEARDOWN_DEADLINE", kwargs["env"])
+                    return subprocess.CompletedProcess(command, 0)
+                finally:
+                    with lock:
+                        active -= 1
+
+            with (
+                mock.patch.object(
+                    deployment_teardown, "OpenStack", return_value=cloud
+                ),
+                mock.patch.object(
+                    deployment_teardown.output, "confirm", return_value=True
+                ),
+                mock.patch("subprocess.run", side_effect=run_child),
+            ):
+                result = deployment_teardown.run_teardown_filtered(
+                    deploy_dir,
+                    types={
+                        "decoy": True,
+                        "rampart": False,
+                        "ghosts": False,
+                    },
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(launched), 9)
+            self.assertEqual(maximum_active, 3)
             self.assertEqual(cloud.status_map_calls, 1)
 
     def test_cleaned_run_is_not_selected_by_failed_filter(self):

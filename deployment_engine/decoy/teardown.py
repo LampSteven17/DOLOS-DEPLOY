@@ -230,8 +230,16 @@ def _advance_server_deletion(
                 "first_force_at": None,
                 "recovery_started": False,
                 "final_force_requested": False,
+                "prior_delete_request_ids": None,
             },
         )
+
+    for server in servers:
+        state = states[server["id"]]
+        if state["final_force_requested"]:
+            _fail_on_completed_final_delete_error(
+                os_client, server, state, evidence, deadline
+            )
 
     error_ids = [
         server["id"] for server in servers
@@ -326,9 +334,11 @@ def _recover_stuck_error(
     """Run the one allowed exact-ID recovery sequence for a stuck ERROR VM."""
     server_id = server["id"]
     state["recovery_started"] = True
+    powered_on = _is_powered_on(evidence[server_id]["lifecycle"])
+    stop_step = "stop, then " if powered_on else "skip stop, then "
     output.info(
         f"  Recovering stuck ERROR VM {server['name']} ({server_id}): "
-        "reset ACTIVE, stop, then final force-delete"
+        f"reset ACTIVE, {stop_step}final force-delete"
     )
 
     reset_ok = os_client.server_reset_state_active(
@@ -340,14 +350,20 @@ def _recover_stuck_error(
     if not reset_ok:
         output.info("  Reset-state returned nonzero; exact VM still present")
 
-    stop_ok = os_client.server_stop(server_id, timeout_s=_remaining(deadline))
-    servers = _query_servers(os_client, vm_prefix, deadline)
-    if _find_server(servers, server_id) is None:
-        return servers
-    if not stop_ok:
-        output.info("  Stop returned nonzero; proceeding to final force-delete")
+    stop_ok = True
+    if powered_on:
+        stop_ok = os_client.server_stop(
+            server_id, timeout_s=_remaining(deadline)
+        )
+        servers = _query_servers(os_client, vm_prefix, deadline)
+        if _find_server(servers, server_id) is None:
+            return servers
+        if not stop_ok:
+            output.info("  Stop returned nonzero; proceeding to final force-delete")
+    else:
+        output.info("  VM was powered off; skipping stop before final force-delete")
 
-    if reset_ok and stop_ok:
+    if powered_on and reset_ok and stop_ok:
         while True:
             current = _find_server(servers, server_id)
             if current is None:
@@ -357,6 +373,9 @@ def _recover_stuck_error(
             _sleep_within_deadline(deadline)
             servers = _query_servers(os_client, vm_prefix, deadline)
 
+    state["prior_delete_request_ids"] = _delete_request_ids(
+        os_client, server_id, deadline
+    )
     state["final_force_requested"] = True
     delete_ok = os_client.server_force_delete_many(
         [server_id], timeout_s=_remaining(deadline)
@@ -370,8 +389,8 @@ def _recover_stuck_error(
     servers = _query_servers(os_client, vm_prefix, deadline)
     current = _find_server(servers, server_id)
     if current is not None:
-        _collect_one_server_evidence(
-            os_client, current, deadline, evidence.setdefault(server_id, {})
+        _fail_on_completed_final_delete_error(
+            os_client, current, state, evidence, deadline
         )
     return servers
 
@@ -385,12 +404,70 @@ def _is_recoverable_stuck_error(lifecycle: dict) -> bool:
     task_idle = task_state is None or str(task_state).strip().lower() in {
         "", "none", "null",
     }
+    return task_idle
+
+
+def _is_powered_on(lifecycle: dict) -> bool:
     power_state = lifecycle.get("power_state")
     try:
-        powered = int(str(power_state).strip()) != 0
+        return int(str(power_state).strip()) != 0
     except (TypeError, ValueError):
-        powered = False
-    return task_idle and powered
+        return False
+
+
+def _delete_request_ids(
+    os_client: OpenStack, server_id: str, deadline: float
+) -> set[str] | None:
+    """Snapshot delete request IDs so only the final request can fail fast."""
+    try:
+        events = os_client.server_events(
+            server_id, timeout_s=_remaining(deadline)
+        )
+    except OpenStackCommandError:
+        return None
+    if not isinstance(events, list):
+        return None
+    return {
+        str(request_id)
+        for event in events
+        if "delete" in str(
+            _event_value(event, "Action", "action") or ""
+        ).lower()
+        if (request_id := _event_value(
+            event, "Request ID", "Request Id", "request_id"
+        ))
+    }
+
+
+def _fail_on_completed_final_delete_error(
+    os_client: OpenStack,
+    server: dict,
+    state: dict,
+    evidence: dict[str, dict],
+    deadline: float,
+) -> None:
+    """Fail promptly only for a completed error from the final delete request."""
+    prior_request_ids = state.get("prior_delete_request_ids")
+    if prior_request_ids is None:
+        return
+    current_evidence: dict = {}
+    _collect_one_server_evidence(
+        os_client, server, deadline, current_evidence
+    )
+    if current_evidence:
+        evidence.setdefault(server["id"], {}).update(current_evidence)
+    delete_event = current_evidence.get("delete_event")
+    if not isinstance(delete_event, dict):
+        return
+    request_id = delete_event.get("request_id")
+    if not request_id or request_id in prior_request_ids:
+        return
+    result = str(delete_event.get("result") or "").strip().lower()
+    if result == "error" and delete_event.get("finish"):
+        raise TeardownOperationFailed(
+            "final force-delete completed with Error for exact VM "
+            f"{server['name']} ({server['id']}), request_id={request_id}"
+        )
 
 
 def _sleep_within_deadline(deadline: float) -> None:
