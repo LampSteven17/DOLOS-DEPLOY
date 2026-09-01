@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import re
 from importlib.metadata import PackageNotFoundError, version
@@ -17,6 +18,7 @@ from phase_workflow.workflows import (
     KerberosShareAccess,
     MCHPDocumentWorkflows,
     OpenDocumentWriter,
+    SHARE_UNC,
     SeleniumResourceWorkflows,
     firefox_download,
     play_video_realtime,
@@ -409,6 +411,53 @@ def _browseruse_completed(result) -> bool:
         return False
 
 
+def _browseruse_action_evidence(
+    task: ResolvedTask, *, artifact: Optional[str] = None
+) -> str:
+    """Describe only evidence produced by the successful immutable action."""
+    fields = [
+        f"workflow={task.workflow}",
+        f"resource_id={task.resource_id}",
+    ]
+    resource = task.resource
+    if resource.get("url"):
+        fields.append(f"assigned_url={resource['url']}")
+    elif resource.get("video_id"):
+        fields.append(
+            "assigned_url=https://www.youtube.com/watch?v="
+            + str(resource["video_id"])
+        )
+    if task.workflow == "NetworkShareAccess":
+        fields.append(f"share={SHARE_UNC}/{resource['path']}")
+    if artifact is not None:
+        artifact_path = Path(artifact)
+        fields.append(f"artifact={artifact_path}")
+        if artifact_path.is_file():
+            fields.append(f"observed_bytes={artifact_path.stat().st_size}")
+    if resource.get("expected_bytes") is not None:
+        fields.append(f"expected_bytes={resource['expected_bytes']}")
+    if resource.get("play_seconds") is not None:
+        fields.extend((
+            f"expected_seconds={resource['play_seconds']}",
+            f"observed_seconds={resource['play_seconds']}",
+        ))
+    if resource.get("kind") in {"document", "spreadsheet"}:
+        fields.append(f"format={resource['kind']}")
+    return "verified assigned operation: " + " ".join(fields)
+
+
+async def _close_browseruse_resources(agent, browser_session) -> None:
+    """Close BrowserUse resources before their owning event loop exits."""
+    close = getattr(agent, "close", None)
+    if close is None:
+        close = getattr(browser_session, "close", None)
+    if close is None:
+        return
+    result = close()
+    if inspect.isawaitable(result):
+        await result
+
+
 def _require_distribution(name: str, expected: str) -> None:
     try:
         installed = version(name)
@@ -497,6 +546,8 @@ def browseruse_runner(
         )
         def play_assigned_video():
             message = playback.invoke()
+            if playback.completed:
+                message = _browseruse_action_evidence(task)
             return ActionResult(
                 is_done=True,
                 success=playback.completed,
@@ -518,6 +569,10 @@ def browseruse_runner(
         )
         def create_assigned_document():
             message = document.invoke()
+            if document.completed:
+                message = _browseruse_action_evidence(
+                    task, artifact=document.artifact
+                )
             return ActionResult(
                 is_done=True,
                 success=document.completed,
@@ -537,6 +592,10 @@ def browseruse_runner(
         )
         def download_assigned_file():
             message = assigned_download.invoke()
+            if assigned_download.completed:
+                message = _browseruse_action_evidence(
+                    task, artifact=assigned_download.artifact
+                )
             return ActionResult(
                 is_done=True,
                 success=assigned_download.completed,
@@ -560,6 +619,10 @@ def browseruse_runner(
             )
             def sync_assigned_document():
                 message = assigned_transfer.invoke()
+                if assigned_transfer.completed:
+                    message = _browseruse_action_evidence(
+                        task, artifact=assigned_transfer.artifact
+                    )
                 return ActionResult(
                     is_done=True,
                     success=assigned_transfer.completed,
@@ -574,6 +637,10 @@ def browseruse_runner(
             )
             def access_assigned_share():
                 message = assigned_transfer.invoke()
+                if assigned_transfer.completed:
+                    message = _browseruse_action_evidence(
+                        task, artifact=assigned_transfer.artifact
+                    )
                 return ActionResult(
                     is_done=True,
                     success=assigned_transfer.completed,
@@ -582,12 +649,13 @@ def browseruse_runner(
                 )
 
     async def run():
+        browser_session = BrowserSession(
+            headless=True, channel="chromium", args=chromium_args
+        )
         agent_kwargs = dict(
             task=structured_llm_task(task),
             llm=llm_factory(profile["model"]["ollama"], logger),
-            browser_session=BrowserSession(
-                headless=True, channel="chromium", args=chromium_args
-            ),
+            browser_session=browser_session,
             directly_open_url=False,
         )
         if tools is not None:
@@ -597,32 +665,35 @@ def browseruse_runner(
         elif assigned_download is not None or assigned_transfer is not None:
             agent_kwargs["step_timeout"] = 360
         agent = Agent(**agent_kwargs)
-        result = await agent.run(max_steps=profile["max_steps"])
-        step_logger(logger, result)
-        framework_completed = _browseruse_completed(result)
-        if playback is not None:
-            return WorkflowResult(
-                completed=playback.completed and framework_completed
-            )
-        if document is not None:
-            return WorkflowResult(
-                completed=document.completed and framework_completed,
-                artifact=document.artifact
-                if document.completed and framework_completed else None,
-            )
-        if assigned_download is not None:
-            result = assigned_download.result
-            return WorkflowResult(
-                completed=result.completed and framework_completed,
-                artifact=result.artifact if framework_completed else None,
-            )
-        if assigned_transfer is not None:
-            result = assigned_transfer.result
-            return WorkflowResult(
-                completed=result.completed and framework_completed,
-                artifact=result.artifact if framework_completed else None,
-            )
-        return WorkflowResult(completed=framework_completed)
+        try:
+            result = await agent.run(max_steps=profile["max_steps"])
+            step_logger(logger, result)
+            framework_completed = _browseruse_completed(result)
+            if playback is not None:
+                return WorkflowResult(
+                    completed=playback.completed and framework_completed
+                )
+            if document is not None:
+                return WorkflowResult(
+                    completed=document.completed and framework_completed,
+                    artifact=document.artifact
+                    if document.completed and framework_completed else None,
+                )
+            if assigned_download is not None:
+                result = assigned_download.result
+                return WorkflowResult(
+                    completed=result.completed and framework_completed,
+                    artifact=result.artifact if framework_completed else None,
+                )
+            if assigned_transfer is not None:
+                result = assigned_transfer.result
+                return WorkflowResult(
+                    completed=result.completed and framework_completed,
+                    artifact=result.artifact if framework_completed else None,
+                )
+            return WorkflowResult(completed=framework_completed)
+        finally:
+            await _close_browseruse_resources(agent, browser_session)
 
     return asyncio.run(run())
 

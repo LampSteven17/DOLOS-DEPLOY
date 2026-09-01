@@ -2,11 +2,17 @@ import os
 import sys
 import random
 import subprocess
+import tempfile
 import pyautogui
 from lorem.text import TextLorem
 from pathlib import Path
 from time import sleep
 from ..utility.base_workflow import BaseWorkflow
+from ..utility.libreoffice_gui import (
+    remove_profile,
+    wait_for_focused_window,
+    wait_for_stable_artifact,
+)
 
 
 # Platform detection
@@ -68,6 +74,7 @@ class DocumentEditor(BaseWorkflow):
         self.default_wait_time = default_wait_time
         self.open_office_path = open_office_path
         self._process = None
+        self._profile_dir = None
 
     def action(self, extra=None, logger=None):
         self._create_document(logger=logger)
@@ -81,6 +88,9 @@ class DocumentEditor(BaseWorkflow):
                 "open_application", category="office", message="LibreOffice Writer"
             )
         self._new_document()
+        pyautogui.hotkey("ctrl", "home")
+        pyautogui.hotkey("ctrl", "a")
+        pyautogui.press("backspace")
         if logger:
             logger.step_success("open_application")
 
@@ -225,13 +235,20 @@ class DocumentEditor(BaseWorkflow):
 
     def _new_document(self):
         if IS_LINUX:
-            # Launch LibreOffice Writer directly on Linux
+            self._profile_dir = Path(tempfile.mkdtemp(prefix="ruse-lo-writer-"))
             self._process = subprocess.Popen(
-                [LIBREOFFICE_CMD, '--writer'],
+                [
+                    LIBREOFFICE_CMD,
+                    f"-env:UserInstallation={self._profile_dir.resolve().as_uri()}",
+                    "--writer",
+                    "--norestore",
+                    "--nodefault",
+                    "--nofirststartwizard",
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            sleep(self.default_wait_time + 2)  # LibreOffice may take longer to start
+            wait_for_focused_window("LibreOffice Writer")
         else:
             # Windows: Use OpenOffice start menu
             os.startfile(self.open_office_path)
@@ -258,11 +275,7 @@ class DocumentEditor(BaseWorkflow):
         pyautogui.hotkey("ctrl", "a")
         pyautogui.write(str(artifact), interval=0.01)
         pyautogui.press("enter")
-        sleep(self.default_wait_time)
-        if not Path(artifact).is_file():
-            raise RuntimeError(
-                f"LibreOffice Writer did not save the assigned artifact: {artifact}"
-            )
+        wait_for_stable_artifact(Path(artifact))
         pyautogui.hotkey("ctrl", "q")
         sleep(self.default_wait_time)
 
@@ -277,5 +290,17 @@ class DocumentEditor(BaseWorkflow):
         if self._process:
             try:
                 self._process.terminate()
+                wait = getattr(self._process, "wait", None)
+                if wait is not None:
+                    wait(timeout=5)
             except Exception:
-                pass
+                kill = getattr(self._process, "kill", None)
+                if kill is not None:
+                    try:
+                        kill()
+                    except Exception:
+                        pass
+            finally:
+                self._process = None
+        remove_profile(self._profile_dir)
+        self._profile_dir = None

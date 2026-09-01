@@ -166,7 +166,7 @@ def firefox_download(
     monotonic: Callable[[], float] = time.monotonic,
     timeout_seconds: int = 360,
 ) -> Path:
-    """Download the assigned URL once through Firefox and validate its size."""
+    """Start the exact assigned download in Firefox without waiting on navigation."""
     if task.resource.get("kind") != "https_download":
         raise RuntimeError("FileDownload requires an https_download resource")
     workspace = Path(workspace)
@@ -175,22 +175,69 @@ def firefox_download(
     driver = getattr(owner, "driver", owner)
     deadline = monotonic() + timeout_seconds
     try:
-        driver.get(task.resource["url"])
+        navigation_error = None
+        try:
+            driver.execute_script(
+                """
+                const link = document.createElement('a');
+                link.href = arguments[0];
+                link.download = '';
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                """,
+                task.resource["url"],
+            )
+        except Exception as exc:
+            if not _is_navigation_timeout(exc):
+                raise
+            navigation_error = exc
         while monotonic() < deadline:
+            created = [path for path in workspace.iterdir() if path not in before]
+            partials = [
+                path for path in created
+                if path.name.endswith((".part", ".tmp"))
+            ]
             candidates = [
                 path for path in workspace.iterdir()
-                if path not in before and not path.name.endswith((".part", ".tmp"))
+                if path not in before
+                and path.is_file()
+                and not path.name.endswith((".part", ".tmp"))
+                and _matches_download_name(path, task.resource["url"])
             ]
-            if len(candidates) == 1:
+            if len(candidates) == 1 and not partials:
                 artifact = candidates[0]
                 if artifact.stat().st_size == task.resource["expected_bytes"]:
                     return artifact
             sleeper(0.25)
-        raise RuntimeError("assigned Firefox download did not complete at the exact size")
+        detail = f": {navigation_error}" if navigation_error else ""
+        raise RuntimeError(
+            "assigned Firefox download did not complete at the exact size"
+            + detail
+        )
     finally:
         cleanup = getattr(owner, "cleanup", None) or getattr(owner, "quit", None)
         if cleanup is not None:
             cleanup()
+
+
+def _is_navigation_timeout(exc: Exception) -> bool:
+    return isinstance(exc, TimeoutError) or type(exc).__name__ == "TimeoutException"
+
+
+def _matches_download_name(path: Path, url: str) -> bool:
+    expected = Path(urlsplit(url).path).name
+    if not expected:
+        return False
+    if path.name == expected:
+        return True
+    expected_path = Path(expected)
+    return (
+        path.suffix == expected_path.suffix
+        and path.stem.startswith(expected_path.stem + " (")
+        and path.stem.endswith(")")
+    )
 
 
 class HttpsDocumentSync:
@@ -474,14 +521,27 @@ class MCHPDocumentWorkflows:
             workflow = self._calc_factory()
         else:
             raise RuntimeError(f"unsupported DocumentCreation resource kind: {kind}")
-        try:
-            artifact = workflow.create_assigned(
-                task.resource, workspace, logger=self._logger
-            )
-        finally:
-            workflow.cleanup()
-        validate_open_document(task, workspace, artifact)
-        return WorkflowResult(completed=True, artifact=str(artifact))
+        expected_artifact = Path(workspace) / task.resource["filename"]
+        for attempt in range(2):
+            if attempt:
+                workflow = (
+                    self._writer_factory()
+                    if kind == "document"
+                    else self._calc_factory()
+                )
+            try:
+                artifact = workflow.create_assigned(
+                    task.resource, workspace, logger=self._logger
+                )
+                validate_open_document(task, workspace, artifact)
+                return WorkflowResult(completed=True, artifact=str(artifact))
+            except Exception:
+                expected_artifact.unlink(missing_ok=True)
+                if attempt:
+                    raise
+            finally:
+                workflow.cleanup()
+        raise RuntimeError("assigned LibreOffice artifact was not created")
 
     @staticmethod
     def _load_writer():

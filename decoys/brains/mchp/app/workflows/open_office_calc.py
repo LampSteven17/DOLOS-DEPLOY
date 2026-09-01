@@ -2,11 +2,17 @@ import os
 import sys
 import random
 import subprocess
+import tempfile
 import pyautogui
 from lorem.text import TextLorem
 from pathlib import Path
 from time import sleep
 from ..utility.base_workflow import BaseWorkflow
+from ..utility.libreoffice_gui import (
+    remove_profile,
+    wait_for_focused_window,
+    wait_for_stable_artifact,
+)
 
 
 # Platform detection
@@ -60,6 +66,7 @@ class SpreadsheetEditor(BaseWorkflow):
         self.default_wait_time = default_wait_time
         self.open_office_path = open_office_path
         self._process = None
+        self._profile_dir = None
 
     def action(self, extra=None, logger=None):
         self._create_spreadsheet(logger=logger)
@@ -73,6 +80,7 @@ class SpreadsheetEditor(BaseWorkflow):
                 "open_application", category="office", message="LibreOffice Calc"
             )
         self._new_spreadsheet()
+        pyautogui.hotkey("ctrl", "home")
         if logger:
             logger.step_success("open_application")
 
@@ -84,8 +92,7 @@ class SpreadsheetEditor(BaseWorkflow):
         for row_index, row in enumerate(rows, start=1):
             for column_index, value in enumerate(row):
                 column = chr(ord("A") + column_index)
-                self._move_to_cell([column, row_index])
-                pyautogui.write(str(value))
+                self._set_cell([column, row_index], value)
         if logger:
             logger.step_success("edit_content")
 
@@ -162,13 +169,20 @@ class SpreadsheetEditor(BaseWorkflow):
 
     def _new_spreadsheet(self):
         if IS_LINUX:
-            # Launch LibreOffice Calc directly on Linux
+            self._profile_dir = Path(tempfile.mkdtemp(prefix="ruse-lo-calc-"))
             self._process = subprocess.Popen(
-                [LIBREOFFICE_CMD, '--calc'],
+                [
+                    LIBREOFFICE_CMD,
+                    f"-env:UserInstallation={self._profile_dir.resolve().as_uri()}",
+                    "--calc",
+                    "--norestore",
+                    "--nodefault",
+                    "--nofirststartwizard",
+                ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            sleep(self.default_wait_time + 2)  # LibreOffice may take longer to start
+            wait_for_focused_window("LibreOffice Calc")
         else:
             # Windows: Use OpenOffice start menu
             os.startfile(self.open_office_path)
@@ -187,13 +201,20 @@ class SpreadsheetEditor(BaseWorkflow):
         pyautogui.hotkey('ctrl','q') # quit
 
     def _save_assigned(self, artifact):
-        pyautogui.hotkey("ctrl", "s")
+        pyautogui.hotkey("ctrl", "shift", "s")
         sleep(self.default_wait_time)
-        pyautogui.write(str(artifact))
+        pyautogui.hotkey("ctrl", "a")
+        pyautogui.write(str(artifact), interval=0.01)
         pyautogui.press("enter")
-        sleep(self.default_wait_time)
-        pyautogui.hotkey("alt", "y")
+        wait_for_stable_artifact(Path(artifact))
         pyautogui.hotkey("ctrl", "q")
+
+    def _set_cell(self, cell_coordinate, value):
+        self._move_to_cell(cell_coordinate)
+        pyautogui.press("f2")
+        pyautogui.hotkey("ctrl", "a")
+        pyautogui.write(str(value), interval=0.01)
+        pyautogui.press("enter")
 
     def _move_to_cell(self, cell_coordinate):
         # Use Ctrl+G for Go To dialog (works in both LibreOffice and OpenOffice)
@@ -222,5 +243,17 @@ class SpreadsheetEditor(BaseWorkflow):
         if self._process:
             try:
                 self._process.terminate()
+                wait = getattr(self._process, "wait", None)
+                if wait is not None:
+                    wait(timeout=5)
             except Exception:
-                pass
+                kill = getattr(self._process, "kill", None)
+                if kill is not None:
+                    try:
+                        kill()
+                    except Exception:
+                        pass
+            finally:
+                self._process = None
+        remove_profile(self._profile_dir)
+        self._profile_dir = None

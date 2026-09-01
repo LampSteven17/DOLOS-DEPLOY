@@ -18,7 +18,12 @@ from deployment_engine.decoy import spinup
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CONTROL_CONFIG = REPOSITORY_ROOT / "deployments" / "decoy-controls" / "config.yaml"
 CONTROL_ROOT = Path("/home/ubuntu/PHASE/plans/feedback-v2-rewrite/fixtures/controls")
-CURRENT_CONTROL_ROOT = Path("/data/axes-mirror/controls/2026-08-28_1847Z")
+CONTROL_GENERATION_ROOT = Path("/data/axes-mirror/controls")
+CURRENT_CONTROL_ROOT = max(
+    path
+    for path in CONTROL_GENERATION_ROOT.iterdir()
+    if path.is_dir() and feedback._is_decoy_generation_name(path.name)
+)
 CANONICAL = (
     "scripted-cpu",
     "mchp-cpu",

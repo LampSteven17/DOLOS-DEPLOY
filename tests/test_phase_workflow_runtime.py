@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import copy
 import importlib
 import json
@@ -1052,7 +1053,7 @@ class TransferWorkflowTests(unittest.TestCase):
                 self.assertEqual(calls, [(task, workspace)])
                 self.assertEqual(Path(result.artifact).stat().st_size, 1048576)
 
-    def test_mchp_firefox_download_navigates_once_and_requires_exact_size(self):
+    def test_mchp_firefox_download_uses_nonblocking_browser_action(self):
         task = self.task("mchp-cpu", "FileDownload")
         owners = []
         with tempfile.TemporaryDirectory() as temporary:
@@ -1060,12 +1061,14 @@ class TransferWorkflowTests(unittest.TestCase):
 
             class Driver:
                 def __init__(self):
-                    self.urls = []
+                    self.scripts = []
 
-                def get(self, url):
-                    self.urls.append(url)
+                def execute_script(self, script, url):
+                    self.scripts.append((script, url))
                     with (workspace / "1Mb.dat").open("wb") as handle:
                         handle.truncate(task.resource["expected_bytes"])
+                    timeout = type("TimeoutException", (Exception,), {})
+                    raise timeout("page navigation did not complete")
 
             class Owner:
                 def __init__(self):
@@ -1085,8 +1088,51 @@ class TransferWorkflowTests(unittest.TestCase):
                 task, workspace, factory, sleeper=lambda _delay: None
             )
             self.assertEqual(artifact.stat().st_size, task.resource["expected_bytes"])
-            self.assertEqual(owners[0].driver.urls, [task.resource["url"]])
+            self.assertEqual(len(owners[0].driver.scripts), 1)
+            self.assertEqual(
+                owners[0].driver.scripts[0][1], task.resource["url"]
+            )
+            self.assertIn("document.createElement('a')", owners[0].driver.scripts[0][0])
             self.assertTrue(owners[0].cleaned)
+
+    def test_mchp_firefox_download_rejects_partial_wrong_size_and_timeout(self):
+        task = self.task("mchp-cpu", "FileDownload")
+        for name, created in (
+            ("partial", {"1Mb.dat.part": 10}),
+            ("wrong size", {"1Mb.dat": task.resource["expected_bytes"] - 1}),
+            ("missing", {}),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                workspace = Path(temporary)
+                cleaned = []
+                clock = [0.0]
+
+                class Driver:
+                    def execute_script(self, _script, url):
+                        self.url = url
+                        for filename, size in created.items():
+                            with (workspace / filename).open("wb") as handle:
+                                handle.truncate(size)
+
+                class Owner:
+                    driver = Driver()
+
+                    def cleanup(self):
+                        cleaned.append(True)
+
+                def sleep(delay):
+                    clock[0] += delay
+
+                with self.assertRaisesRegex(RuntimeError, "did not complete"):
+                    firefox_download(
+                        task,
+                        workspace,
+                        lambda _path: Owner(),
+                        sleeper=sleep,
+                        monotonic=lambda: clock[0],
+                        timeout_seconds=0.5,
+                    )
+                self.assertEqual(cleaned, [True])
 
     def test_sync_uses_oldest_document_exact_post_and_independent_state(self):
         class Response:
@@ -1403,6 +1449,72 @@ class TransferWorkflowTests(unittest.TestCase):
                     self.assertEqual(result.completed, expected)
                     self.assertEqual(len(calls), min(invocations, 1))
 
+    def test_browseruse_bounded_actions_return_exact_assigned_evidence(self):
+        for workflow in (
+            "FileDownload",
+            "FileSyncUpload",
+            "NetworkShareAccess",
+        ):
+            with self.subTest(workflow=workflow), tempfile.TemporaryDirectory() as td:
+                plan = load_document(
+                    six_workflow_document("browseruse-gpu"), "browseruse-gpu"
+                )
+                task = self.task("browseruse-gpu", workflow)
+                workspace = Path(td)
+                api, state = LLMVideoRunnerTests.browser_api(True)
+                kwargs = {
+                    "framework_api": api,
+                    "llm_factory": lambda model, logger: model,
+                    "step_logger": lambda logger, result: None,
+                    "chromium_args": [],
+                }
+                if workflow == "FileDownload":
+                    def downloader(received, destination):
+                        artifact = destination / "assigned.bin"
+                        artifact.write_bytes(
+                            b"x" * received.resource["expected_bytes"]
+                        )
+                        return artifact
+
+                    kwargs["downloader"] = downloader
+                else:
+                    class Transfer:
+                        def execute(self, _task, destination):
+                            artifact = destination / "verified-transfer.bin"
+                            artifact.write_bytes(b"verified")
+                            return WorkflowResult(
+                                completed=True, artifact=str(artifact)
+                            )
+
+                    kwargs[
+                        "syncer" if workflow == "FileSyncUpload" else "share"
+                    ] = Transfer()
+                with patch("phase_workflow.brains._require_distribution"):
+                    result = browseruse_runner(
+                        task, workspace, plan.brain_profile, **kwargs
+                    )
+                self.assertTrue(result.completed)
+                evidence = state["action_result"].extracted_content
+                self.assertIn(f"resource_id={task.resource_id}", evidence)
+                self.assertIn(f"artifact={result.artifact}", evidence)
+                self.assertIn(
+                    f"observed_bytes={Path(result.artifact).stat().st_size}",
+                    evidence,
+                )
+                if workflow == "NetworkShareAccess":
+                    self.assertIn(
+                        f"share=//share.ruse.test/shared/{task.resource['path']}",
+                        evidence,
+                    )
+                else:
+                    self.assertIn(
+                        f"assigned_url={task.resource['url']}", evidence
+                    )
+                if workflow == "FileDownload":
+                    self.assertIn(
+                        f"expected_bytes={task.resource['expected_bytes']}",
+                        evidence,
+                    )
 
     def test_terminal_event_uses_ordinary_jsonl(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1539,6 +1651,80 @@ class TruthPropagationTests(unittest.TestCase):
         self.assertFalse(self.run_browser_history(None).completed)
         self.assertFalse(self.run_browser_history(NotDone()).completed)
         self.assertFalse(self.run_browser_history(Malformed()).completed)
+
+    def test_sequential_browseruse_runs_close_resources_in_owning_loops(self):
+        plan, task = self.browser_task()
+        state = {"sessions": [], "agents": []}
+
+        class BrowserSession:
+            def __init__(self, **_values):
+                self.loop = asyncio.get_running_loop()
+                self.future = self.loop.create_future()
+                self.future.set_result(True)
+                self.closed = False
+                state["sessions"].append(self)
+
+        class History:
+            def is_done(self):
+                return True
+
+            def is_successful(self):
+                return True
+
+        class Agent:
+            def __init__(self, **values):
+                self.session = values["browser_session"]
+                self.closed = False
+                state["agents"].append(self)
+
+            async def run(self, max_steps):
+                self.max_steps = max_steps
+                self.asserted_loop = asyncio.get_running_loop()
+                return History()
+
+            async def close(self):
+                current = asyncio.get_running_loop()
+                if current is not self.session.loop:
+                    raise RuntimeError("cross-loop BrowserUse cleanup")
+                if self.session.future.get_loop() is not current:
+                    raise RuntimeError("future belongs to another loop")
+                await self.session.future
+                self.session.closed = True
+                self.closed = True
+
+        class Tools:
+            pass
+
+        class ActionResult:
+            pass
+
+        api = Agent, BrowserSession, Tools, ActionResult
+        with patch("phase_workflow.brains._require_distribution"):
+            first = browseruse_runner(
+                task,
+                Path("/tmp/day"),
+                plan.brain_profile,
+                framework_api=api,
+                llm_factory=lambda model, logger: (model, logger),
+                step_logger=lambda logger, value: None,
+                chromium_args=[],
+            )
+            second = browseruse_runner(
+                task,
+                Path("/tmp/day"),
+                plan.brain_profile,
+                framework_api=api,
+                llm_factory=lambda model, logger: (model, logger),
+                step_logger=lambda logger, value: None,
+                chromium_args=[],
+            )
+
+        self.assertTrue(first.completed)
+        self.assertTrue(second.completed)
+        self.assertEqual(len(state["sessions"]), 2)
+        self.assertIsNot(state["sessions"][0].loop, state["sessions"][1].loop)
+        self.assertTrue(all(item.closed for item in state["sessions"]))
+        self.assertTrue(all(item.closed for item in state["agents"]))
 
     @staticmethod
     def smol_task():
@@ -1886,9 +2072,14 @@ class OpenDocumentValidationTests(unittest.TestCase):
         ), patch.object(writer_module, "sleep", return_value=None):
             workspace = Path(td)
             editor = writer_module.DocumentEditor(default_wait_time=0)
-            result = MCHPDocumentWorkflows(
-                writer_factory=lambda: editor
-            ).create(task, workspace)
+            with patch.object(
+                writer_module, "wait_for_focused_window"
+            ) as ready, patch.object(
+                writer_module, "wait_for_stable_artifact"
+            ) as stable:
+                result = MCHPDocumentWorkflows(
+                    writer_factory=lambda: editor
+                ).create(task, workspace)
             validate_open_document(task, workspace, result.artifact)
 
         self.assertTrue(result.completed)
@@ -1896,8 +2087,197 @@ class OpenDocumentValidationTests(unittest.TestCase):
         self.assertEqual(typed_content[0], task.resource["title"])
         self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
         self.assertIn(("ctrl", "a"), state["hotkeys"])
+        ready.assert_called_once_with("LibreOffice Writer")
+        stable.assert_called_once_with(Path(result.artifact))
         self.assertTrue(process.terminated)
         sys.modules.pop("brains.mchp.app.workflows.open_office_writer", None)
+
+    def test_mchp_calc_ui_sets_exact_cells_and_saves_stable_ods(self):
+        task = self.task("spreadsheet_expense_tracker")
+        state = {
+            "mode": None,
+            "coordinate": None,
+            "current": None,
+            "value": None,
+            "save_path": [],
+            "cells": {},
+            "hotkeys": [],
+        }
+        pyautogui = ModuleType("pyautogui")
+
+        def hotkey(*keys):
+            state["hotkeys"].append(keys)
+            if keys == ("ctrl", "g"):
+                state["mode"] = "goto"
+            elif keys == ("ctrl", "shift", "s"):
+                state["mode"] = "save"
+            elif keys == ("ctrl", "a") and state["mode"] == "save":
+                state["save_path"].clear()
+
+        def typewrite(value):
+            if state["mode"] == "goto":
+                state["coordinate"] = str(value)
+
+        def write(value, interval=None):
+            self.assertEqual(interval, 0.01)
+            if state["mode"] == "save":
+                state["save_path"].append(str(value))
+            elif state["mode"] == "edit":
+                state["value"] = str(value)
+
+        def press(key, presses=1):
+            if key == "enter" and state["mode"] == "goto":
+                state["current"] = state["coordinate"]
+                state["mode"] = None
+            elif key == "f2":
+                state["mode"] = "edit"
+            elif key == "enter" and state["mode"] == "edit":
+                state["cells"][state["current"]] = state["value"]
+                state["mode"] = None
+            elif key == "enter" and state["mode"] == "save":
+                artifact = Path("".join(state["save_path"]))
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                rows = [task.resource["columns"], *task.resource["rows"]]
+                rendered = []
+                for row_index, row in enumerate(rows, start=1):
+                    cells = []
+                    for column_index, _value in enumerate(row):
+                        coordinate = f"{chr(ord('A') + column_index)}{row_index}"
+                        value = state["cells"].get(coordinate, "")
+                        cells.append(
+                            '<table:table-cell office:value-type="string">'
+                            f"<text:p>{value}</text:p></table:table-cell>"
+                        )
+                    rendered.append(
+                        "<table:table-row>" + "".join(cells)
+                        + "</table:table-row>"
+                    )
+                body = (
+                    '<table:table table:name="Sheet1">'
+                    + "".join(rendered)
+                    + "</table:table>"
+                )
+                with zipfile.ZipFile(artifact, "w") as archive:
+                    archive.writestr(
+                        "mimetype",
+                        "application/vnd.oasis.opendocument.spreadsheet",
+                    )
+                    archive.writestr(
+                        "content.xml",
+                        OpenDocumentWriter._content_xml(
+                            "office:spreadsheet", body
+                        ),
+                    )
+                state["mode"] = None
+
+        pyautogui.hotkey = hotkey
+        pyautogui.typewrite = typewrite
+        pyautogui.write = write
+        pyautogui.press = press
+        lorem = ModuleType("lorem")
+        lorem_text = ModuleType("lorem.text")
+        lorem_text.TextLorem = object
+        lorem.text = lorem_text
+
+        module_name = "brains.mchp.app.workflows.open_office_calc"
+        sys.modules.pop(module_name, None)
+        with patch.dict(
+            sys.modules,
+            {"pyautogui": pyautogui, "lorem": lorem, "lorem.text": lorem_text},
+        ):
+            calc_module = importlib.import_module(module_name)
+
+        class Process:
+            def __init__(self):
+                self.terminated = False
+
+            def terminate(self):
+                self.terminated = True
+
+        process = Process()
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            calc_module.subprocess, "Popen", return_value=process
+        ), patch.object(calc_module, "sleep", return_value=None), patch.object(
+            calc_module, "wait_for_focused_window"
+        ) as ready, patch.object(
+            calc_module, "wait_for_stable_artifact"
+        ) as stable:
+            workspace = Path(td)
+            editor = calc_module.SpreadsheetEditor(default_wait_time=0)
+            result = MCHPDocumentWorkflows(
+                calc_factory=lambda: editor
+            ).create(task, workspace)
+
+        expected_cells = {}
+        for row_index, row in enumerate(
+            [task.resource["columns"], *task.resource["rows"]], start=1
+        ):
+            for column_index, value in enumerate(row):
+                expected_cells[
+                    f"{chr(ord('A') + column_index)}{row_index}"
+                ] = str(value)
+        self.assertEqual(state["cells"], expected_cells)
+        self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
+        ready.assert_called_once_with("LibreOffice Calc")
+        stable.assert_called_once_with(Path(result.artifact))
+        self.assertTrue(process.terminated)
+        sys.modules.pop(module_name, None)
+
+    def test_mchp_document_creation_retries_one_absent_or_invalid_artifact(self):
+        for resource_id in (
+            "document_team_meeting_notes",
+            "spreadsheet_expense_tracker",
+        ):
+            with (
+                self.subTest(resource_id=resource_id),
+                tempfile.TemporaryDirectory() as td,
+            ):
+                task = self.task(resource_id)
+                workspace = Path(td)
+                attempts = []
+                cleaned = []
+
+                class Editor:
+                    def __init__(self, attempt):
+                        self.attempt = attempt
+
+                    def create_assigned(self, _resource, destination, logger=None):
+                        attempts.append(self.attempt)
+                        artifact = Path(destination) / task.resource["filename"]
+                        if self.attempt == 0:
+                            if task.resource["kind"] == "spreadsheet":
+                                with zipfile.ZipFile(artifact, "w") as archive:
+                                    archive.writestr(
+                                        "mimetype",
+                                        "application/vnd.oasis.opendocument.spreadsheet",
+                                    )
+                                    archive.writestr(
+                                        "content.xml",
+                                        OpenDocumentWriter._content_xml(
+                                            "office:spreadsheet",
+                                            '<table:table table:name="Sheet1"/>',
+                                        ),
+                                    )
+                            return artifact
+                        return OpenDocumentWriter().create(
+                            task, Path(destination)
+                        ).artifact
+
+                    def cleanup(self):
+                        cleaned.append(self.attempt)
+
+                def factory():
+                    return Editor(len(attempts))
+
+                kwargs = (
+                    {"writer_factory": factory}
+                    if task.resource["kind"] == "document"
+                    else {"calc_factory": factory}
+                )
+                result = MCHPDocumentWorkflows(**kwargs).create(task, workspace)
+                validate_open_document(task, workspace, result.artifact)
+                self.assertEqual(attempts, [0, 1])
+                self.assertEqual(cleaned, [0, 1])
 
 
 class MCHPDriverLifecycleTests(unittest.TestCase):
@@ -1937,15 +2317,17 @@ class MCHPDriverLifecycleTests(unittest.TestCase):
 
             def get(self, _url):
                 barrier.wait(timeout=2)
-                if self.download_dir is not None:
-                    expected = tasks["FileDownload"].resource["expected_bytes"]
-                    (self.download_dir / "assigned.bin").write_bytes(b"x" * expected)
 
             def find_element(self, *_args):
                 return object()
 
             def execute_script(self, *_args):
-                pass
+                if self.download_dir is None:
+                    return
+                barrier.wait(timeout=2)
+                expected = tasks["FileDownload"].resource["expected_bytes"]
+                name = tasks["FileDownload"].resource["url"].rsplit("/", 1)[-1]
+                (self.download_dir / name).write_bytes(b"x" * expected)
 
             def quit(self):
                 self.closed = True
@@ -2258,11 +2640,18 @@ class LLMVideoRunnerTests(unittest.TestCase):
             self.assertEqual(delivered["resource_id"], task.resource_id)
             self.assertEqual(delivered["resource"], dict(task.resource))
 
-        browser_state = self.run_browser(True, lambda task: True)[2]
+        _browser_result, browser_task, browser_state = self.run_browser(
+            True, lambda task: True
+        )
         browser_actions = browser_state["actions"]
         self.assertEqual(set(browser_actions), {"play_assigned_video"})
         self.assertFalse(browser_state["agent"]["directly_open_url"])
         self.assertEqual(browser_state["agent"]["step_timeout"], 360)
+        video_evidence = browser_state["action_result"].extracted_content
+        self.assertIn(f"resource_id={browser_task.resource_id}", video_evidence)
+        self.assertIn("assigned_url=https://www.youtube.com/watch?v=", video_evidence)
+        self.assertIn("expected_seconds=300", video_evidence)
+        self.assertIn("observed_seconds=300", video_evidence)
         smol_tools = self.run_smol(True, lambda task: True)[2]["agent"]["tools"]
         self.assertEqual(len(smol_tools), 1)
         self.assertEqual(smol_tools[0].name, "play_assigned_video")
@@ -2403,11 +2792,20 @@ class LLMDocumentRunnerTests(unittest.TestCase):
                 name,
             )
 
-        browser_state = self.run_browser(True, self.Writer())[2]
+        _browser_result, browser_task, browser_state = self.run_browser(
+            True, self.Writer()
+        )
         self.assertEqual(
             set(browser_state["actions"]), {"create_assigned_document"}
         )
         self.assertFalse(browser_state["agent"]["directly_open_url"])
+        document_evidence = browser_state["action_result"].extracted_content
+        self.assertIn(f"resource_id={browser_task.resource_id}", document_evidence)
+        self.assertIn(
+            f"artifact={self.workspace / browser_task.resource['filename']}",
+            document_evidence,
+        )
+        self.assertIn("format=document", document_evidence)
         smol_tools = self.run_smol(True, self.Writer())[2]["agent"]["tools"]
         self.assertEqual(len(smol_tools), 1)
         self.assertEqual(smol_tools[0].name, "create_assigned_document")
