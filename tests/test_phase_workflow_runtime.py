@@ -2280,6 +2280,10 @@ class OpenDocumentValidationTests(unittest.TestCase):
         self.assertEqual(Path(result.artifact).name, task.resource["filename"])
         self.assertEqual(typed_content[0], task.resource["title"])
         self.assertEqual(state["clicks"], [(640, 512)])
+        self.assertLess(
+            state["hotkeys"].index(("ctrl", "f6")),
+            state["hotkeys"].index(("ctrl", "home")),
+        )
         self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
         self.assertIn(("ctrl", "a"), state["hotkeys"])
         ready.assert_called_once()
@@ -2427,6 +2431,10 @@ class OpenDocumentValidationTests(unittest.TestCase):
                 ] = str(value)
         self.assertEqual(state["cells"], expected_cells)
         self.assertEqual(state["clicks"], [(640, 512)])
+        self.assertLess(
+            state["hotkeys"].index(("ctrl", "f6")),
+            state["hotkeys"].index(("ctrl", "home")),
+        )
         self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
         ready.assert_called_once()
         self.assertEqual(ready.call_args.args, ("LibreOffice Calc",))

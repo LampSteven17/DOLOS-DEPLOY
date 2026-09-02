@@ -21,6 +21,9 @@ def focus_editor_canvas(pyautogui_module, *, sleeper=time.sleep) -> None:
     if width <= 0 or height <= 0:
         raise RuntimeError("LibreOffice editor has no usable display geometry")
     pyautogui_module.click(width // 2, height // 2)
+    # Window activation can leave focus on a toolbar or sidebar. LibreOffice's
+    # document-focus shortcut makes following keyboard input target the editor.
+    pyautogui_module.hotkey("ctrl", "f6")
     sleeper(POLL_INTERVAL_S)
 
 
