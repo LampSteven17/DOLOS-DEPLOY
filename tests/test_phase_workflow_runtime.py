@@ -2303,9 +2303,8 @@ class OpenDocumentValidationTests(unittest.TestCase):
         task = self.task("spreadsheet_expense_tracker")
         state = {
             "mode": None,
-            "coordinate": None,
-            "current": None,
-            "value": None,
+            "row": 1,
+            "column": 0,
             "save_path": [],
             "cells": {},
             "hotkeys": [],
@@ -2316,35 +2315,27 @@ class OpenDocumentValidationTests(unittest.TestCase):
 
         def hotkey(*keys):
             state["hotkeys"].append(keys)
-            if keys == ("ctrl", "g"):
-                state["mode"] = "goto"
+            if keys == ("ctrl", "home"):
+                state["row"] = 1
+                state["column"] = 0
             elif keys == ("ctrl", "shift", "s"):
                 state["mode"] = "save"
             elif keys == ("ctrl", "a") and state["mode"] == "save":
                 state["save_path"].clear()
 
-        def typewrite(value):
-            if state["mode"] == "goto":
-                state["coordinate"] = str(value)
-
         def write(value, interval=None):
             self.assertEqual(interval, 0.01)
             if state["mode"] == "save":
                 state["save_path"].append(str(value))
-            elif state["mode"] == "edit":
-                state["value"] = str(value)
+            else:
+                coordinate = (
+                    f"{chr(ord('A') + state['column'])}{state['row']}"
+                )
+                state["cells"][coordinate] = str(value)
 
         def press(key, presses=1):
             state["pressed"].append(key)
-            if key == "enter" and state["mode"] == "goto":
-                state["current"] = state["coordinate"]
-                state["mode"] = None
-            elif key == "f2":
-                state["mode"] = "edit"
-            elif key == "enter" and state["mode"] == "edit":
-                state["cells"][state["current"]] = state["value"]
-                state["mode"] = None
-            elif key == "enter" and state["mode"] == "save":
+            if key == "enter" and state["mode"] == "save":
                 artifact = Path("".join(state["save_path"]))
                 artifact.parent.mkdir(parents=True, exist_ok=True)
                 rows = [task.resource["columns"], *task.resource["rows"]]
@@ -2379,9 +2370,15 @@ class OpenDocumentValidationTests(unittest.TestCase):
                         ),
                     )
                 state["mode"] = None
+            elif state["mode"] is None and key == "tab":
+                state["column"] += 1
+            elif state["mode"] is None and key == "enter":
+                state["row"] += 1
+            elif state["mode"] is None and key == "home":
+                state["column"] = 0
 
         pyautogui.hotkey = hotkey
-        pyautogui.typewrite = typewrite
+        pyautogui.typewrite = lambda _value: None
         pyautogui.write = write
         pyautogui.press = press
         pyautogui.size = lambda: (1280, 1024)

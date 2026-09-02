@@ -97,10 +97,7 @@ class SpreadsheetEditor(BaseWorkflow):
                 "edit_content", category="office", message="Typing assigned table"
             )
         rows = [resource["columns"], *resource["rows"]]
-        for row_index, row in enumerate(rows, start=1):
-            for column_index, value in enumerate(row):
-                column = chr(ord("A") + column_index)
-                self._set_cell([column, row_index], value)
+        self._write_assigned_table(rows)
         if logger:
             logger.step_success("edit_content")
 
@@ -233,6 +230,18 @@ class SpreadsheetEditor(BaseWorkflow):
         pyautogui.hotkey("ctrl", "a")
         pyautogui.write(str(value), interval=0.01)
         pyautogui.press("enter")
+
+    @staticmethod
+    def _write_assigned_table(rows):
+        """Enter one assigned table from A1 without focus-stealing dialogs."""
+        for row_index, row in enumerate(rows):
+            for column_index, value in enumerate(row):
+                pyautogui.write(str(value), interval=0.01)
+                pyautogui.press(
+                    "tab" if column_index < len(row) - 1 else "enter"
+                )
+            if row_index < len(rows) - 1:
+                pyautogui.press("home")
 
     def _move_to_cell(self, cell_coordinate):
         # Use Ctrl+G for Go To dialog (works in both LibreOffice and OpenOffice)
