@@ -243,6 +243,7 @@ class DocumentEditor(BaseWorkflow):
                     "--writer",
                     "--norestore",
                     "--nofirststartwizard",
+                    "private:factory/swriter",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL

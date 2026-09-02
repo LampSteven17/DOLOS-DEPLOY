@@ -886,6 +886,15 @@ create_run_script() {
 
     local model_name="${MODEL_NAMES[$MODEL]:-llama3.1:8b}"
     local workflow_gpu_tier="${RUSE_WORKFLOW_GPU_TIER:-v100}"
+    local browseruse_start_timeout=""
+
+    if is_phase_workflow_config "$CONFIG_KEY" && [[ "$BRAIN" == "browseruse" ]]; then
+        # Ten simultaneous BrowserUse sessions can legitimately need longer
+        # than the framework's 30-second BrowserStartEvent default while
+        # Chromium processes initialize. Keep that event bounded without
+        # changing workflow or LLM action deadlines.
+        browseruse_start_timeout='export TIMEOUT_BrowserStartEvent="75"'
+    fi
 
     # Build model arg (skip if none)
     local model_arg=""
@@ -942,6 +951,7 @@ export PYTHONPATH="$deploy_dir/decoys:\${PYTHONPATH:-}"
 export LOG_DIR="$deploy_dir/logs"
 export SUP_CONFIG_KEY="$CONFIG_KEY"
 export CALIBRATION_PROFILE="${CALIBRATION}"
+$browseruse_start_timeout
 
 # Task (for LLM agents)
 TASK="\${1:-Research the latest technology news}"

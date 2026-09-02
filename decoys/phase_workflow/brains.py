@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import os
 import re
+import threading
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Callable, Mapping, Optional
@@ -109,9 +110,11 @@ class FrameworkBrain:
         self,
         runner: Callable[[ResolvedTask, Path], WorkflowResult],
         document_store=None,
+        closer: Optional[Callable[[], None]] = None,
     ):
         self._runner = runner
         self._document_store = document_store
+        self._closer = closer
 
     def execute(self, task: ResolvedTask, workspace: Path) -> WorkflowResult:
         if task.instruction is None:
@@ -125,6 +128,10 @@ class FrameworkBrain:
         ):
             self._document_store.register(Path(workspace).name, Path(result.artifact))
         return result
+
+    def close(self) -> None:
+        if self._closer is not None:
+            self._closer()
 
 
 class AssignedVideoPlayback:
@@ -458,6 +465,52 @@ async def _close_browseruse_resources(agent, browser_session) -> None:
         await result
 
 
+class _BrowserUseEventLoop:
+    """Run all BrowserUse sessions on one process-owned asyncio loop."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._ready = threading.Event()
+        self._loop = None
+        self._thread = None
+
+    def run(self, coroutine):
+        self._ensure_started()
+        future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        return future.result()
+
+    def _ensure_started(self) -> None:
+        with self._lock:
+            if self._thread is None:
+                self._loop = asyncio.new_event_loop()
+                self._thread = threading.Thread(
+                    target=self._serve,
+                    args=(self._loop,),
+                    name="browseruse-event-loop",
+                    daemon=True,
+                )
+                self._thread.start()
+        self._ready.wait()
+
+    def _serve(self, loop) -> None:
+        asyncio.set_event_loop(loop)
+        self._ready.set()
+        loop.run_forever()
+        loop.close()
+
+    def close(self) -> None:
+        with self._lock:
+            loop = self._loop
+            thread = self._thread
+            self._loop = None
+            self._thread = None
+            self._ready.clear()
+        if loop is None or thread is None:
+            return
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+
+
 def _require_distribution(name: str, expected: str) -> None:
     try:
         installed = version(name)
@@ -506,6 +559,8 @@ def browseruse_runner(
     llm_factory=None,
     step_logger=None,
     chromium_args=None,
+    async_executor=None,
+    workflow_timeout=600,
 ) -> WorkflowResult:
     framework = profile["framework"]
     _require_distribution(framework["name"], framework["version"])
@@ -544,8 +599,8 @@ def browseruse_runner(
             "This action accepts no URL, video ID, or duration parameters.",
             terminates_sequence=True,
         )
-        def play_assigned_video():
-            message = playback.invoke()
+        async def play_assigned_video():
+            message = await asyncio.to_thread(playback.invoke)
             if playback.completed:
                 message = _browseruse_action_evidence(task)
             return ActionResult(
@@ -567,8 +622,8 @@ def browseruse_runner(
             "This action accepts no filename, format, template, or content parameters.",
             terminates_sequence=True,
         )
-        def create_assigned_document():
-            message = document.invoke()
+        async def create_assigned_document():
+            message = await asyncio.to_thread(document.invoke)
             if document.completed:
                 message = _browseruse_action_evidence(
                     task, artifact=document.artifact
@@ -590,8 +645,8 @@ def browseruse_runner(
             "filename, expected-size, or alternate-resource parameters.",
             terminates_sequence=True,
         )
-        def download_assigned_file():
-            message = assigned_download.invoke()
+        async def download_assigned_file():
+            message = await asyncio.to_thread(assigned_download.invoke)
             if assigned_download.completed:
                 message = _browseruse_action_evidence(
                     task, artifact=assigned_download.artifact
@@ -617,8 +672,8 @@ def browseruse_runner(
                 "accepts no file, endpoint, bytes, or request parameters.",
                 terminates_sequence=True,
             )
-            def sync_assigned_document():
-                message = assigned_transfer.invoke()
+            async def sync_assigned_document():
+                message = await asyncio.to_thread(assigned_transfer.invoke)
                 if assigned_transfer.completed:
                     message = _browseruse_action_evidence(
                         task, artifact=assigned_transfer.artifact
@@ -635,8 +690,8 @@ def browseruse_runner(
                 "accepts no share, path, credential, or command parameters.",
                 terminates_sequence=True,
             )
-            def access_assigned_share():
-                message = assigned_transfer.invoke()
+            async def access_assigned_share():
+                message = await asyncio.to_thread(assigned_transfer.invoke)
                 if assigned_transfer.completed:
                     message = _browseruse_action_evidence(
                         task, artifact=assigned_transfer.artifact
@@ -661,12 +716,18 @@ def browseruse_runner(
         if tools is not None:
             agent_kwargs["tools"] = tools
         if playback is not None:
-            agent_kwargs["step_timeout"] = task.resource["play_seconds"] + 60
+            # Keep the immutable action's own 360-second limit, but leave the
+            # outer step enough room for the preceding LLM response and the
+            # confirmed 300-second playback action.
+            agent_kwargs["step_timeout"] = task.resource["play_seconds"] + 120
         elif assigned_download is not None or assigned_transfer is not None:
             agent_kwargs["step_timeout"] = 360
         agent = Agent(**agent_kwargs)
         try:
-            result = await agent.run(max_steps=profile["max_steps"])
+            result = await asyncio.wait_for(
+                agent.run(max_steps=profile["max_steps"]),
+                timeout=workflow_timeout,
+            )
             step_logger(logger, result)
             framework_completed = _browseruse_completed(result)
             if playback is not None:
@@ -695,6 +756,8 @@ def browseruse_runner(
         finally:
             await _close_browseruse_resources(agent, browser_session)
 
+    if async_executor is not None:
+        return async_executor(run())
     return asyncio.run(run())
 
 
@@ -900,6 +963,7 @@ def build_brain(
             share=share,
         )
     if brain == "browseruse":
+        event_loop = _BrowserUseEventLoop()
         return FrameworkBrain(
             lambda task, workspace: browseruse_runner(
                 task,
@@ -910,8 +974,10 @@ def build_brain(
                 downloader=stream_https_download,
                 syncer=syncer,
                 share=share,
+                async_executor=event_loop.run,
             ),
             document_store=documents,
+            closer=event_loop.close,
         )
     if brain == "smolagents":
         return FrameworkBrain(

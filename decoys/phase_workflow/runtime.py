@@ -101,5 +101,8 @@ def run_workflow_runtime(config_key: str, behavior_config_dir: Optional[str]) ->
         logger.session_fail(message="Workflow runtime failed", exception=exc)
         raise
     finally:
-        executor.close()
-        logger.session_end()
+        try:
+            executor.close()
+        finally:
+            registry.close()
+            logger.session_end()

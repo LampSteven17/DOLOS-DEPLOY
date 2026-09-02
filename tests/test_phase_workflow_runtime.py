@@ -4,6 +4,7 @@ import ast
 import asyncio
 import copy
 import importlib
+import inspect
 import json
 import os
 import shlex
@@ -32,6 +33,7 @@ from phase_workflow.brains import (
     AssignedVideoPlayback,
     FrameworkBrain,
     ResourceBrain,
+    _BrowserUseEventLoop,
     _mchp_driver,
     _read_webpage,
     browseruse_runner,
@@ -849,15 +851,20 @@ class RegistryAndBrainTests(unittest.TestCase):
                 brain = build_brain(plan.brain, plan.brain_profile)
                 result = brain.execute(task, Path("/tmp"))
             self.assertTrue(result.completed)
+            expected_kwargs = dict(
+                video_player=player,
+                downloader=stream_https_download,
+                syncer=ANY,
+                share=ANY,
+            )
+            if config_key == "browseruse-gpu":
+                expected_kwargs["async_executor"] = ANY
             runner.assert_called_once_with(
                 task,
                 Path("/tmp"),
                 plan.brain_profile,
                 None,
-                video_player=player,
-                downloader=stream_https_download,
-                syncer=ANY,
-                share=ANY,
+                **expected_kwargs,
             )
             player.assert_not_called()
 
@@ -1445,7 +1452,9 @@ class TransferWorkflowTests(unittest.TestCase):
             async def run(self, max_steps):
                 action = next(iter(self.tools.registry.registry.actions.values()))
                 for _ in range(invocations):
-                    action()
+                    result = action()
+                    if inspect.isawaitable(result):
+                        await result
                 return History()
 
         return Agent, BrowserSession, Tools, ActionResult
@@ -2202,6 +2211,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
         launch = popen.call_args.args[0]
         self.assertIn("--writer", launch)
         self.assertNotIn("--nodefault", launch)
+        self.assertIn("private:factory/swriter", launch)
         stable.assert_called_once_with(Path(result.artifact))
         self.assertTrue(process.terminated)
         sys.modules.pop("brains.mchp.app.workflows.open_office_writer", None)
@@ -2338,6 +2348,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
         launch = popen.call_args.args[0]
         self.assertIn("--calc", launch)
         self.assertNotIn("--nodefault", launch)
+        self.assertIn("private:factory/scalc", launch)
         stable.assert_called_once_with(Path(result.artifact))
         self.assertTrue(process.terminated)
         sys.modules.pop(module_name, None)
@@ -2710,7 +2721,10 @@ class LLMVideoRunnerTests(unittest.TestCase):
                     iter(self.registry.registry.actions.items())
                 )
                 state["action_name"] = action_name
-                return action()
+                result = action()
+                if inspect.isawaitable(result):
+                    return await result
+                return result
 
         class BrowserSession:
             def __init__(self, **values):
@@ -2819,7 +2833,7 @@ class LLMVideoRunnerTests(unittest.TestCase):
         browser_actions = browser_state["actions"]
         self.assertEqual(set(browser_actions), {"play_assigned_video"})
         self.assertFalse(browser_state["agent"]["directly_open_url"])
-        self.assertEqual(browser_state["agent"]["step_timeout"], 360)
+        self.assertEqual(browser_state["agent"]["step_timeout"], 420)
         video_evidence = browser_state["action_result"].extracted_content
         self.assertIn(f"resource_id={browser_task.resource_id}", video_evidence)
         self.assertIn("assigned_url=https://www.youtube.com/watch?v=", video_evidence)
@@ -2848,6 +2862,115 @@ class LLMVideoRunnerTests(unittest.TestCase):
         self.assertTrue(result.completed)
         self.assertEqual(task.resource["play_seconds"], 300)
         self.assertEqual(state["action_timeout"], 360)
+
+    def test_concurrent_browseruse_sessions_share_one_owning_loop(self):
+        plan = load_control_plan("browseruse-gpu")
+        task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
+            plan.windows[0].sequence[0]
+        )
+        owning_loops = []
+        closed_loops = []
+
+        class BrowserSession:
+            def __init__(self, **_values):
+                self.loop = asyncio.get_running_loop()
+                owning_loops.append(self.loop)
+
+        class History:
+            def is_done(self):
+                return True
+
+            def is_successful(self):
+                return True
+
+        class Agent:
+            def __init__(self, **values):
+                self.session = values["browser_session"]
+
+            async def run(self, max_steps):
+                await asyncio.sleep(0.01)
+                return History()
+
+            async def close(self):
+                current = asyncio.get_running_loop()
+                self.assert_same_loop = current is self.session.loop
+                closed_loops.append(current)
+
+        class Tools:
+            pass
+
+        class ActionResult:
+            pass
+
+        event_loop = _BrowserUseEventLoop()
+        api = Agent, BrowserSession, Tools, ActionResult
+
+        def execute():
+            return browseruse_runner(
+                task,
+                Path("/tmp/local-day"),
+                plan.brain_profile,
+                framework_api=api,
+                llm_factory=lambda model, logger: model,
+                step_logger=lambda logger, history: None,
+                chromium_args=[],
+                async_executor=event_loop.run,
+            )
+
+        try:
+            with patch("phase_workflow.brains._require_distribution"), ThreadPoolExecutor(
+                max_workers=2
+            ) as pool:
+                results = list(pool.map(lambda _index: execute(), range(2)))
+        finally:
+            event_loop.close()
+
+        self.assertTrue(all(result.completed for result in results))
+        self.assertEqual(len(owning_loops), 2)
+        self.assertIs(owning_loops[0], owning_loops[1])
+        self.assertEqual(closed_loops, owning_loops)
+
+    def test_browseruse_workflow_deadline_cancels_and_cleans_up(self):
+        plan = load_control_plan("browseruse-gpu")
+        task = WorkflowRegistry(plan, RecordingBrain(), Path("/tmp")).resolve(
+            plan.windows[0].sequence[0]
+        )
+        state = {"closed": False}
+
+        class BrowserSession:
+            def __init__(self, **_values):
+                pass
+
+        class Agent:
+            def __init__(self, **_values):
+                pass
+
+            async def run(self, max_steps):
+                await asyncio.Event().wait()
+
+            async def close(self):
+                state["closed"] = True
+
+        class Tools:
+            pass
+
+        class ActionResult:
+            pass
+
+        with patch("phase_workflow.brains._require_distribution"), self.assertRaises(
+            TimeoutError
+        ):
+            browseruse_runner(
+                task,
+                Path("/tmp/local-day"),
+                plan.brain_profile,
+                framework_api=(Agent, BrowserSession, Tools, ActionResult),
+                llm_factory=lambda model, logger: model,
+                step_logger=lambda logger, history: None,
+                chromium_args=[],
+                workflow_timeout=0.01,
+            )
+        self.assertTrue(state["closed"])
 
     def test_playback_failure_fails_both_runners_without_retry(self):
         def failing_player(calls):
@@ -3269,6 +3392,22 @@ class InstallerTests(unittest.TestCase):
             service_function.index("$runtime_directory_directives"),
             service_function.index("StandardOutput="),
         )
+
+    def test_canonical_browseruse_extends_only_browser_start_event_timeout(self):
+        installer = INSTALLER.read_text(encoding="utf-8")
+        run_script_function = installer[
+            installer.index("create_run_script() {"):
+            installer.index("create_systemd_service() {")
+        ]
+        self.assertIn(
+            'is_phase_workflow_config "$CONFIG_KEY" && '
+            '[[ "$BRAIN" == "browseruse" ]]',
+            run_script_function,
+        )
+        self.assertIn(
+            'export TIMEOUT_BrowserStartEvent="75"', run_script_function
+        )
+        self.assertNotIn("TIMEOUT_BrowserConnectedEvent", run_script_function)
 
     def test_installed_tree_contains_runtime_contract_behavior_and_sup_command(self):
         for config_key in sorted(EXPECTED_CONFIGS):

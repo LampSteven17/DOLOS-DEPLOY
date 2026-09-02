@@ -177,6 +177,7 @@ class SpreadsheetEditor(BaseWorkflow):
                     "--calc",
                     "--norestore",
                     "--nofirststartwizard",
+                    "private:factory/scalc",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL

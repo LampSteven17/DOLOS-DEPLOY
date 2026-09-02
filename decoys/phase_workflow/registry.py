@@ -83,3 +83,8 @@ class WorkflowRegistry:
 
     def _execute(self, task: ResolvedTask, workspace: Path) -> WorkflowResult:
         return self._brain.execute(task, workspace)
+
+    def close(self) -> None:
+        close = getattr(self._brain, "close", None)
+        if close is not None:
+            close()
