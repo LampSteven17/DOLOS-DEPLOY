@@ -53,6 +53,7 @@ def _deploy_parser() -> argparse.ArgumentParser:
 scope flags:
   --controls            deploy the control fleet only
   --feedback            deploy feedback variants (all, or selected targets/source)
+  --canary              deploy the isolated RUSE runtime qualification fleet
 
 Feedback without --target/--source = batch every discovered dataset.
 For canonical Decoy feedback, --target accepts one or more exact targets.
@@ -61,6 +62,7 @@ Pass --source to deploy one exact generation directory.
 examples:
   ./deploy --decoy --preset colfix_v12.5.0 controls + ALL feedback targets
   ./deploy --decoy --controls               control fleet only
+  ./deploy --decoy --canary                 isolated RUSE-only runtime canary
   ./deploy --decoy --feedback --preset colfix_v12.5.0
                                             all canonical feedback targets
   ./deploy --decoy --feedback --preset colfix_v12.5.0 \
@@ -87,6 +89,10 @@ examples:
     # Scope flags — opt into just controls, just feedback, or (default) both.
     p.add_argument("--controls", action="store_true", help="Deploy the control fleet (no feedback)")
     p.add_argument("--feedback", action="store_true", help="Deploy PHASE feedback variants")
+    p.add_argument(
+        "--canary", action="store_true",
+        help="Deploy the isolated RUSE-only Decoy runtime canary",
+    )
 
     p.add_argument("--preset", type=str,
                    help="PHASE feedback preset (for canonical Decoy feedback: "
@@ -256,6 +262,31 @@ def _cmd_deploy(argv: list[str]) -> int:
 
     # --- Resolve deploy type ---
     deploy_type = "rampart" if args.rampart else ("ghosts" if args.ghosts else "decoy")
+
+    if args.canary:
+        incompatible = (
+            deploy_type != "decoy" or args.controls or args.feedback
+            or args.preset or args.source or args.target or args.gpu
+            or args.config_name
+        )
+        if incompatible:
+            output.error(
+                "ERROR: --canary is an isolated Decoy scope and cannot be "
+                "combined with another system, scope, selector, GPU tier, "
+                "or config name."
+            )
+            return 1
+        from .core.plan import (
+            build_decoy_canary_plan, execute_plan, show_plan_and_confirm,
+        )
+        try:
+            plan = build_decoy_canary_plan(DEPLOY_DIR)
+        except (ValueError, OSError, feedback.FeedbackSourceError) as exc:
+            output.error(f"ERROR: {exc}")
+            return 1
+        if not show_plan_and_confirm(plan, "decoy", gpu_tier="v100"):
+            return 0
+        return execute_plan(plan, "decoy", None, DEPLOY_DIR, gpu_tier="v100")
 
     # Canonical Decoy feedback accepts an ordered list of exact targets. Keep
     # the established Rampart/GHOSTS planner contract scalar, and reject

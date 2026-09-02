@@ -1060,27 +1060,29 @@ class TransferWorkflowTests(unittest.TestCase):
             workspace = Path(temporary)
 
             class Driver:
-                def __init__(self):
+                def __init__(self, download_dir):
                     self.scripts = []
+                    self.download_dir = download_dir
 
                 def execute_script(self, script, url):
                     self.scripts.append((script, url))
-                    with (workspace / "1Mb.dat").open("wb") as handle:
+                    with (self.download_dir / "1Mb.dat").open("wb") as handle:
                         handle.truncate(task.resource["expected_bytes"])
                     timeout = type("TimeoutException", (Exception,), {})
                     raise timeout("page navigation did not complete")
 
             class Owner:
-                def __init__(self):
-                    self.driver = Driver()
+                def __init__(self, download_dir):
+                    self.driver = Driver(download_dir)
                     self.cleaned = False
 
                 def cleanup(self):
                     self.cleaned = True
 
             def factory(path):
-                self.assertEqual(path, workspace)
-                owner = Owner()
+                self.assertEqual(path.parent, workspace / ".mchp-downloads")
+                self.assertEqual(path.name, task.occurrence_id)
+                owner = Owner(path)
                 owners.append(owner)
                 return owner
 
@@ -1111,11 +1113,13 @@ class TransferWorkflowTests(unittest.TestCase):
                     def execute_script(self, _script, url):
                         self.url = url
                         for filename, size in created.items():
-                            with (workspace / filename).open("wb") as handle:
+                            with (self.download_dir / filename).open("wb") as handle:
                                 handle.truncate(size)
 
                 class Owner:
-                    driver = Driver()
+                    def __init__(self, download_dir):
+                        self.driver = Driver()
+                        self.driver.download_dir = download_dir
 
                     def cleanup(self):
                         cleaned.append(True)
@@ -1127,12 +1131,117 @@ class TransferWorkflowTests(unittest.TestCase):
                     firefox_download(
                         task,
                         workspace,
-                        lambda _path: Owner(),
+                        lambda path: Owner(path),
                         sleeper=sleep,
                         monotonic=lambda: clock[0],
                         timeout_seconds=0.5,
                     )
                 self.assertEqual(cleaned, [True])
+
+    def test_mchp_firefox_download_accepts_real_duplicate_names_in_owned_directory(self):
+        task = self.task("mchp-cpu", "FileDownload")
+        for filename in ("1Mb.dat", "1Mb (1).dat", "1Mb(1).dat"):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as temporary:
+                workspace = Path(temporary)
+
+                class Driver:
+                    def __init__(self, destination):
+                        self.destination = destination
+
+                    def execute_script(self, _script, _url):
+                        with (self.destination / filename).open("wb") as handle:
+                            handle.truncate(task.resource["expected_bytes"])
+
+                class Owner:
+                    def __init__(self, destination):
+                        self.driver = Driver(destination)
+                        self.cleaned = False
+
+                    def cleanup(self):
+                        self.cleaned = True
+
+                owners = []
+                def factory(destination):
+                    owner = Owner(destination)
+                    owners.append(owner)
+                    return owner
+
+                artifact = firefox_download(task, workspace, factory)
+                self.assertEqual(artifact.name, filename)
+                self.assertTrue(owners[0].cleaned)
+
+    def test_simultaneous_mchp_downloads_have_strict_occurrence_ownership(self):
+        same_a = self.task("mchp-cpu", "FileDownload", "w1-s0")
+        same_b = self.task("mchp-cpu", "FileDownload", "w1-s1")
+        other_document = six_workflow_document("mchp-cpu")
+        other_entry = next(
+            item for item in other_document["schedule"][0]["sequence"]
+            if item["workflow"] == "FileDownload"
+        )
+        other_entry["resource_id"] = "download_sasag_10m"
+        other_plan = load_document(other_document, "mchp-cpu")
+        other = WorkflowRegistry(
+            other_plan, RecordingBrain(), Path("/tmp")
+        ).resolve(
+            next(item for item in other_plan.windows[0].sequence if item.workflow == "FileDownload"),
+            occurrence_id="w1-s2",
+        )
+        barrier = threading.Barrier(3)
+        seen = []
+
+        class Owner:
+            def __init__(self, task, destination):
+                self.task = task
+                self.destination = destination
+                self.driver = self
+                self.cleaned = False
+
+            def execute_script(self, _script, _url):
+                barrier.wait(timeout=2)
+                filename = Path(self.task.resource["url"]).name
+                with (self.destination / filename).open("wb") as handle:
+                    handle.truncate(self.task.resource["expected_bytes"])
+
+            def cleanup(self):
+                self.cleaned = True
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            def run(task):
+                owner = Owner(task, workspace / ".mchp-downloads" / task.occurrence_id)
+                seen.append(owner)
+                return firefox_download(task, workspace, lambda _path: owner)
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                artifacts = list(pool.map(run, (same_a, same_b, other)))
+        self.assertEqual(len({artifact.parent for artifact in artifacts}), 3)
+        self.assertTrue(all(owner.cleaned for owner in seen))
+
+    def test_ambiguous_owned_download_fails_with_detailed_evidence(self):
+        task = self.task("mchp-cpu", "FileDownload")
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            class Owner:
+                def __init__(self, destination):
+                    self.driver = self
+                    self.destination = destination
+                    self.cleaned = False
+                def execute_script(self, _script, _url):
+                    for filename in ("1Mb.dat", "1Mb(1).dat"):
+                        with (self.destination / filename).open("wb") as handle:
+                            handle.truncate(task.resource["expected_bytes"])
+                def cleanup(self):
+                    self.cleaned = True
+            owners = []
+            def factory(destination):
+                owners.append(Owner(destination))
+                return owners[-1]
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"resource_id=download_ovh_1m.*expected_bytes=1048576.*created_files=.*1Mb\(1\)\.dat.*observed_sizes=.*elapsed_seconds=",
+            ):
+                firefox_download(task, workspace, factory)
+            self.assertTrue(owners[0].cleaned)
+            self.assertFalse((workspace / ".mchp-downloads" / task.occurrence_id).exists())
 
     def test_sync_uses_oldest_document_exact_post_and_independent_state(self):
         class Response:
@@ -2069,7 +2178,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
         process = Process()
         with tempfile.TemporaryDirectory() as td, patch.object(
             writer_module.subprocess, "Popen", return_value=process
-        ), patch.object(writer_module, "sleep", return_value=None):
+        ) as popen, patch.object(writer_module, "sleep", return_value=None):
             workspace = Path(td)
             editor = writer_module.DocumentEditor(default_wait_time=0)
             with patch.object(
@@ -2087,7 +2196,12 @@ class OpenDocumentValidationTests(unittest.TestCase):
         self.assertEqual(typed_content[0], task.resource["title"])
         self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
         self.assertIn(("ctrl", "a"), state["hotkeys"])
-        ready.assert_called_once_with("LibreOffice Writer")
+        ready.assert_called_once_with(
+            "LibreOffice Writer", process=process, artifact=Path(result.artifact)
+        )
+        launch = popen.call_args.args[0]
+        self.assertIn("--writer", launch)
+        self.assertNotIn("--nodefault", launch)
         stable.assert_called_once_with(Path(result.artifact))
         self.assertTrue(process.terminated)
         sys.modules.pop("brains.mchp.app.workflows.open_office_writer", None)
@@ -2197,7 +2311,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
         process = Process()
         with tempfile.TemporaryDirectory() as td, patch.object(
             calc_module.subprocess, "Popen", return_value=process
-        ), patch.object(calc_module, "sleep", return_value=None), patch.object(
+        ) as popen, patch.object(calc_module, "sleep", return_value=None), patch.object(
             calc_module, "wait_for_focused_window"
         ) as ready, patch.object(
             calc_module, "wait_for_stable_artifact"
@@ -2218,7 +2332,12 @@ class OpenDocumentValidationTests(unittest.TestCase):
                 ] = str(value)
         self.assertEqual(state["cells"], expected_cells)
         self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
-        ready.assert_called_once_with("LibreOffice Calc")
+        ready.assert_called_once_with(
+            "LibreOffice Calc", process=process, artifact=Path(result.artifact)
+        )
+        launch = popen.call_args.args[0]
+        self.assertIn("--calc", launch)
+        self.assertNotIn("--nodefault", launch)
         stable.assert_called_once_with(Path(result.artifact))
         self.assertTrue(process.terminated)
         sys.modules.pop(module_name, None)
@@ -2278,6 +2397,60 @@ class OpenDocumentValidationTests(unittest.TestCase):
                 validate_open_document(task, workspace, result.artifact)
                 self.assertEqual(attempts, [0, 1])
                 self.assertEqual(cleaned, [0, 1])
+
+
+class LibreOfficeReadinessTests(unittest.TestCase):
+    @staticmethod
+    def _xlib_modules():
+        xlib = ModuleType("Xlib")
+        xlib.X = SimpleNamespace(Above=1, RevertToParent=2, CurrentTime=3)
+        display_module = ModuleType("Xlib.display")
+
+        class Root:
+            def get_wm_name(self):
+                return ""
+            def query_tree(self):
+                return SimpleNamespace(children=[])
+
+        class Display:
+            def screen(self):
+                return SimpleNamespace(root=Root())
+            def close(self):
+                self.closed = True
+
+        display_module.Display = Display
+        xlib.display = display_module
+        return {"Xlib": xlib, "Xlib.display": display_module}
+
+    def test_missing_window_is_bounded_and_reports_runtime_evidence(self):
+        from brains.mchp.app.utility.libreoffice_gui import wait_for_focused_window
+        clock = [0.0]
+        artifact = Path("/tmp/expected-document.odt")
+        process = SimpleNamespace(poll=lambda: None)
+        with patch.dict(sys.modules, self._xlib_modules()), self.assertRaisesRegex(
+            RuntimeError,
+            r"process_state=running.*expected_window='LibreOffice Writer'.*elapsed_seconds=1\.000.*expected_artifact=/tmp/expected-document.odt.*artifact_exists=false",
+        ):
+            wait_for_focused_window(
+                "LibreOffice Writer", process=process, artifact=artifact,
+                timeout_s=1.0, monotonic=lambda: clock[0],
+                sleeper=lambda delay: clock.__setitem__(0, clock[0] + delay),
+            )
+        self.assertLessEqual(clock[0], 1.0)
+
+    def test_early_libreoffice_exit_is_reported_immediately(self):
+        from brains.mchp.app.utility.libreoffice_gui import wait_for_focused_window
+        clock = [0.0]
+        process = SimpleNamespace(poll=lambda: 7)
+        with patch.dict(sys.modules, self._xlib_modules()), self.assertRaisesRegex(
+            RuntimeError, r"process_state=exited exit_code=7",
+        ):
+            wait_for_focused_window(
+                "LibreOffice Calc", process=process, artifact=Path("/tmp/expected.ods"),
+                timeout_s=30, monotonic=lambda: clock[0],
+                sleeper=lambda delay: clock.__setitem__(0, clock[0] + delay),
+            )
+        self.assertEqual(clock[0], 0.0)
 
 
 class MCHPDriverLifecycleTests(unittest.TestCase):

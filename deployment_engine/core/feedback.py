@@ -90,12 +90,14 @@ def _validate_decoy_workflow_generation(
     source_dir: Path,
     *,
     label: str,
+    expected_resource_profile: str,
+    require_timestamp: bool = True,
 ) -> dict[str, object]:
     """Validate four canonical plans through the shared runtime loader."""
     source_dir = Path(source_dir)
     if not source_dir.is_dir():
         raise FeedbackSourceError(f"{label} generation is not a directory: {source_dir}")
-    if not _is_decoy_generation_name(source_dir.name):
+    if require_timestamp and not _is_decoy_generation_name(source_dir.name):
         raise FeedbackSourceError(
             f"{label} generation must match YYYY-MM-DD_HHMMZ: {source_dir}"
         )
@@ -118,9 +120,6 @@ def _validate_decoy_workflow_generation(
     from decoys.phase_workflow.loader import WorkflowPlanError, load_workflow_plan
 
     plans = {}
-    expected_resource_profile = (
-        "controls-v2" if label == "control" else "feedback-v2"
-    )
     for sup_config, filename in DECOY_PLAN_FILENAMES.items():
         behavior_path = source_dir / filename
         try:
@@ -144,6 +143,7 @@ def validate_decoy_feedback_generation(source_dir: Path) -> dict[str, object]:
     return _validate_decoy_workflow_generation(
         source_dir,
         label="feedback",
+        expected_resource_profile="feedback-v2",
     )
 
 
@@ -152,6 +152,17 @@ def validate_decoy_control_generation(source_dir: Path) -> dict[str, object]:
     return _validate_decoy_workflow_generation(
         source_dir,
         label="control",
+        expected_resource_profile="controls-v2",
+    )
+
+
+def validate_decoy_canary_generation(source_dir: Path) -> dict[str, object]:
+    """Validate one explicit RUSE-owned four-Brain canary plan set."""
+    return _validate_decoy_workflow_generation(
+        source_dir,
+        label="canary",
+        expected_resource_profile="feedback-v2",
+        require_timestamp=False,
     )
 
 
@@ -163,6 +174,8 @@ def decoy_generation_uses_network_share(
         plans = validate_decoy_control_generation(source_dir)
     elif purpose == "feedback":
         plans = validate_decoy_feedback_generation(source_dir)
+    elif purpose == "other":
+        plans = validate_decoy_canary_generation(source_dir)
     else:
         raise FeedbackSourceError(
             f"canonical Decoy generation has unsupported purpose: {purpose!r}"

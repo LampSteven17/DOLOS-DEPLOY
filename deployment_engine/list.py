@@ -83,11 +83,19 @@ def run_list(deploy_dir: Path) -> int:
                 name, rid, config, server_statuses,
             )
             active_col = f"{active}/{expected}" if expected > 0 else "?"
-            registered = deployment_path(name, rid).is_file()
+            registered = (
+                True if config.purpose == "other"
+                else deployment_path(name, rid).is_file()
+            )
             status_col = _format_status_col(
                 bad_statuses, sidecar_statuses, expected, active,
                 registered=registered,
             )
+            if config.purpose == "other":
+                status_col = (
+                    "canary" if status_col == "OK"
+                    else f"canary, {status_col}"
+                )
             date_col = _format_run_date(rid)
             target = f"{name}-{rid}"
 

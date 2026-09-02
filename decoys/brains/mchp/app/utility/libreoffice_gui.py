@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from pathlib import Path
@@ -15,18 +16,37 @@ POLL_INTERVAL_S = 0.25
 def wait_for_focused_window(
     title: str,
     *,
+    process=None,
+    artifact: Path | None = None,
     timeout_s: float = WINDOW_TIMEOUT_S,
     sleeper=time.sleep,
     monotonic=time.monotonic,
 ) -> None:
-    """Wait for an exact LibreOffice application window and focus it via X11."""
+    """Wait for the assigned LibreOffice window with bounded diagnostics."""
     from Xlib import X, display as xdisplay
 
+    started_at = monotonic()
     deadline = monotonic() + timeout_s
     display = xdisplay.Display()
+    observed_titles: set[str] = set()
     try:
         while monotonic() < deadline:
-            window = _find_window(display.screen().root, title)
+            exit_code = _process_exit_code(process)
+            if exit_code is not None:
+                raise RuntimeError(_readiness_error(
+                    title,
+                    process,
+                    observed_titles,
+                    monotonic() - started_at,
+                    artifact,
+                ))
+            windows = _window_tree(display.screen().root)
+            observed_titles.update(
+                name for _window, name in windows if "libreoffice" in name.lower()
+            )
+            window = next(
+                (window for window, name in windows if title in name), None
+            )
             if window is not None:
                 try:
                     window.configure(stack_mode=X.Above)
@@ -40,22 +60,60 @@ def wait_for_focused_window(
             sleeper(POLL_INTERVAL_S)
     finally:
         display.close()
-    raise RuntimeError(f"LibreOffice window did not become ready and focused: {title}")
+    raise RuntimeError(_readiness_error(
+        title,
+        process,
+        observed_titles,
+        monotonic() - started_at,
+        artifact,
+    ))
 
 
-def _find_window(window, title: str):
+def _window_tree(window) -> list[tuple[object, str]]:
     try:
         name = window.get_wm_name() or ""
-        if title in str(name):
-            return window
         children = window.query_tree().children
     except Exception:
-        return None
+        return []
+    windows = [(window, str(name))] if name else []
     for child in children:
-        match = _find_window(child, title)
-        if match is not None:
-            return match
-    return None
+        windows.extend(_window_tree(child))
+    return windows
+
+
+def _process_exit_code(process):
+    poll = getattr(process, "poll", None)
+    return poll() if poll is not None else None
+
+
+def _readiness_error(
+    expected_title: str,
+    process,
+    observed_titles: set[str],
+    elapsed_s: float,
+    artifact: Path | None,
+) -> str:
+    exit_code = _process_exit_code(process)
+    process_state = "exited" if exit_code is not None else "running"
+    if artifact is None:
+        artifact_path = "none"
+        artifact_exists = False
+        artifact_size = 0
+    else:
+        artifact = Path(artifact)
+        artifact_path = str(artifact)
+        artifact_exists = artifact.is_file()
+        artifact_size = artifact.stat().st_size if artifact_exists else 0
+    return (
+        "LibreOffice window readiness failed: "
+        f"process_state={process_state} exit_code={exit_code} "
+        f"expected_window={expected_title!r} "
+        f"observed_titles={json.dumps(sorted(observed_titles))} "
+        f"elapsed_seconds={elapsed_s:.3f} "
+        f"expected_artifact={artifact_path} "
+        f"artifact_exists={str(artifact_exists).lower()} "
+        f"artifact_size={artifact_size}"
+    )
 
 
 def wait_for_stable_artifact(

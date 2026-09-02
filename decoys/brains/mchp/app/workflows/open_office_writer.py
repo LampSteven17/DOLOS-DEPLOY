@@ -87,7 +87,7 @@ class DocumentEditor(BaseWorkflow):
             logger.step_start(
                 "open_application", category="office", message="LibreOffice Writer"
             )
-        self._new_document()
+        self._new_document(artifact)
         pyautogui.hotkey("ctrl", "home")
         pyautogui.hotkey("ctrl", "a")
         pyautogui.press("backspace")
@@ -233,7 +233,7 @@ class DocumentEditor(BaseWorkflow):
         sleep(self.default_wait_time)
         pyautogui.hotkey('alt','y') # choose "yes" if a popup asks if you'd like to overwrite another file
 
-    def _new_document(self):
+    def _new_document(self, artifact=None):
         if IS_LINUX:
             self._profile_dir = Path(tempfile.mkdtemp(prefix="ruse-lo-writer-"))
             self._process = subprocess.Popen(
@@ -242,13 +242,14 @@ class DocumentEditor(BaseWorkflow):
                     f"-env:UserInstallation={self._profile_dir.resolve().as_uri()}",
                     "--writer",
                     "--norestore",
-                    "--nodefault",
                     "--nofirststartwizard",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            wait_for_focused_window("LibreOffice Writer")
+            wait_for_focused_window(
+                "LibreOffice Writer", process=self._process, artifact=artifact
+            )
         else:
             # Windows: Use OpenOffice start menu
             os.startfile(self.open_office_path)

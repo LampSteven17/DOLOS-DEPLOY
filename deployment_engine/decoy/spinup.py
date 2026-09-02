@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from ..core.feedback import (
     decoy_generation_uses_network_share,
     generate_feedback_config,
     validate_decoy_control_generation,
+    validate_decoy_canary_generation,
     validate_decoy_feedback_generation,
 )
 from ..core.revision import RevisionError, resolve_ruse_revision
@@ -160,7 +162,7 @@ def run_decoy_spinup(
     share_required = False
     if (
         effective_source
-        and config.purpose in {"control", "feedback"}
+        and config.purpose in {"control", "feedback", "other"}
         and all(
             dep.get("behavior") in CANONICAL_WORKFLOW_CONFIGS
             for dep in config.deployments
@@ -183,7 +185,11 @@ def run_decoy_spinup(
     if config.purpose == "feedback":
         output.info(f"  GPU tier:  {workflow_gpu_tier}")
     if behavior_source:
-        source_label = "Feedback" if config.purpose == "feedback" else "Controls"
+        source_label = {
+            "feedback": "Feedback",
+            "control": "Controls",
+            "other": "Canary plans",
+        }.get(config.purpose, "Behavior")
         output.info(f"  {source_label}:  {behavior_source}")
     output.info("")
 
@@ -191,6 +197,12 @@ def run_decoy_spinup(
     run_dir.mkdir(parents=True, exist_ok=True)
     _copy_file(config_file, run_dir / "config.yaml")
     (run_dir / "ruse-revision.txt").write_text(f"{ruse_revision}\n")
+    if config.purpose == "other":
+        plan_snapshot = run_dir / "plans"
+        shutil.copytree(Path(effective_source), plan_snapshot)
+        (run_dir / "evidence").mkdir()
+        effective_source = str(plan_snapshot)
+        behavior_source = effective_source
 
     # Stamp FAILED up front; flipped to OK only at the final clean return below.
     # Any early return (provision/install/distribute/register abort), exception,
@@ -399,22 +411,25 @@ def run_decoy_spinup(
     # invisible to PHASE inference — logs collected but never analyzed. DONE
     # must mean "every VM functional AND registered" per the fail-loud
     # contract.
-    phase_vms = [
-        {
-            "name": host["name"],
-            "ip": host["ip"],
-            "sup_config": host["behavior"],
-        }
-        for host in provisioned_hosts
-    ]
-    phase_vms.extend(neighborhood_vms(run_dir))
-    phase_vms.extend(share_sidecar_vms(run_dir))
-    phase_ok = register_phase_run(config, "decoy", started_at, phase_vms)
-    if not phase_ok:
-        output.error("")
-        output.error("ABORTING: PHASE deployment registration failed.")
-        output.error("VMs are running but this fleet has no PHASE run record.")
-        return 1
+    if config.purpose == "other":
+        output.info("  RUSE-only canary: PHASE experiment registration skipped")
+    else:
+        phase_vms = [
+            {
+                "name": host["name"],
+                "ip": host["ip"],
+                "sup_config": host["behavior"],
+            }
+            for host in provisioned_hosts
+        ]
+        phase_vms.extend(neighborhood_vms(run_dir))
+        phase_vms.extend(share_sidecar_vms(run_dir))
+        phase_ok = register_phase_run(config, "decoy", started_at, phase_vms)
+        if not phase_ok:
+            output.error("")
+            output.error("ABORTING: PHASE deployment registration failed.")
+            output.error("VMs are running but this fleet has no PHASE run record.")
+            return 1
 
     # Final summary
     output.info("")
@@ -573,15 +588,15 @@ def _validate_behavior_source(
         dep.get("behavior") in CANONICAL_WORKFLOW_CONFIGS
         for dep in config.deployments
     )
-    if purpose in {"control", "feedback"} and canonical_deployments:
+    if purpose in {"control", "feedback", "other"} and canonical_deployments:
         if not effective_source:
             return [f"canonical {purpose} config has no behavior_source"]
         try:
-            validator = (
-                validate_decoy_control_generation
-                if purpose == "control"
-                else validate_decoy_feedback_generation
-            )
+            validator = {
+                "control": validate_decoy_control_generation,
+                "feedback": validate_decoy_feedback_generation,
+                "other": validate_decoy_canary_generation,
+            }[purpose]
             validator(Path(effective_source))
         except FeedbackSourceError as exc:
             return [str(exc)]

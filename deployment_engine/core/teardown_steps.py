@@ -120,7 +120,7 @@ def finalize_teardown(
 
 
 def finalize_verified_teardown(
-    config_name: str, run_id: str, run_dir: Path,
+    config_name: str, run_id: str, run_dir: Path, *, ruse_only: bool = False,
 ) -> bool:
     """Finalize one resource-empty run, then remove only its SSH block.
 
@@ -130,6 +130,17 @@ def finalize_verified_teardown(
     missing or invalid registry state fails closed.
     """
     from .ssh_config import remove_ssh_config
+
+    if ruse_only:
+        try:
+            write_run_status(run_dir, CLEANED, "RUSE-only canary resources cleaned")
+        except OSError as exc:
+            output.error(f"  ERROR: Failed to mark local canary cleaned: {exc}")
+            output.info("  Local and SSH state preserved.")
+            return False
+        output.info("  RUSE-only canary: no PHASE deployment record to close.")
+        remove_ssh_config(f"{config_name}/{run_id}")
+        return True
 
     try:
         record_path = deployment_path(config_name, run_id)

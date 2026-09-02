@@ -1,0 +1,22 @@
+deployment_name: decoy-runtime-canary
+purpose: other
+target: null
+capture_interface: eno2
+
+flavor_capacity:
+  v1.14vcpu.28g: 2
+  v100-1gpu.14vcpu.28g: 2
+
+deployments:
+  - behavior: scripted-cpu
+    flavor: v1.14vcpu.28g
+    count: 1
+  - behavior: mchp-cpu
+    flavor: v1.14vcpu.28g
+    count: 1
+  - behavior: browseruse-gpu
+    flavor: v100-1gpu.14vcpu.28g
+    count: 1
+  - behavior: smolagents-gpu
+    flavor: v100-1gpu.14vcpu.28g
+    count: 1

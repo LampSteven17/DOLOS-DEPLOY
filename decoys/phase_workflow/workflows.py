@@ -6,6 +6,8 @@ import filecmp
 import html
 import json
 import os
+import re
+import shutil
 import subprocess
 import threading
 import time
@@ -166,15 +168,21 @@ def firefox_download(
     monotonic: Callable[[], float] = time.monotonic,
     timeout_seconds: int = 360,
 ) -> Path:
-    """Start the exact assigned download in Firefox without waiting on navigation."""
+    """Download one assigned URL inside an occurrence-owned Firefox directory."""
     if task.resource.get("kind") != "https_download":
         raise RuntimeError("FileDownload requires an https_download resource")
     workspace = Path(workspace)
-    before = set(workspace.iterdir())
-    owner = driver_factory(workspace)
-    driver = getattr(owner, "driver", owner)
+    if Path(task.occurrence_id).name != task.occurrence_id:
+        raise RuntimeError("invalid FileDownload occurrence identity")
+    download_dir = workspace / ".mchp-downloads" / task.occurrence_id
+    download_dir.mkdir(parents=True, exist_ok=False)
+    started_at = monotonic()
     deadline = monotonic() + timeout_seconds
+    owner = None
+    completed = False
     try:
+        owner = driver_factory(download_dir)
+        driver = getattr(owner, "driver", owner)
         navigation_error = None
         try:
             driver.execute_script(
@@ -194,21 +202,25 @@ def firefox_download(
                 raise
             navigation_error = exc
         while monotonic() < deadline:
-            created = [path for path in workspace.iterdir() if path not in before]
+            created = [path for path in download_dir.iterdir() if path.is_file()]
             partials = [
                 path for path in created
                 if path.name.endswith((".part", ".tmp"))
             ]
             candidates = [
-                path for path in workspace.iterdir()
-                if path not in before
-                and path.is_file()
-                and not path.name.endswith((".part", ".tmp"))
+                path for path in created
+                if not path.name.endswith((".part", ".tmp"))
                 and _matches_download_name(path, task.resource["url"])
             ]
+            if len(candidates) > 1:
+                raise RuntimeError(
+                    "multiple assigned-name artifacts appeared in the "
+                    "occurrence-owned download directory"
+                )
             if len(candidates) == 1 and not partials:
                 artifact = candidates[0]
                 if artifact.stat().st_size == task.resource["expected_bytes"]:
+                    completed = True
                     return artifact
             sleeper(0.25)
         detail = f": {navigation_error}" if navigation_error else ""
@@ -216,10 +228,28 @@ def firefox_download(
             "assigned Firefox download did not complete at the exact size"
             + detail
         )
+    except Exception as exc:
+        created, sizes, partials = _download_observation(download_dir)
+        elapsed = monotonic() - started_at
+        raise RuntimeError(
+            "assigned Firefox download failed: "
+            f"resource_id={task.resource_id} url={task.resource['url']} "
+            f"expected_bytes={task.resource['expected_bytes']} "
+            f"created_files={json.dumps(created)} "
+            f"observed_sizes={json.dumps(sizes, sort_keys=True)} "
+            f"partial_files={json.dumps(partials)} "
+            f"elapsed_seconds={elapsed:.3f} reason={exc}"
+        ) from exc
     finally:
-        cleanup = getattr(owner, "cleanup", None) or getattr(owner, "quit", None)
+        cleanup = None
+        if owner is not None:
+            cleanup = getattr(owner, "cleanup", None) or getattr(
+                owner, "quit", None
+            )
         if cleanup is not None:
             cleanup()
+        if not completed:
+            shutil.rmtree(download_dir, ignore_errors=True)
 
 
 def _is_navigation_timeout(exc: Exception) -> bool:
@@ -233,11 +263,27 @@ def _matches_download_name(path: Path, url: str) -> bool:
     if path.name == expected:
         return True
     expected_path = Path(expected)
-    return (
-        path.suffix == expected_path.suffix
-        and path.stem.startswith(expected_path.stem + " (")
-        and path.stem.endswith(")")
+    return re.fullmatch(
+        re.escape(expected_path.stem)
+        + r" ?\([1-9][0-9]*\)"
+        + re.escape(expected_path.suffix),
+        path.name,
+    ) is not None
+
+
+def _download_observation(
+    download_dir: Path,
+) -> tuple[list[str], dict[str, int], list[str]]:
+    files = sorted(
+        (path for path in download_dir.iterdir() if path.is_file()),
+        key=lambda path: path.name,
     )
+    names = [path.name for path in files]
+    sizes = {path.name: path.stat().st_size for path in files}
+    partials = [
+        path.name for path in files if path.name.endswith((".part", ".tmp"))
+    ]
+    return names, sizes, partials
 
 
 class HttpsDocumentSync:
@@ -522,6 +568,8 @@ class MCHPDocumentWorkflows:
         else:
             raise RuntimeError(f"unsupported DocumentCreation resource kind: {kind}")
         expected_artifact = Path(workspace) / task.resource["filename"]
+        expected_artifact.unlink(missing_ok=True)
+        failures: list[str] = []
         for attempt in range(2):
             if attempt:
                 workflow = (
@@ -535,10 +583,23 @@ class MCHPDocumentWorkflows:
                 )
                 validate_open_document(task, workspace, artifact)
                 return WorkflowResult(completed=True, artifact=str(artifact))
-            except Exception:
+            except Exception as exc:
+                artifact_exists = expected_artifact.is_file()
+                artifact_size = (
+                    expected_artifact.stat().st_size if artifact_exists else 0
+                )
+                failures.append(
+                    f"attempt={attempt + 1} error={exc} "
+                    f"expected_artifact={expected_artifact} "
+                    f"artifact_exists={str(artifact_exists).lower()} "
+                    f"artifact_size={artifact_size}"
+                )
                 expected_artifact.unlink(missing_ok=True)
                 if attempt:
-                    raise
+                    raise RuntimeError(
+                        "assigned LibreOffice creation failed after one bounded "
+                        "corrective attempt: " + " | ".join(failures)
+                    ) from exc
             finally:
                 workflow.cleanup()
         raise RuntimeError("assigned LibreOffice artifact was not created")

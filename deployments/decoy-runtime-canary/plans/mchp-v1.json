@@ -1,0 +1,1803 @@
+{
+  "schema": "phase-workflow-plan-v1",
+  "sup_config": "mchp-cpu",
+  "brain_profile": "mchp-v1",
+  "resource_profile": "feedback-v2",
+  "timezone": "America/New_York",
+  "max_parallel": 10,
+  "schedule": [
+    {
+      "window_local": [
+        0,
+        20
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        30,
+        50
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_python_beginner"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        60,
+        80
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_embedded_player"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_task_tracker"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        90,
+        110
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        120,
+        140
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cpp_course"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        150,
+        170
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_ai_mistake"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_expense_tracker"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        180,
+        200
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        210,
+        230
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cronie_jobs"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        240,
+        260
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_wrote_book"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_training_outline"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        270,
+        290
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        300,
+        320
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_python_beginner"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        330,
+        350
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_embedded_player"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_task_tracker"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        360,
+        380
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        390,
+        410
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cpp_course"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        420,
+        440
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_ai_mistake"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_expense_tracker"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        450,
+        470
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        480,
+        500
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cronie_jobs"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        510,
+        530
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_wrote_book"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_training_outline"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        540,
+        560
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        570,
+        590
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_python_beginner"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        600,
+        620
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_embedded_player"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_task_tracker"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        630,
+        650
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        660,
+        680
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cpp_course"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        690,
+        710
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_ai_mistake"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_expense_tracker"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        720,
+        740
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        750,
+        770
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cronie_jobs"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        780,
+        800
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_wrote_book"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_training_outline"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        810,
+        830
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        840,
+        860
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_python_beginner"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        870,
+        890
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_embedded_player"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_task_tracker"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        900,
+        1228
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 8,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 16,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 24,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 32,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 40,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cpp_course"
+        },
+        {
+          "offset_minutes": 48,
+          "workflow": "VideoViewing",
+          "resource_id": "video_ai_mistake"
+        },
+        {
+          "offset_minutes": 56,
+          "workflow": "VideoViewing",
+          "resource_id": "video_vpn_dragnet"
+        },
+        {
+          "offset_minutes": 64,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cronie_jobs"
+        },
+        {
+          "offset_minutes": 72,
+          "workflow": "VideoViewing",
+          "resource_id": "video_wrote_book"
+        },
+        {
+          "offset_minutes": 80,
+          "workflow": "VideoViewing",
+          "resource_id": "video_ps5_linux"
+        },
+        {
+          "offset_minutes": 88,
+          "workflow": "VideoViewing",
+          "resource_id": "video_python_beginner"
+        },
+        {
+          "offset_minutes": 96,
+          "workflow": "VideoViewing",
+          "resource_id": "video_embedded_player"
+        },
+        {
+          "offset_minutes": 104,
+          "workflow": "VideoViewing",
+          "resource_id": "video_epic_sax"
+        },
+        {
+          "offset_minutes": 112,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        },
+        {
+          "offset_minutes": 120,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_10m"
+        },
+        {
+          "offset_minutes": 128,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        },
+        {
+          "offset_minutes": 136,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_1m"
+        },
+        {
+          "offset_minutes": 144,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        },
+        {
+          "offset_minutes": 152,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        },
+        {
+          "offset_minutes": 160,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_team_meeting_notes"
+        },
+        {
+          "offset_minutes": 168,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_expense_tracker"
+        },
+        {
+          "offset_minutes": 176,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_project_status"
+        },
+        {
+          "offset_minutes": 184,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_inventory_tracker"
+        },
+        {
+          "offset_minutes": 192,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_training_outline"
+        },
+        {
+          "offset_minutes": 200,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_work_schedule"
+        },
+        {
+          "offset_minutes": 208,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_incident_summary"
+        },
+        {
+          "offset_minutes": 216,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_task_tracker"
+        },
+        {
+          "offset_minutes": 224,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_weekly_planning"
+        },
+        {
+          "offset_minutes": 232,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 240,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 248,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 256,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 264,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 272,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 280,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 288,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 296,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 304,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        },
+        {
+          "offset_minutes": 312,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        },
+        {
+          "offset_minutes": 320,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_project_status"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1228,
+        1305
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        },
+        {
+          "offset_minutes": 7,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_10m"
+        },
+        {
+          "offset_minutes": 14,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        },
+        {
+          "offset_minutes": 21,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_1m"
+        },
+        {
+          "offset_minutes": 28,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        },
+        {
+          "offset_minutes": 35,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        },
+        {
+          "offset_minutes": 42,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_team_meeting_notes"
+        },
+        {
+          "offset_minutes": 49,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_expense_tracker"
+        },
+        {
+          "offset_minutes": 56,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 63,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 70,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1305,
+        1312
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1312,
+        1319
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1319,
+        1326
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1326,
+        1333
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1333,
+        1340
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1340,
+        1347
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1347,
+        1354
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cpp_course"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1354,
+        1361
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_project_status"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1361,
+        1368
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1368,
+        1380
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_1m"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1380,
+        1392
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_ai_mistake"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1392,
+        1404
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_deep_learning"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_vpn_dragnet"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_ovh_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_project_status"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_project_status"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1404,
+        1416
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_solar_power"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_cronie_jobs"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_1m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "spreadsheet_inventory_tracker"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_team_notes"
+        }
+      ]
+    },
+    {
+      "window_local": [
+        1416,
+        1428
+      ],
+      "sequence": [
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_python"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_compiler"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "WebResearch",
+          "resource_id": "wikipedia_geometry"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "VideoViewing",
+          "resource_id": "video_wrote_book"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_10m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileDownload",
+          "resource_id": "download_sasag_100m"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "DocumentCreation",
+          "resource_id": "document_training_outline"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "FileSyncUpload",
+          "resource_id": "cloudflare_upload"
+        },
+        {
+          "offset_minutes": 0,
+          "workflow": "NetworkShareAccess",
+          "resource_id": "share_inventory"
+        }
+      ]
+    }
+  ]
+}

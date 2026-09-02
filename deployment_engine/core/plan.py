@@ -36,8 +36,12 @@ from .feedback import (
     find_feedback_by_target,
     load_manifest,
     manifest_summary_lines,
+    validate_decoy_canary_generation,
     validate_manifest_target,
 )
+
+
+DECOY_CANARY_CONFIG = "decoy-runtime-canary"
 
 
 def build_deploy_plan(
@@ -122,6 +126,29 @@ def _build_controls_task(deploy_type: str, deploy_dir: Path) -> dict:
         "is_controls": True,
         "deployments": cfg.deployments,
     }
+
+
+def build_decoy_canary_plan(deploy_dir: Path) -> list[dict]:
+    """Build and validate the one explicit RUSE-owned runtime canary."""
+    config_dir = Path(deploy_dir) / DECOY_CANARY_CONFIG
+    config = DeploymentConfig.load(config_dir / "config.yaml")
+    source = config_dir / "plans"
+    validate_decoy_canary_generation(source)
+    if config.purpose != "other" or config.target is not None:
+        raise FeedbackSourceError(
+            "Decoy runtime canary must use purpose=other and target=null"
+        )
+    return [{
+        "label": "decoy-runtime-canary (RUSE-only canary)",
+        "behavior_source": source,
+        "configs_spec": None,
+        "manifest": None,
+        "is_controls": False,
+        "is_canary": True,
+        "config_name": DECOY_CANARY_CONFIG,
+        "deployments": config.deployments,
+        "gpu_tier": "v100",
+    }]
 
 
 def _build_feedback_tasks(
@@ -311,7 +338,18 @@ def show_plan_and_confirm(
     any_mismatch = False
     for i, task in enumerate(plan, 1):
         output.info(f"  {i}. {task['label']}")
-        if task["is_controls"]:
+        if task.get("is_canary"):
+            source = task["behavior_source"]
+            output.info("      purpose:     canary (RUSE-only)")
+            output.info("      target:      —")
+            output.info(f"      source:      {source}")
+            output.info("")
+            output.info("      VMs to provision (4), tier=v100:")
+            for line in config_vm_table_lines(
+                task["deployments"], indent="        ", gpu_tier="v100"
+            ):
+                output.info(line)
+        elif task["is_controls"]:
             src = task.get("behavior_source")
             mf = task.get("manifest")
             if deploy_type == "decoy":
@@ -416,7 +454,7 @@ def execute_plan(
             if deploy_type == "decoy" and not task["is_controls"]:
                 spinup_kwargs["gpu_tier"] = task.get("gpu_tier") or gpu_tier
             rc = spinup(
-                base_config, deploy_dir,
+                task.get("config_name", base_config), deploy_dir,
                 spinup_source,
                 task["configs_spec"],
                 **spinup_kwargs,

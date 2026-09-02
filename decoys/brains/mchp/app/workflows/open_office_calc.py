@@ -79,7 +79,7 @@ class SpreadsheetEditor(BaseWorkflow):
             logger.step_start(
                 "open_application", category="office", message="LibreOffice Calc"
             )
-        self._new_spreadsheet()
+        self._new_spreadsheet(artifact)
         pyautogui.hotkey("ctrl", "home")
         if logger:
             logger.step_success("open_application")
@@ -167,7 +167,7 @@ class SpreadsheetEditor(BaseWorkflow):
         pyautogui.press('esc') # finish commenting
         sleep(self.default_wait_time)
 
-    def _new_spreadsheet(self):
+    def _new_spreadsheet(self, artifact=None):
         if IS_LINUX:
             self._profile_dir = Path(tempfile.mkdtemp(prefix="ruse-lo-calc-"))
             self._process = subprocess.Popen(
@@ -176,13 +176,14 @@ class SpreadsheetEditor(BaseWorkflow):
                     f"-env:UserInstallation={self._profile_dir.resolve().as_uri()}",
                     "--calc",
                     "--norestore",
-                    "--nodefault",
                     "--nofirststartwizard",
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            wait_for_focused_window("LibreOffice Calc")
+            wait_for_focused_window(
+                "LibreOffice Calc", process=self._process, artifact=artifact
+            )
         else:
             # Windows: Use OpenOffice start menu
             os.startfile(self.open_office_path)

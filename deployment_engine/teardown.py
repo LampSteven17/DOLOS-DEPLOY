@@ -108,6 +108,11 @@ def run_teardown_filtered(
             output.error(f"  WARNING: skipping {config_dir.name}/config.yaml: {e}")
             continue
 
+        # RUSE-only canaries require an exact dated identity. Broad filtered
+        # teardown must never select them alongside Control/Feedback fleets.
+        if config.purpose == "other":
+            continue
+
         # Type filter
         if config.is_rampart():
             if not types.get("rampart"):
