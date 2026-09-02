@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -2124,7 +2125,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
         task = self.task("document_team_meeting_notes")
         typed_content = []
         save_path = []
-        state = {"saving": False, "hotkeys": []}
+        state = {"saving": False, "hotkeys": [], "pressed": []}
 
         pyautogui = ModuleType("pyautogui")
 
@@ -2143,6 +2144,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
                 save_path.clear()
 
         def press(key, presses=1):
+            state["pressed"].append(key)
             if key != "enter" or not state["saving"]:
                 return
             artifact = Path("".join(save_path))
@@ -2205,9 +2207,14 @@ class OpenDocumentValidationTests(unittest.TestCase):
         self.assertEqual(typed_content[0], task.resource["title"])
         self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
         self.assertIn(("ctrl", "a"), state["hotkeys"])
-        ready.assert_called_once_with(
-            "LibreOffice Writer", process=process, artifact=Path(result.artifact)
+        ready.assert_called_once()
+        self.assertEqual(ready.call_args.args, ("LibreOffice Writer",))
+        self.assertEqual(ready.call_args.kwargs["process"], process)
+        self.assertEqual(
+            ready.call_args.kwargs["artifact"], Path(result.artifact)
         )
+        ready.call_args.kwargs["blocking_dialog_action"]()
+        self.assertIn("esc", state["pressed"])
         launch = popen.call_args.args[0]
         self.assertIn("--writer", launch)
         self.assertNotIn("--nodefault", launch)
@@ -2226,6 +2233,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
             "save_path": [],
             "cells": {},
             "hotkeys": [],
+            "pressed": [],
         }
         pyautogui = ModuleType("pyautogui")
 
@@ -2250,6 +2258,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
                 state["value"] = str(value)
 
         def press(key, presses=1):
+            state["pressed"].append(key)
             if key == "enter" and state["mode"] == "goto":
                 state["current"] = state["coordinate"]
                 state["mode"] = None
@@ -2342,9 +2351,14 @@ class OpenDocumentValidationTests(unittest.TestCase):
                 ] = str(value)
         self.assertEqual(state["cells"], expected_cells)
         self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
-        ready.assert_called_once_with(
-            "LibreOffice Calc", process=process, artifact=Path(result.artifact)
+        ready.assert_called_once()
+        self.assertEqual(ready.call_args.args, ("LibreOffice Calc",))
+        self.assertEqual(ready.call_args.kwargs["process"], process)
+        self.assertEqual(
+            ready.call_args.kwargs["artifact"], Path(result.artifact)
         )
+        ready.call_args.kwargs["blocking_dialog_action"]()
+        self.assertIn("esc", state["pressed"])
         launch = popen.call_args.args[0]
         self.assertIn("--calc", launch)
         self.assertNotIn("--nodefault", launch)
@@ -2463,8 +2477,152 @@ class LibreOfficeReadinessTests(unittest.TestCase):
             )
         self.assertEqual(clock[0], 0.0)
 
+    @staticmethod
+    def _interactive_xlib_modules(children):
+        focus = {"window": None}
+
+        class Window:
+            def __init__(self, window_id, title, wm_class):
+                self.id = window_id
+                self.title = title
+                self.wm_class = wm_class
+
+            def get_wm_name(self):
+                return self.title
+
+            def get_wm_class(self):
+                return self.wm_class
+
+            def query_tree(self):
+                return SimpleNamespace(children=[])
+
+            def configure(self, **_kwargs):
+                pass
+
+            def set_input_focus(self, *_args):
+                focus["window"] = self
+
+        class Root(Window):
+            def __init__(self):
+                super().__init__(0, "", ())
+
+            def query_tree(self):
+                return SimpleNamespace(children=list(children()))
+
+        class Display:
+            def screen(self):
+                return SimpleNamespace(root=Root())
+
+            def sync(self):
+                pass
+
+            def get_input_focus(self):
+                return SimpleNamespace(focus=focus["window"])
+
+            def close(self):
+                pass
+
+        xlib = ModuleType("Xlib")
+        xlib.X = SimpleNamespace(Above=1, RevertToParent=2, CurrentTime=3)
+        display_module = ModuleType("Xlib.display")
+        display_module.Display = Display
+        xlib.display = display_module
+        return {"Xlib": xlib, "Xlib.display": display_module}, Window, focus
+
+    def test_tip_dialog_is_dismissed_before_focusing_document(self):
+        from brains.mchp.app.utility.libreoffice_gui import wait_for_focused_window
+
+        windows = []
+        modules, Window, focus = self._interactive_xlib_modules(lambda: windows)
+        calc = Window(
+            1,
+            "Untitled 1 — LibreOffice Calc",
+            ("libreoffice", "libreoffice-calc"),
+        )
+        tip = Window(2, "Tip of the Day: 1/225", ("soffice", "Soffice"))
+        windows[:] = [calc, tip]
+        dismissals = []
+
+        def dismiss():
+            dismissals.append("tip")
+            windows.remove(tip)
+
+        with patch.dict(sys.modules, modules):
+            wait_for_focused_window(
+                "LibreOffice Calc",
+                process=SimpleNamespace(poll=lambda: None),
+                blocking_dialog_action=dismiss,
+                sleeper=lambda _delay: None,
+            )
+
+        self.assertEqual(dismissals, ["tip"])
+        self.assertIs(focus["window"], calc)
+
 
 class MCHPDriverLifecycleTests(unittest.TestCase):
+    def test_concurrent_firefox_startup_handshakes_are_serialized(self):
+        from brains.mchp.app.utility import webdriver_helper as helper_module
+
+        state = {"active": 0, "maximum": 0}
+        state_lock = threading.Lock()
+        created = []
+
+        class Options:
+            def add_argument(self, _value):
+                pass
+
+            def set_preference(self, _name, _value):
+                pass
+
+        class Service:
+            def __init__(self, executable_path=None):
+                self.executable_path = executable_path
+
+            def stop(self):
+                pass
+
+        class Driver:
+            def quit(self):
+                pass
+
+        def create_driver(**_kwargs):
+            with state_lock:
+                state["active"] += 1
+                state["maximum"] = max(state["maximum"], state["active"])
+            time.sleep(0.03)
+            with state_lock:
+                state["active"] -= 1
+            driver = Driver()
+            created.append(driver)
+            return driver
+
+        with patch.object(
+            helper_module.WebDriverHelper,
+            "_find_geckodriver",
+            return_value="/usr/local/bin/geckodriver",
+        ), patch.object(
+            helper_module.webdriver, "FirefoxOptions", Options, create=True
+        ), patch.object(
+            helper_module, "FirefoxService", Service
+        ), patch.object(
+            helper_module.webdriver,
+            "Firefox",
+            side_effect=create_driver,
+            create=True,
+        ):
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                owners = list(
+                    pool.map(
+                        lambda _index: helper_module.WebDriverHelper.independent(),
+                        range(6),
+                    )
+                )
+            for owner in owners:
+                owner.cleanup()
+
+        self.assertEqual(len(created), 6)
+        self.assertEqual(state["maximum"], 1)
+
     def test_concurrent_canonical_browser_workflows_use_independent_drivers(self):
         selenium = ModuleType("selenium")
         selenium_webdriver = ModuleType("selenium.webdriver")
@@ -3319,6 +3477,18 @@ class RuntimeTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_canonical_mchp_runs_libreoffice_under_owned_window_manager(self):
+        installer = INSTALLER.read_text(encoding="utf-8")
+        mchp_packages = next(
+            line
+            for line in installer.splitlines()
+            if "libreoffice" in line and "apt-get install" in line
+        )
+        self.assertIn(" openbox ", mchp_packages)
+        self.assertIn(
+            "openbox >/dev/null 2>&1 & exec", installer
+        )
+
     def test_canonical_rtx_installer_reuses_gemmar_model_mapping(self):
         for config_key, expected_alias, expected_model in (
             ("scripted-cpu", "none", ""),
@@ -3447,6 +3617,10 @@ class InstallerTests(unittest.TestCase):
                     f"--behavior-config-dir={td}/behavioral_configurations",
                     run_script,
                 )
+                if config_key == "mchp-cpu":
+                    self.assertIn(
+                        "openbox >/dev/null 2>&1 & exec", run_script
+                    )
 
 
 if __name__ == "__main__":

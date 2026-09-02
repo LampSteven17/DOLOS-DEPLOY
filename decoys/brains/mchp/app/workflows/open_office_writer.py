@@ -249,7 +249,10 @@ class DocumentEditor(BaseWorkflow):
                 stderr=subprocess.DEVNULL
             )
             wait_for_focused_window(
-                "LibreOffice Writer", process=self._process, artifact=artifact
+                "LibreOffice Writer",
+                process=self._process,
+                artifact=artifact,
+                blocking_dialog_action=self._dismiss_tip_dialog,
             )
         else:
             # Windows: Use OpenOffice start menu
@@ -257,6 +260,10 @@ class DocumentEditor(BaseWorkflow):
             sleep(self.default_wait_time)
             pyautogui.press('d')  # choose document editing
             sleep(self.default_wait_time)
+
+    @staticmethod
+    def _dismiss_tip_dialog():
+        pyautogui.press("esc")
 
     def _save_quit(self):
         pyautogui.hotkey('ctrl', 's') # save

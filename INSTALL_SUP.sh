@@ -777,7 +777,7 @@ install_system_deps() {
             install_chromedriver
             ;;
         mchp)
-            sudo apt-get install -y xvfb xdg-utils libxml2-dev libxslt-dev python3-tk scrot libreoffice
+            sudo apt-get install -y xvfb openbox xdg-utils libxml2-dev libxslt-dev python3-tk scrot libreoffice
             # Install Firefox from Mozilla deb repo (not snap)
             install_firefox_deb
             # Install Geckodriver
@@ -907,7 +907,9 @@ create_run_script() {
     if is_phase_workflow_config "$CONFIG_KEY"; then
         runner_cmd="python3 -m sup $CONFIG_KEY --behavior-config-dir=$deploy_dir/behavioral_configurations"
         if [[ "$BRAIN" == "mchp" ]]; then
-            xvfb_prefix="xvfb-run -a "
+            # LibreOffice needs a window manager for mapped, focusable GUI
+            # windows. Keep it inside the same Xvfb/service ownership group.
+            xvfb_prefix="xvfb-run -a sh -c 'openbox >/dev/null 2>&1 & exec \"\$@\"' sh "
         fi
     else
         case "$BRAIN" in
@@ -1040,7 +1042,9 @@ run_directly() {
         local behavior_dir
         behavior_dir="$(dirname "$workflow_behavior_path")"
         if [[ "$BRAIN" == "mchp" ]]; then
-            exec xvfb-run -a python3 -m sup "$CONFIG_KEY" \
+            exec xvfb-run -a sh -c \
+                'openbox >/dev/null 2>&1 & exec "$@"' sh \
+                python3 -m sup "$CONFIG_KEY" \
                 --behavior-config-dir="$behavior_dir"
         fi
         exec python3 -m sup "$CONFIG_KEY" --behavior-config-dir="$behavior_dir"

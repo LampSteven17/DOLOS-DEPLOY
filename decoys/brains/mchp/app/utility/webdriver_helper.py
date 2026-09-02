@@ -1,4 +1,5 @@
 import os
+import threading
 from selenium import webdriver
 from selenium.webdriver.firefox.service import Service as FirefoxService
 
@@ -12,6 +13,12 @@ class WebDriverUnavailableError(Exception):
 
 class WebDriverHelper(BaseDriverHelper):
     """Firefox-only WebDriver helper for MCHP workflows."""
+
+    # Gecko/Marionette can fail its initial handshake when several Firefox
+    # instances are born in the same instant.  Only serialize construction;
+    # every completed owner has its own driver/profile and executes normally
+    # alongside the others.
+    _startup_lock = threading.Lock()
 
     @classmethod
     def independent(cls, download_dir=None):
@@ -61,9 +68,19 @@ class WebDriverHelper(BaseDriverHelper):
 
             super().__init__(name=DRIVER_NAME)
             self._driver_path = FirefoxService(executable_path=geckodriver_path)
-            self._driver = webdriver.Firefox(service=self._driver_path, options=self.options)
+            with type(self)._startup_lock:
+                self._driver = webdriver.Firefox(
+                    service=self._driver_path, options=self.options
+                )
 
         except Exception as e:
+            service = getattr(self, "_driver_path", None)
+            stop = getattr(service, "stop", None)
+            if stop is not None:
+                try:
+                    stop()
+                except Exception:
+                    pass
             raise WebDriverUnavailableError(f"Firefox WebDriver failed to initialize: {e}")
 
     def _find_geckodriver(self):

@@ -21,6 +21,7 @@ def wait_for_focused_window(
     timeout_s: float = WINDOW_TIMEOUT_S,
     sleeper=time.sleep,
     monotonic=time.monotonic,
+    blocking_dialog_action=None,
 ) -> None:
     """Wait for the assigned LibreOffice window with bounded diagnostics."""
     from Xlib import X, display as xdisplay
@@ -29,6 +30,8 @@ def wait_for_focused_window(
     deadline = monotonic() + timeout_s
     display = xdisplay.Display()
     observed_titles: set[str] = set()
+    observed_classes: set[str] = set()
+    blocking_dialog_used = False
     try:
         while monotonic() < deadline:
             exit_code = _process_exit_code(process)
@@ -37,26 +40,49 @@ def wait_for_focused_window(
                     title,
                     process,
                     observed_titles,
+                    observed_classes,
                     monotonic() - started_at,
                     artifact,
                 ))
             windows = _window_tree(display.screen().root)
             observed_titles.update(
-                name for _window, name in windows if "libreoffice" in name.lower()
+                name for _window, name, _classes in windows
+                if "libreoffice" in name.lower()
             )
+            observed_classes.update(
+                value
+                for _window, _name, classes in windows
+                for value in classes
+                if "libreoffice" in value.lower()
+            )
+            if blocking_dialog_action is not None and not blocking_dialog_used:
+                blocking_dialog = next(
+                    (
+                        window
+                        for window, name, _classes in windows
+                        if name.startswith("Tip of the Day")
+                    ),
+                    None,
+                )
+                if (
+                    blocking_dialog is not None
+                    and _focus_window(display, blocking_dialog, X)
+                ):
+                    blocking_dialog_action()
+                    blocking_dialog_used = True
+                    sleeper(POLL_INTERVAL_S)
+                    continue
             window = next(
-                (window for window, name in windows if title in name), None
+                (
+                    window
+                    for window, name, classes in windows
+                    if title in name or _matches_office_class(title, classes)
+                ),
+                None,
             )
             if window is not None:
-                try:
-                    window.configure(stack_mode=X.Above)
-                    window.set_input_focus(X.RevertToParent, X.CurrentTime)
-                    display.sync()
-                    focused = display.get_input_focus().focus
-                    if getattr(focused, "id", None) == window.id:
-                        return
-                except Exception:
-                    pass
+                if _focus_window(display, window, X):
+                    return
             sleeper(POLL_INTERVAL_S)
     finally:
         display.close()
@@ -64,21 +90,45 @@ def wait_for_focused_window(
         title,
         process,
         observed_titles,
+        observed_classes,
         monotonic() - started_at,
         artifact,
     ))
 
 
-def _window_tree(window) -> list[tuple[object, str]]:
+def _window_tree(window) -> list[tuple[object, str, tuple[str, ...]]]:
     try:
         name = window.get_wm_name() or ""
+        get_wm_class = getattr(window, "get_wm_class", None)
+        classes = tuple(str(value) for value in (get_wm_class() or ())) \
+            if get_wm_class is not None else ()
         children = window.query_tree().children
     except Exception:
         return []
-    windows = [(window, str(name))] if name else []
+    windows = [(window, str(name), classes)] if name or classes else []
     for child in children:
         windows.extend(_window_tree(child))
     return windows
+
+
+def _matches_office_class(title: str, classes: tuple[str, ...]) -> bool:
+    expected = {
+        "LibreOffice Writer": ("libreoffice-writer", "swriter"),
+        "LibreOffice Calc": ("libreoffice-calc", "scalc"),
+    }.get(title, ())
+    lowered = tuple(value.lower() for value in classes)
+    return any(marker in value for marker in expected for value in lowered)
+
+
+def _focus_window(display, window, xlib) -> bool:
+    try:
+        window.configure(stack_mode=xlib.Above)
+        window.set_input_focus(xlib.RevertToParent, xlib.CurrentTime)
+        display.sync()
+        focused = display.get_input_focus().focus
+        return getattr(focused, "id", None) == window.id
+    except Exception:
+        return False
 
 
 def _process_exit_code(process):
@@ -90,6 +140,7 @@ def _readiness_error(
     expected_title: str,
     process,
     observed_titles: set[str],
+    observed_classes: set[str],
     elapsed_s: float,
     artifact: Path | None,
 ) -> str:
@@ -109,6 +160,7 @@ def _readiness_error(
         f"process_state={process_state} exit_code={exit_code} "
         f"expected_window={expected_title!r} "
         f"observed_titles={json.dumps(sorted(observed_titles))} "
+        f"observed_classes={json.dumps(sorted(observed_classes))} "
         f"elapsed_seconds={elapsed_s:.3f} "
         f"expected_artifact={artifact_path} "
         f"artifact_exists={str(artifact_exists).lower()} "
