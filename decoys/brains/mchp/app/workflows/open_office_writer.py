@@ -9,7 +9,10 @@ from pathlib import Path
 from time import sleep
 from ..utility.base_workflow import BaseWorkflow
 from ..utility.libreoffice_gui import (
+    focus_editor_canvas,
     remove_profile,
+    remove_artifact_sidecars,
+    terminate_owned_process_group,
     wait_for_focused_window,
     wait_for_stable_artifact,
 )
@@ -75,6 +78,8 @@ class DocumentEditor(BaseWorkflow):
         self.open_office_path = open_office_path
         self._process = None
         self._profile_dir = None
+        self._assigned_artifact = None
+        self._preexisting_temp_files = set()
 
     def action(self, extra=None, logger=None):
         self._create_document(logger=logger)
@@ -83,11 +88,14 @@ class DocumentEditor(BaseWorkflow):
         """Create one exact assigned document through LibreOffice Writer."""
         artifact = Path(workspace) / resource["filename"]
         artifact.parent.mkdir(parents=True, exist_ok=True)
+        self._assigned_artifact = artifact
+        self._preexisting_temp_files = set(artifact.parent.glob("lu*.tmp"))
         if logger:
             logger.step_start(
                 "open_application", category="office", message="LibreOffice Writer"
             )
         self._new_document(artifact)
+        focus_editor_canvas(pyautogui, sleeper=sleep)
         pyautogui.hotkey("ctrl", "home")
         pyautogui.hotkey("ctrl", "a")
         pyautogui.press("backspace")
@@ -246,7 +254,8 @@ class DocumentEditor(BaseWorkflow):
                     "private:factory/swriter",
                 ],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
             wait_for_focused_window(
                 "LibreOffice Writer",
@@ -297,19 +306,13 @@ class DocumentEditor(BaseWorkflow):
     def cleanup(self):
         """Clean up any running processes."""
         if self._process:
-            try:
-                self._process.terminate()
-                wait = getattr(self._process, "wait", None)
-                if wait is not None:
-                    wait(timeout=5)
-            except Exception:
-                kill = getattr(self._process, "kill", None)
-                if kill is not None:
-                    try:
-                        kill()
-                    except Exception:
-                        pass
-            finally:
-                self._process = None
+            terminate_owned_process_group(self._process)
+            self._process = None
         remove_profile(self._profile_dir)
         self._profile_dir = None
+        remove_artifact_sidecars(
+            self._assigned_artifact,
+            preexisting_temp_files=self._preexisting_temp_files,
+        )
+        self._assigned_artifact = None
+        self._preexisting_temp_files = set()

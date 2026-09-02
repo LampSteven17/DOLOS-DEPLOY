@@ -21,7 +21,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import ANY, Mock, patch
+from unittest.mock import ANY, Mock, call, patch
 from zoneinfo import ZoneInfo
 
 from common.logging.agent_logger import AgentLogger
@@ -2197,7 +2197,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
         task = self.task("document_team_meeting_notes")
         typed_content = []
         save_path = []
-        state = {"saving": False, "hotkeys": [], "pressed": []}
+        state = {"saving": False, "hotkeys": [], "pressed": [], "clicks": []}
 
         pyautogui = ModuleType("pyautogui")
 
@@ -2235,6 +2235,8 @@ class OpenDocumentValidationTests(unittest.TestCase):
         pyautogui.write = write
         pyautogui.hotkey = hotkey
         pyautogui.press = press
+        pyautogui.size = lambda: (1280, 1024)
+        pyautogui.click = lambda x, y: state["clicks"].append((x, y))
         lorem = ModuleType("lorem")
         lorem_text = ModuleType("lorem.text")
         lorem_text.TextLorem = object
@@ -2277,6 +2279,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
         self.assertTrue(result.completed)
         self.assertEqual(Path(result.artifact).name, task.resource["filename"])
         self.assertEqual(typed_content[0], task.resource["title"])
+        self.assertEqual(state["clicks"], [(640, 512)])
         self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
         self.assertIn(("ctrl", "a"), state["hotkeys"])
         ready.assert_called_once()
@@ -2291,6 +2294,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
         self.assertIn("--writer", launch)
         self.assertNotIn("--nodefault", launch)
         self.assertIn("private:factory/swriter", launch)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
         stable.assert_called_once_with(Path(result.artifact))
         self.assertTrue(process.terminated)
         sys.modules.pop("brains.mchp.app.workflows.open_office_writer", None)
@@ -2306,6 +2310,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
             "cells": {},
             "hotkeys": [],
             "pressed": [],
+            "clicks": [],
         }
         pyautogui = ModuleType("pyautogui")
 
@@ -2379,6 +2384,8 @@ class OpenDocumentValidationTests(unittest.TestCase):
         pyautogui.typewrite = typewrite
         pyautogui.write = write
         pyautogui.press = press
+        pyautogui.size = lambda: (1280, 1024)
+        pyautogui.click = lambda x, y: state["clicks"].append((x, y))
         lorem = ModuleType("lorem")
         lorem_text = ModuleType("lorem.text")
         lorem_text.TextLorem = object
@@ -2422,6 +2429,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
                     f"{chr(ord('A') + column_index)}{row_index}"
                 ] = str(value)
         self.assertEqual(state["cells"], expected_cells)
+        self.assertEqual(state["clicks"], [(640, 512)])
         self.assertIn(("ctrl", "shift", "s"), state["hotkeys"])
         ready.assert_called_once()
         self.assertEqual(ready.call_args.args, ("LibreOffice Calc",))
@@ -2435,6 +2443,7 @@ class OpenDocumentValidationTests(unittest.TestCase):
         self.assertIn("--calc", launch)
         self.assertNotIn("--nodefault", launch)
         self.assertIn("private:factory/scalc", launch)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
         stable.assert_called_once_with(Path(result.artifact))
         self.assertTrue(process.terminated)
         sys.modules.pop(module_name, None)
@@ -2548,6 +2557,48 @@ class LibreOfficeReadinessTests(unittest.TestCase):
                 sleeper=lambda delay: clock.__setitem__(0, clock[0] + delay),
             )
         self.assertEqual(clock[0], 0.0)
+
+    def test_assigned_artifact_cleanup_removes_only_owned_sidecars(self):
+        from brains.mchp.app.utility.libreoffice_gui import (
+            remove_artifact_sidecars,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            artifact = workspace / "expense-tracker.ods"
+            lock = workspace / ".~lock.expense-tracker.ods#"
+            prior = workspace / "lu-prior.tmp"
+            owned = workspace / "lu-owned.tmp"
+            lock.write_text("lock")
+            prior.write_text("prior")
+            owned.write_text("owned")
+
+            remove_artifact_sidecars(
+                artifact,
+                preexisting_temp_files={prior},
+            )
+
+            self.assertFalse(lock.exists())
+            self.assertFalse(owned.exists())
+            self.assertTrue(prior.exists())
+
+    def test_owned_libreoffice_process_group_is_terminated_and_reaped(self):
+        from brains.mchp.app.utility import libreoffice_gui
+
+        process = SimpleNamespace(pid=4312)
+        process.wait = Mock()
+        with patch.object(
+            libreoffice_gui.os,
+            "killpg",
+            side_effect=[None, ProcessLookupError],
+        ) as killpg:
+            libreoffice_gui.terminate_owned_process_group(process)
+
+        self.assertEqual(
+            killpg.call_args_list,
+            [call(4312, signal.SIGTERM), call(4312, 0)],
+        )
+        process.wait.assert_called_once()
 
     @staticmethod
     def _interactive_xlib_modules(children):

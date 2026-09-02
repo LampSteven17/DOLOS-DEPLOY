@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import shutil
 import time
 from pathlib import Path
@@ -11,6 +13,93 @@ from pathlib import Path
 WINDOW_TIMEOUT_S = 30.0
 ARTIFACT_TIMEOUT_S = 30.0
 POLL_INTERVAL_S = 0.25
+
+
+def focus_editor_canvas(pyautogui_module, *, sleeper=time.sleep) -> None:
+    """Move keyboard focus from the top-level window into its document canvas."""
+    width, height = pyautogui_module.size()
+    if width <= 0 or height <= 0:
+        raise RuntimeError("LibreOffice editor has no usable display geometry")
+    pyautogui_module.click(width // 2, height // 2)
+    sleeper(POLL_INTERVAL_S)
+
+
+def remove_artifact_sidecars(
+    artifact: Path | None,
+    *,
+    preexisting_temp_files: set[Path] | None = None,
+) -> None:
+    """Remove only lock/temp files owned by one assigned-document invocation."""
+    if artifact is None:
+        return
+    artifact = Path(artifact)
+    artifact.with_name(f".~lock.{artifact.name}#").unlink(missing_ok=True)
+    before = preexisting_temp_files or set()
+    for path in artifact.parent.glob("lu*.tmp"):
+        if path not in before:
+            path.unlink(missing_ok=True)
+
+
+def terminate_owned_process_group(
+    process,
+    *,
+    timeout_s: float = 5.0,
+    sleeper=time.sleep,
+    monotonic=time.monotonic,
+) -> None:
+    """Stop an isolated LibreOffice process group before removing its state."""
+    if process is None:
+        return
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        _terminate_single_process(process, timeout_s)
+        return
+
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        _terminate_single_process(process, timeout_s)
+        return
+
+    deadline = monotonic() + timeout_s
+    wait = getattr(process, "wait", None)
+    if wait is not None:
+        try:
+            wait(timeout=min(1.0, max(0.0, deadline - monotonic())))
+        except Exception:
+            pass
+    while monotonic() < deadline:
+        try:
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            return
+        sleeper(POLL_INTERVAL_S)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if wait is not None:
+        try:
+            wait(timeout=max(0.0, deadline - monotonic()))
+        except Exception:
+            pass
+
+
+def _terminate_single_process(process, timeout_s: float) -> None:
+    try:
+        process.terminate()
+        wait = getattr(process, "wait", None)
+        if wait is not None:
+            wait(timeout=timeout_s)
+    except Exception:
+        kill = getattr(process, "kill", None)
+        if kill is not None:
+            try:
+                kill()
+            except Exception:
+                pass
 
 
 def wait_for_focused_window(
