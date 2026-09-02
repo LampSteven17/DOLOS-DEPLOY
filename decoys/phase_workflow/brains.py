@@ -418,6 +418,37 @@ def _browseruse_completed(result) -> bool:
         return False
 
 
+def _browseruse_bounded_action_completed(result, action_name: str) -> bool:
+    """Reject duplicate, missing, or failed parsed bounded-action results."""
+    steps = getattr(result, "history", None)
+    if steps is None:
+        # Test/framework adapters without structured history still have the
+        # closure-bound action's call count as their authoritative evidence.
+        return True
+    requested = 0
+    succeeded = 0
+    for step in steps:
+        model_output = getattr(step, "model_output", None)
+        actions = getattr(model_output, "action", None) or []
+        results = getattr(step, "result", None) or []
+        for index, action in enumerate(actions):
+            try:
+                values = action.model_dump(exclude_none=True)
+            except Exception:
+                continue
+            if action_name not in values:
+                continue
+            requested += 1
+            action_result = results[index] if index < len(results) else None
+            if (
+                action_result is not None
+                and not getattr(action_result, "error", None)
+                and getattr(action_result, "success", None) is True
+            ):
+                succeeded += 1
+    return requested == 1 and succeeded == 1
+
+
 def _browseruse_action_evidence(
     task: ResolvedTask, *, artifact: Optional[str] = None
 ) -> str:
@@ -582,8 +613,10 @@ def browseruse_runner(
     assigned_download = None
     assigned_transfer = None
     tools = None
+    bounded_action_name = None
     if task.workflow == "VideoViewing":
         playback = AssignedVideoPlayback(task, video_player)
+        bounded_action_name = "play_assigned_video"
 
         class BoundedVideoTools(Tools):
             async def act(self, *args, **kwargs):
@@ -613,6 +646,7 @@ def browseruse_runner(
         document = AssignedDocumentCreation(
             task, workspace, document_writer or OpenDocumentWriter()
         )
+        bounded_action_name = "create_assigned_document"
         tools = Tools()
         for action_name in tuple(tools.registry.registry.actions):
             tools.exclude_action(action_name)
@@ -636,6 +670,7 @@ def browseruse_runner(
             )
     elif task.workflow == "FileDownload":
         assigned_download = AssignedFileDownload(task, workspace, downloader)
+        bounded_action_name = "download_assigned_file"
         tools = Tools()
         for action_name in tuple(tools.registry.registry.actions):
             tools.exclude_action(action_name)
@@ -662,6 +697,11 @@ def browseruse_runner(
         if executor is None:
             raise RuntimeError(f"missing bounded executor for {task.workflow}")
         assigned_transfer = AssignedBoundedTransfer(task, workspace, executor)
+        bounded_action_name = (
+            "sync_assigned_document"
+            if task.workflow == "FileSyncUpload"
+            else "access_assigned_share"
+        )
         tools = Tools()
         for action_name in tuple(tools.registry.registry.actions):
             tools.exclude_action(action_name)
@@ -730,6 +770,13 @@ def browseruse_runner(
             )
             step_logger(logger, result)
             framework_completed = _browseruse_completed(result)
+            if bounded_action_name is not None:
+                framework_completed = (
+                    framework_completed
+                    and _browseruse_bounded_action_completed(
+                        result, bounded_action_name
+                    )
+                )
             if playback is not None:
                 return WorkflowResult(
                     completed=playback.completed and framework_completed

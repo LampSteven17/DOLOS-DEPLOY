@@ -1568,6 +1568,78 @@ class TransferWorkflowTests(unittest.TestCase):
                     self.assertEqual(result.completed, expected)
                     self.assertEqual(len(calls), min(invocations, 1))
 
+    def test_browseruse_rejects_duplicate_parsed_action_with_missing_result(self):
+        plan = load_document(
+            six_workflow_document("browseruse-gpu"), "browseruse-gpu"
+        )
+        task = self.task("browseruse-gpu", "VideoViewing")
+        calls = []
+
+        class Action:
+            def model_dump(self, **_kwargs):
+                return {"play_assigned_video": {}}
+
+        class History:
+            def __init__(self, action_result):
+                self.history = [SimpleNamespace(
+                    model_output=SimpleNamespace(action=[Action(), Action()]),
+                    result=[action_result],
+                )]
+
+            def is_done(self):
+                return True
+
+            def is_successful(self):
+                return True
+
+        class BrowserSession:
+            def __init__(self, **_kwargs):
+                pass
+
+        class ActionResult:
+            def __init__(self, **values):
+                self.__dict__.update(values)
+
+        class Tools:
+            def __init__(self):
+                self.registry = SimpleNamespace(
+                    registry=SimpleNamespace(actions={})
+                )
+
+            def exclude_action(self, name):
+                self.registry.registry.actions.pop(name, None)
+
+            def action(self, _description, **_kwargs):
+                def decorate(function):
+                    self.registry.registry.actions[function.__name__] = function
+                    return function
+                return decorate
+
+        class Agent:
+            def __init__(self, **values):
+                self.tools = values["tools"]
+
+            async def run(self, max_steps):
+                action = self.tools.registry.registry.actions[
+                    "play_assigned_video"
+                ]
+                return History(await action())
+
+        with patch("phase_workflow.brains._require_distribution"):
+            result = browseruse_runner(
+                task,
+                Path("/tmp/day"),
+                plan.brain_profile,
+                video_player=lambda received: calls.append(received) or True,
+                framework_api=(Agent, BrowserSession, Tools, ActionResult),
+                llm_factory=lambda model, logger: model,
+                step_logger=lambda logger, history: None,
+                chromium_args=[],
+            )
+
+        self.assertFalse(result.completed)
+        self.assertEqual(calls, [task])
+
     def test_browseruse_bounded_actions_return_exact_assigned_evidence(self):
         for workflow in (
             "FileDownload",
